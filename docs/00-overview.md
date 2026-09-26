@@ -5,7 +5,7 @@
 | Document | D0 |
 | Status | Draft v1 (phase 1) |
 | Date | 2026-09-26 |
-| Source brief | `TODO.md` v0.9 (all sections) |
+| Source brief | `TODO.md` v1.0 (all sections) |
 | Related | D1–D11 in this directory; decision records in `docs/adr/` |
 
 ## 1. The platform on one page
@@ -30,7 +30,11 @@ the demo stubs them behind the same Spring property names.
 Decided so far (details in the decision log, §8): DL-01 monorepo, DL-02 EKS, DL-06 config in the
 monorepo, DL-15 / DL-24 compose as the demo test stack, DL-17 / DL-25 GitHub-hosted runners for the
 demo, DL-23 Spring Boot 4.1, DL-29 Helm, DL-32 kind in demo step 2, DL-33 one release per AppInstance,
-DL-37 naming model, DL-09 and DL-30 for the dev auto-deploy. Everything else is a recommendation.
+DL-37 naming model, DL-09 and DL-30 for the dev auto-deploy; and, decided on 2026-09-26 (v1.0): DL-03
+hybrid versioning scope, DL-04 Conventional Commits with a release PR, DL-05 semver plus sha tags, DL-07
+explicit import list, DL-09 bot PRs for qa and prod, DL-13 company base JRE image, DL-14 Dockerfile with
+the Gradle-built jar, DL-27 layered teardown with a leak check, DL-28 pinned `ci-build` image, DL-35 SSH
+from the runner, DL-36 bot-author check plus `[skip ci]`. Everything else is a recommendation.
 
 ## 2. System context
 
@@ -182,26 +186,27 @@ implements it, open items.
 
 ## 8. Decision log
 
-Copied from `TODO.md` §6 at v0.9. "Leaning" is a starting hypothesis the design documents validate;
-only rows marked `decided` are fixed. Each ID links to its ADR in `docs/adr/` (index:
-[adr/README.md](adr/README.md)).
+Copied from `TODO.md` §6 at v1.0. Rows marked `decided` are fixed; every other row is a recommendation
+the design documents validate. Each ID links to its ADR in `docs/adr/` (index: [adr/README.md](adr/README.md)).
+On 2026-09-26 the eleven rows that blocked the demo skeleton were decided, each as recommended, so no
+blocking row remains open.
 
 | ID | Decision | Options | Leaning or decision | Blocking for skeleton | Status |
 |---|---|---|---|---|---|
 | [DL-01](adr/DL-01-repository-model.md) | Repository model | monorepo with Gradle subprojects / git submodules / polyrepo | **One Gradle monorepo; no git submodules anywhere in the project.** Rationale in §5.1; a future split, if ever, is into polyrepos consuming published artifacts | yes | decided (v0.5) |
 | [DL-02](adr/DL-02-deployment-platform.md) | Deployment platform | compose on VMs / Kubernetes | **Kubernetes on Amazon EKS** for production; compose for local dev and CI test stacks only | yes | decided (v0.4) |
-| [DL-03](adr/DL-03-versioning-scope.md) | Versioning scope | lockstep / independent / hybrid | hybrid: connector family lockstep, `deephaven-server` independent | yes | open |
-| [DL-04](adr/DL-04-version-computation.md) | Version computation | git-describe plugin / Conventional Commits + release PR / manual tag | Conventional Commits + release PR, tag-triggered release, pre-release on `main` | yes | open |
-| [DL-05](adr/DL-05-image-tag-scheme.md) | Image tag scheme | see §5.4 table | semver + `sha-` tag; no floating tags beyond dev | yes | open |
+| [DL-03](adr/DL-03-versioning-scope.md) | Versioning scope | lockstep / independent / hybrid | **Decided (v1.0):** hybrid: connector family lockstep, `deephaven-server` independent | yes | decided (v1.0) |
+| [DL-04](adr/DL-04-version-computation.md) | Version computation | git-describe plugin / Conventional Commits + release PR / manual tag | **Decided (v1.0):** Conventional Commits + release PR, tag-triggered release, pre-release on `main` | yes | decided (v1.0) |
+| [DL-05](adr/DL-05-image-tag-scheme.md) | Image tag scheme | see §5.4 table | **Decided (v1.0):** semver + `sha-` tag; no floating tags beyond dev | yes | decided (v1.0) |
 | [DL-06](adr/DL-06-config-location.md) | Config location | in monorepo / separate config repo | **In this monorepo under `config/` for now**, with CODEOWNERS and path filters; move later if access control or cadence demands | yes | decided (v0.7) |
-| [DL-07](adr/DL-07-config-layering-mechanism.md) | Config layering mechanism | explicit `spring.config.import` list / profile chain | explicit import list, ≤ 4 file layers | yes | open |
+| [DL-07](adr/DL-07-config-layering-mechanism.md) | Config layering mechanism | explicit `spring.config.import` list / profile chain | **Decided (v1.0):** explicit import list, ≤ 4 file layers | yes | decided (v1.0) |
 | [DL-08](adr/DL-08-env-vars-vs-yaml.md) | Env vars vs YAML | rule of thumb | env vars only for compose-shared / infra knobs | no | open |
-| [DL-09](adr/DL-09-image-and-config-bump-delivery.md) | Image and config bump delivery | GitOps bot PR / deploy-time parameter / deploy + write-back | **dev: deploy on merge to `main`, then tag write-back with loop guard (v0.7)**; qa / prod: bot PR with approvals | yes | decided for dev (v0.7); qa / prod open |
+| [DL-09](adr/DL-09-image-and-config-bump-delivery.md) | Image and config bump delivery | GitOps bot PR / deploy-time parameter / deploy + write-back | **Decided (v1.0).** **dev: deploy on merge to `main`, then tag write-back with loop guard (v0.7)**; qa / prod: bot PR with approvals | yes | decided (dev v0.7, qa / prod v1.0) |
 | [DL-10](adr/DL-10-config-sync-to-target-vms.md) | Config sync to target VMs | pull agent / push via SSH-Ansible / artifact | superseded by DL-30 (GitOps to clusters) after the v0.4 platform change | no | closed |
 | [DL-11](adr/DL-11-vault-authentication.md) | Vault authentication | AppRole / TLS cert / Vault Agent / **Kubernetes auth** | Kubernetes auth on EKS, delivery per DL-31; AppRole only for local stacks; **not in the demo** | no (demo skips Vault) | open |
 | [DL-12](adr/DL-12-db-credentials.md) | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open |
-| [DL-13](adr/DL-13-enterprise-ca-injection.md) | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | company base image | yes | open |
-| [DL-14](adr/DL-14-image-build-tool.md) | Image build tool | Dockerfile (buildx) / Jib | Dockerfile; jar built by Gradle outside Docker | yes | open |
+| [DL-13](adr/DL-13-enterprise-ca-injection.md) | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | **Decided (v1.0):** company base image | yes | decided (v1.0) |
+| [DL-14](adr/DL-14-image-build-tool.md) | Image build tool | Dockerfile (buildx) / Jib | **Decided (v1.0):** Dockerfile; jar built by Gradle outside Docker | yes | decided (v1.0) |
 | [DL-15](adr/DL-15-it-harness.md) | IT harness | Testcontainers / compose / both | **Demo: compose only (decided v0.6).** Later: Testcontainers for component ITs, compose stack for system ITs | no | decided for demo (v0.6) |
 | [DL-16](adr/DL-16-test-data-distribution.md) | Test-data distribution | second-repo checkout in CI / JFrog artifact (submodule excluded by DL-01) | JFrog versioned artifact | no | open |
 | [DL-17](adr/DL-17-ci-runners.md) | CI runners | GitHub-hosted / self-hosted (ARC on EKS) | **GitHub-hosted for the demo**; ARC on EKS when enterprise network reach is required | yes | decided for demo (v0.4) |
@@ -214,16 +219,16 @@ only rows marked `decided` are fixed. Each ID links to its ADR in `docs/adr/` (i
 | [DL-24](adr/DL-24-ci-test-execution-model.md) | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | **Demo: ephemeral docker compose stack (model C) on GitHub-hosted runners (decided v0.6)**; `ci-build` container for the build job per DL-28 | yes | decided for demo (v0.6) |
 | [DL-25](adr/DL-25-runner-lifecycle.md) | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | GitHub-hosted (ephemeral by nature) for the demo; ephemeral ARC runners later | no | decided for demo (v0.4) |
 | [DL-26](adr/DL-26-deephaven-image-under-test-in-ci.md) | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
-| [DL-27](adr/DL-27-teardown-guarantee.md) | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | all of them layered, plus a leak-check step | yes | open |
-| [DL-28](adr/DL-28-ci-build-environment.md) | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | `ci-build` image maintained by `base-image.yml` | yes | open |
+| [DL-27](adr/DL-27-teardown-guarantee.md) | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | **Decided (v1.0):** all of them layered, plus a leak-check step | yes | decided (v1.0) |
+| [DL-28](adr/DL-28-ci-build-environment.md) | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | **Decided (v1.0):** `ci-build` image maintained by `base-image.yml` | yes | decided (v1.0) |
 | [DL-29](adr/DL-29-kubernetes-packaging.md) | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm + Kustomize | **Helm chart per app** under `helm/<AppName>/`; config-tree files passed as values (`-f`, `--set-file`) | yes (demo step 2) | decided (v0.7) |
 | [DL-30](adr/DL-30-gitops-controller.md) | GitOps controller | Argo CD / Flux / CI push (`helm upgrade`) | **Demo: CI push — `helm upgrade --install` from `deploy-dev`**; EKS: Argo CD (ApplicationSets, sync windows) | no (Phase 3) | decided for demo (v0.7); EKS open |
 | [DL-31](adr/DL-31-secrets-delivery-in-kubernetes.md) | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open |
 | [DL-32](adr/DL-32-kubernetes-test-tier.md) | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | **Demo step 2: kind inside the workflow — Helm deploy test, and the `deploy-dev` target until a dev cluster exists (v0.7)**; Phase 3: dev EKS namespace | yes (demo step 2) | decided for demo (v0.7) |
 | [DL-33](adr/DL-33-appinstance-modelling-on-kubernetes.md) | AppInstance modelling on Kubernetes | one release per instance / one release with N Deployments / StatefulSet | **One Application / Helm release per AppInstance generated from the config tree, one Deployment, `replicas: 1` for now** | yes (demo step 2) | decided (v0.7) |
 | [DL-34](adr/DL-34-registry-for-eks.md) | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
-| [DL-35](adr/DL-35-reaching-the-dev-compose-hosts-from-ci.md) | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | open |
-| [DL-36](adr/DL-36-loop-guard-for-bot-write-backs.md) | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | skip bot author + `[skip ci]`; config-only human merges still deploy | yes | open |
+| [DL-35](adr/DL-35-reaching-the-dev-compose-hosts-from-ci.md) | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | **Decided (v1.0):** SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | decided (v1.0) |
+| [DL-36](adr/DL-36-loop-guard-for-bot-write-backs.md) | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | **Decided (v1.0):** skip bot author + `[skip ci]`; config-only human merges still deploy | yes | decided (v1.0) |
 | [DL-37](adr/DL-37-appinstance-naming.md) | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
 | [DL-38](adr/DL-38-kubernetes-namespace-layout.md) | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (demo step 2) | open |
 
@@ -257,7 +262,7 @@ matrix.
 
 ## 10. Open questions that still gate the design
 
-Unanswered items from `TODO.md` §8 at v0.9. Answers change recommendations, not decided rows.
+Unanswered items from `TODO.md` §8 at v1.0. Answers change recommendations, not decided rows.
 
 - EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
 - Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?

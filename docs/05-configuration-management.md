@@ -498,6 +498,9 @@ unavailable, which the sync window confines to the deployment window.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-07, DL-09, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Status | Needed for |
 |---|---|---|
 | DL-07 layering mechanism (explicit import leaning) | open | Demo step 1 (compose) — blocking |

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -15,7 +15,7 @@ still deploys.
 
 ## Decision
 
-Proposed: two guards together — the `deploy-dev` job's `if:` skips runs whose actor is the bot
+Decided (v1.0, as recommended): two guards together — the `deploy-dev` job's `if:` skips runs whose actor is the bot
 identity, and the write-back commit message carries `[skip ci]` so GitHub skips the workflow entirely.
 `paths-ignore` on `config/**` is rejected.
 

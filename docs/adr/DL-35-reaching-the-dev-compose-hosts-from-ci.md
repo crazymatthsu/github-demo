@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes (demo step 1) |
 
@@ -14,7 +14,7 @@ may not reach those hosts; a self-hosted runner on the host is the one exception
 
 ## Decision
 
-Proposed: SSH from the GitHub-hosted runner with a deploy key held in GitHub Environment `dev`, to a
+Decided (v1.0, as recommended): SSH from the GitHub-hosted runner with a deploy key held in GitHub Environment `dev`, to a
 `deploy` user whose forced command allows only `run-compose.sh`, if the host is reachable; otherwise a
 self-hosted runner on the host. The host-side command is identical in both cases.
 

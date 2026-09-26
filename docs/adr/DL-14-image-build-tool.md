@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -14,7 +14,7 @@ daemon and reproducibly but gives less control over the OS layer and the CA step
 
 ## Decision
 
-Proposed: Dockerfile built with buildx (and buildable with `podman build`); the Spring Boot jar is built
+Decided (v1.0, as recommended): Dockerfile built with buildx (and buildable with `podman build`); the Spring Boot jar is built
 by Gradle outside Docker and copied into the image, using layered-jar extraction for cache-friendly
 layers.
 

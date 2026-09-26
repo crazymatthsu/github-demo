@@ -447,6 +447,9 @@ comparison passed or failed; D10 adds the CI-only labels, prune and leak check.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-27 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Depends on |
 |---|---|
 | Testcontainers for single-dependency component ITs after the demo | DL-15 |

@@ -486,6 +486,9 @@ loaded with `kind load docker-image`, D10); the `deploy-dev` job runs it against
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-09 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Status | Needed for |
 |---|---|---|
 | DL-30 GitOps controller on EKS (Argo CD leaning) and hub vs per-cluster placement | open for EKS | Phase 3 (EKS + GitOps) |

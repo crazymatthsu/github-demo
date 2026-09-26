@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -16,7 +16,7 @@ layers.
 
 ## Decision
 
-Proposed: an explicit import list of optional files (`optional:file:/config/common/application.yml`,
+Decided (v1.0, as recommended): an explicit import list of optional files (`optional:file:/config/common/application.yml`,
 `optional:file:/config/instance/application.yml`, plus at most two `_common` layers if adopted), with
 at most four file layers; profiles are not used for layering.
 

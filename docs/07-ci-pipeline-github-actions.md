@@ -570,6 +570,9 @@ makes, and it is the one commit that does not trigger another run.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-14, DL-27, DL-28, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Depends on |
 |---|---|
 | OIDC to Artifactory vs static token; edition support | DL-18; §8 "JFrog: Artifactory edition, Xray, OIDC support" |

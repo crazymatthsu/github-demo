@@ -516,6 +516,9 @@ branches exist.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-09, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Status | Effect here |
 |---|---|---|
 | DL-03 / DL-04 / DL-05 versioning scope, computation, tag scheme | open | the tag strings in §6.3 and in bump PRs; whether `<subproject>/v*` tags exist |

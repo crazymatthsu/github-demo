@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -15,7 +15,7 @@ a leak-check step that proves nothing remains.
 
 ## Decision
 
-Proposed: all layers together — (1) an `if: always()` step running `compose down -v --remove-orphans`
+Decided (v1.0, as recommended): all layers together — (1) an `if: always()` step running `compose down -v --remove-orphans`
 for this run's project and pruning anything labelled `com.<company>.ci.run=<run_id>`; (2) every
 container, volume and network labelled with the run id under a unique project name prefixed
 `ci-<run_id>-<attempt>`; (3) ephemeral runners (and Ryuk where Testcontainers exists); followed by a

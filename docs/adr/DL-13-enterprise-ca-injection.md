@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -14,7 +14,7 @@ CA must trigger a rebuild of every image. Whether a company base image already e
 
 ## Decision
 
-Proposed: a company base JRE image built once by a `base-image.yml` workflow (CA in both stores,
+Decided (v1.0, as recommended): a company base JRE image built once by a `base-image.yml` workflow (CA in both stores,
 timezone data, non-root user) that every app image uses as its `FROM`; the CA bundle is fetched from a
 JFrog generic artefact at base-image build time.
 

@@ -581,6 +581,9 @@ are the same `always()` steps on every path. A cancel interrupts the test step, 
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-13, DL-27, DL-28 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Depends on |
 |---|---|
 | `ci-build` image for the `build` job (leaning) vs `setup-java` on the host; the socket mount into job containers | DL-28; §8 "Is mounting the container socket into a job container acceptable to security" |

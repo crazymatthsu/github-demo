@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -14,7 +14,7 @@ image with JDK 21, the enterprise CA, the container CLI and the `jf` CLI, with G
 
 ## Decision
 
-Proposed: a pinned `ci-build` container image, maintained by `base-image.yml` from the same company
+Decided (v1.0, as recommended): a pinned `ci-build` container image, maintained by `base-image.yml` from the same company
 base as the app images (DL-13), used as the `container:` of the `build` job and runnable locally.
 
 ## Alternatives considered

@@ -501,6 +501,9 @@ is met by rule 1 above: the skeleton's `source-database` hello-world query reads
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-35 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Status | Needed for |
 |---|---|---|
 | DL-11 Vault authentication (Kubernetes auth leaning; AppRole for local stacks) | open | Phase 3 (EKS + GitOps) |

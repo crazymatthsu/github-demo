@@ -432,6 +432,9 @@ laggard.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-13, DL-14, DL-28 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | DL | Topic | This document's recommendation |
 |---|---|---|
 | DL-13 | Enterprise CA injection | company base JRE image built by `base-image.yml` (§5 (1)) |

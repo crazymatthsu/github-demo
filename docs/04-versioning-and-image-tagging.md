@@ -433,6 +433,9 @@ reaches qa and never produces a bump PR; the previous release keeps running beca
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-09, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | DL | Topic | This document's recommendation |
 |---|---|---|
 | DL-03 | Versioning scope | hybrid: family lockstep, `deephaven-server` independent (§5 (1)) |

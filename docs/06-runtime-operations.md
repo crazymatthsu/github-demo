@@ -511,6 +511,9 @@ project name and label this script assigned.
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-07, DL-13, DL-14, DL-27, DL-35 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 | Item | Status | Effect here |
 |---|---|---|
 | DL-07 config layering mechanism (import list vs profiles; extra `_common` layers) | open | mount paths `/config/<layer>/` in §6.7 and the ConfigMap set in Figure 1 |

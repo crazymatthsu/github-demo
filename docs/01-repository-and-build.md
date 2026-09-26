@@ -482,6 +482,9 @@ PR is reproducible locally with one command. Only the version string and the ima
 
 ## 9. Open items
 
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-14, DL-28 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
+
 Decision-log rows this document depends on that are still open:
 
 | DL | Topic | This document's recommendation |
