@@ -411,7 +411,7 @@ the loop guard keys on.
 | `config/us-dev/cash/source-database/app-common/values.yaml`, `.../trades-db-to-amps/values.yaml`, `.../positions-db-to-deephaven/values.yaml` | values layers 2 and 3 | Demo step 2 (kind + Helm) |
 | `config/us-dev/targets.yml` (`kind: helm`, `cluster`, `namespace`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
 | `.github/workflows/pr.yml` (`config-lint`: `helm lint`, `helm template` per instance) | D5 check 12 | Demo step 2 (kind + Helm) |
-| `.github/workflows/main.yml` (`kind-deploy-test` job: create cluster, load images, install both releases, readiness, `helm test`, delete cluster — lifecycle in D10) | acceptance criterion "Demo step 2" of §7 | Demo step 2 (kind + Helm) |
+| `.github/workflows/main.yml` (`kind-deploy` job: create cluster, load images, install both releases, readiness, `helm test`, delete cluster — lifecycle in D10, job name as in D7) | acceptance criterion "Demo step 2" of §7 | Demo step 2 (kind + Helm) |
 | `.github/workflows/main.yml` (`deploy-dev` job, Helm adapter) | §6.4 commands, write-back with loop guard | Demo step 2 (kind + Helm) |
 | `.github/actions/helm-deploy-instance/` (composite action: resolve paths from the identity tuple, build the flag list, run upgrade, rollout status, test) | one place for the command of §8.3 | Demo step 2 (kind + Helm) |
 | `deephaven-connectors/source-database/helm/source-database/templates/externalsecret.yaml`, `servicemonitor.yaml`, `pdb.yaml` | flags off in the demo | Phase 3 (EKS + GitOps) |
@@ -496,7 +496,7 @@ loaded with `kind load docker-image`, D10); the `deploy-dev` job runs it against
 | DL-09 bump delivery for qa / prod | open for qa / prod | D9 |
 | DL-32 Kubernetes test tier beyond kind (dev EKS namespace) | open for Phase 3 | D10 |
 | Chart location `<subproject>/helm/<AppName>/` vs a top-level `helm/` (§2.4 vs §4 wording) | assumption | chart path in `deploy-dev` and the ApplicationSet |
-| AppInstance length budget (≤ 32 recommended vs ≤ 40 in the brief) | inconsistency reported | release and Application names |
+| AppInstance length budget ≤ 32 (adopted by the brief in v0.9) | resolved | release and Application names |
 
 §8 questions this document depends on: EKS topology (one cluster per `<region>-<stage>` or shared
 clusters with a namespace per stage — decides the cluster generator and whether the stage joins the

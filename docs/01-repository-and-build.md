@@ -210,7 +210,8 @@ starts in the monorepo.
 | `deephaven-server` | `deephaven-server/` | `:deephaven-server` | `.../deephaven-server` | image-only |
 
 Rules: one lower-case kebab-case token (`[a-z0-9-]`, ≤ 20 characters so that
-`<AppName>-<AppInstance>` fits the 63-character Kubernetes limit, DL-37) names the directory, the
+`<AppName>-<AppInstance>` fits Helm's 53-character release-name limit with AppInstance ≤ 32, DL-37 /
+D5 §6.2) names the directory, the
 Gradle project, the image and the Helm chart. `deephaven-connectors` is a parent project with no
 code of its own: it aggregates its children and declares nothing but the shared platform.
 

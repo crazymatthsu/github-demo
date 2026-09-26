@@ -201,7 +201,7 @@ One document per topic under `docs/`, Mermaid diagrams so they render on GitHub.
 
 | Doc | File | Covers |
 |---|---|---|
-| D0 | `docs/00-overview.md` | One-page architecture overview, index of D1–D9, glossary, decision log / ADR index |
+| D0 | `docs/00-overview.md` | One-page architecture overview, index of D1–D11, glossary, decision log / ADR index, traceability |
 | D1 | `docs/01-repository-and-build.md` | §5.1 monorepo layout, Gradle multi-project, convention plugins, Java 21 toolchain |
 | D2 | `docs/02-secrets-and-vault.md` | §5.2 Vault layout, authentication, Spring Vault DB credentials, local dev Vault |
 | D3 | `docs/03-docker-images.md` | §5.3 Dockerfile standard, enterprise CA, base image, image naming |
@@ -594,8 +594,8 @@ override YAML?
   | 3 | Env-wide (optional) | `config/<env>/_common/` | Vault address, log shipping endpoint, region TZ |
   | 4 | App common in env + flow | `config/<env>/<flow>/<AppName>/app-common/` | app defaults for this env and flow |
   | 5 | Instance overrides | `config/<env>/<flow>/<AppName>/<AppInstance>/` | endpoints, topics, subscriptions, table names |
-  | 6 | Environment variables | `compose.env` → container env | small set of deploy-time knobs |
-  | 7 | Vault | `vault://...` | secrets only |
+  | 6 | Secrets (Vault later; a mounted config tree or env in the demo) | `optional:configtree:/secrets/`, `vault://...` | secrets only — imported config data, so **below** OS environment variables in Spring's order (corrected v0.9) |
+  | 7 | Environment variables | `compose.env` → container env; instance `values.yaml` `env:` | small set of deploy-time knobs; never a key a YAML layer defines |
 
 - Mechanism: explicit `spring.config.import` / `spring.config.additional-location` list of optional
   files mounted under `/config/...` (deterministic, visible) vs Spring profiles
@@ -623,8 +623,9 @@ override YAML?
     usually the data source it reads, optionally with its target: `bbg-equity-ticks`, `reuters-fx`,
     `trades-db-to-amps`, `positions-db-to-deephaven`. Never a bare number.
   - Rules: lower-case kebab-case, DNS-label safe (`[a-z0-9-]`, no leading or trailing `-`); unique
-    within `<env>/<flow>/<AppName>`; `<AppName>-<AppInstance>` ≤ 63 characters (Kubernetes name
-    limit), so AppName ≤ 20 and AppInstance ≤ 40. The same AppInstance name may recur under another
+    within `<env>/<flow>/<AppName>`; `<AppName>-<AppInstance>` ≤ 53 characters (Helm release-name
+    limit, tighter than the 63-character Kubernetes label limit — corrected v0.9 by D5 / D11), so
+    AppName ≤ 20 and AppInstance ≤ 32. The same AppInstance name may recur under another
     flow (`bbg-equity-ticks` in `cash` and in `deriv`) because the flow is part of the identity.
   - Identity tuple `<env>/<flow>/<AppName>/<AppInstance>` is propagated everywhere: compose project
     `<env>-<flow>-<app>-<instance>`, Helm release `<app>-<instance>` in a namespace per flow (DL-38),
@@ -1063,7 +1064,7 @@ Tasks
 | DL-34 | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
 | DL-35 | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | open |
 | DL-36 | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | skip bot author + `[skip ci]`; config-only human merges still deploy | yes | open |
-| DL-37 | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base** | yes | decided (v0.8) |
+| DL-37 | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
 | DL-38 | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (demo step 2) | open |
 
 ---
