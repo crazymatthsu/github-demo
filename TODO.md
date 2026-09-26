@@ -1,11 +1,12 @@
 # TODO — Architecture Design Brief: Deephaven Platform & Connectors
 
-> **Status:** DRAFT v0.5 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
+> **Status:** DRAFT v0.8 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
 > execution with an ephemeral Deephaven server; v0.4 set **production on Kubernetes / EKS**,
 > compose for tests only, and the demo simplifications; v0.5 decides **one Gradle monorepo, no git
 > submodules**; v0.6 decides **docker compose for the demo's CI test stack**; v0.7 decides **Helm, one
 > release per AppInstance with one replica, a two-step demo (compose, then kind), config in this repo,
-> and auto-deploy to dev on merge to `main`**; see §10).
+> and auto-deploy to dev on merge to `main`**; v0.8 decides **Spring Boot 4.1** and the **AppName /
+> AppInstance naming model**; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -80,7 +81,8 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 |---|---|
 | Repository | **One Gradle monorepo. Git submodules are not used anywhere in this project** — not for code, config or test data (decided v0.5, DL-01) |
 | Build | Gradle multi-project, Gradle wrapper pinned, all dependencies resolved through JFrog (no direct internet) |
-| Language / runtime | Java 21 (LTS); Spring Boot 3.x or 4.x — baseline to decide (DL-23) |
+| Language / runtime | Java 21 (LTS); **Spring Boot 4.1** on Spring Framework 7 (decided v0.8, DL-23) |
+| Naming | `AppName` = code base (subproject / image); `AppInstance` = business-logic name of one pipeline, usually the data source, optionally with target; one code base serves many flows and endpoints (decided v0.8, DL-37, §5.6) |
 | Secrets | HashiCorp Vault for **all** secrets; Spring Vault / Spring Cloud Vault for database credential retrieval |
 | Trust | Enterprise CA certificate must be trusted inside every image (OS trust store **and** JVM truststore) |
 | CI/CD | GitHub Actions; JFrog Artifactory as Docker registry + Maven/Gradle repository (+ Xray scanning if available) |
@@ -155,7 +157,7 @@ and `source-kafka`.
                 │   ├── application.yml
                 │   ├── values.yaml    # shared Helm values for this app in this env + flow
                 │   └── ...            # logback.xml, client properties, ...
-                └── <AppInstance>/     # same image, different config (e.g. source-kafka-01)
+                └── <AppInstance>/     # business-logic name, e.g. bbg-equity-ticks, trades-db-to-amps (§5.6)
                     ├── compose.env    # variables consumed by docker-compose.yml: IMAGE_TAG, ports, JVM opts, paths
                     ├── application.yml # instance overrides: endpoints, topics, subscriptions, table names
                     ├── values.yaml    # Helm values for this instance: image.tag, replicas (1), resources, env
@@ -170,9 +172,10 @@ Gaps in the v0.1 tree to resolve while writing D5:
   or to a whole env, currently have no home. Candidate extra layers: `config/_common/<AppName>/`,
   `config/<env>/_common/`, `config/<env>/<flow>/_common/`. Decide the maximum number of layers
   (suggest ≤ 4 file layers) and the precedence order (§5.6).
-- **AppInstance naming** is undefined: numeric (`-01`), by upstream (`-bbg-feed`), or by target?
-  The instance id will appear in Deployment and container names, logs, metrics and possibly
-  Deephaven table names.
+- **AppInstance naming (decided v0.8)**: the business-logic name of the pipeline — usually the data
+  source it reads, optionally with its target (`bbg-equity-ticks`, `trades-db-to-amps`), never a bare
+  number. `AppName` is the code base (subproject / image); one code base serves many flows and many
+  source / target endpoints. Rules and identity propagation in §5.6 (DL-37).
 - **Kubernetes mapping (v0.4, Helm decided v0.7)**: one Helm release per AppInstance
   (`<app>-<instance>`, `replicas: 1`), values layered `helm/<app>/values.yaml` → `app-common/values.yaml`
   → `<instance>/values.yaml`; the `application.yml` layers are passed to the chart as file values
@@ -253,8 +256,9 @@ Tasks
 - `deephaven-server` skeleton: packaging of the upstream Deephaven image with enterprise CA and a
   placeholder plugin / start-up script (exact scope to decide, see §5.1 tasks).
 - Per app: `Dockerfile`, `docker-compose.yml` template, `run-compose.sh` with every command in §5.8,
-  and config for at least `us-dev/cash/<AppName>/{app-common, <inst-01>, <inst-02>}` where the two
-  instances differ in endpoints — proving the override mechanism.
+  and config for at least `us-dev/cash/source-database/{app-common, trades-db-to-amps,
+  positions-db-to-deephaven}` where the two instances differ in source and target endpoints —
+  proving the override mechanism and the naming model (§5.6).
 - Secrets (demo simplification, v0.4): **no Vault**. The DB password and any other secret arrive as
   environment variables (compose) or a Kubernetes `Secret` (kind slice), bound to the **same Spring
   property names** the Vault integration will use later, so moving to Vault is a property-source
@@ -272,7 +276,8 @@ Tasks
 - **Demo step 2 — kind-based Kubernetes (decided v0.7)**, built after step 1 is green: a Helm chart
   per app under `helm/<AppName>/` (start with `source-database`), one release per AppInstance
   generated from the config tree with `replicas: 1`, values and `application.yml` layers taken from
-  `config/us-dev/cash/<AppName>/{app-common,<inst-01>,<inst-02>}`. A workflow creates a `kind`
+  `config/us-dev/cash/source-database/{app-common,trades-db-to-amps,positions-db-to-deephaven}`. A
+  workflow creates a `kind`
   cluster, loads the images built in the run, runs `helm lint` and `helm upgrade --install` for each
   instance, waits for readiness, runs a smoke test, and deletes the cluster.
 - **CD on merge to `main` (decided v0.7)**: the `main` workflow ends with a `deploy-dev` job (GitHub
@@ -372,6 +377,11 @@ repository under `docs/`.
 **Options to evaluate**
 
 - Kotlin DSL vs Groovy DSL (DL-22).
+- Spring Boot **4.1** (decided v0.8, DL-23): Spring Framework 7 on Java 21. Consequences: Gradle
+  wrapper at a version the Boot 4.1 Gradle plugin supports; when Spring Cloud Vault arrives, pin the
+  Spring Cloud release train that matches Boot 4.1; verify the third-party clients (Deephaven Java
+  client, AMPS, Kafka, SQL Server JDBC driver) against Boot 4's modularised starters and Jakarta EE
+  baseline in the skeleton's first build; track 4.x minors as the upgrade policy.
 - Image build: Dockerfile via buildx vs Jib (no daemon, reproducible, but Dockerfile was requested
   and gives CA / OS control) (DL-14).
 - Jar built by Gradle then `COPY` into the image vs multi-stage Gradle build inside Docker.
@@ -379,7 +389,7 @@ repository under `docs/`.
 
 Tasks
 
-- [ ] Decide DSL, Spring Boot baseline, Jib vs Dockerfile.
+- [ ] Decide DSL and Jib vs Dockerfile (Spring Boot baseline decided: 4.1).
 - [ ] Define shared quality gates (format, static analysis, coverage threshold) and where they run.
 - [ ] Define the `deephaven-server` subproject scope.
 - [ ] Define root aggregate tasks and naming for image tasks.
@@ -581,7 +591,7 @@ override YAML?
 
 - Mechanism: explicit `spring.config.import` / `spring.config.additional-location` list of optional
   files mounted under `/config/...` (deterministic, visible) vs Spring profiles
-  (`spring.profiles.active=us-dev,cash,inst01` with `application-<profile>.yml`) (DL-07). Spring
+  (`spring.profiles.active=us-dev,cash,trades-db-to-amps` with `application-<profile>.yml`) (DL-07). Spring
   config-tree for file-based secrets if Vault Agent is used.
 - **Kubernetes delivery (v0.4, Helm decided v0.7)**: the chart renders one ConfigMap per release from
   the `application.yml` layers. Those files live outside the chart, in the config tree, so they are
@@ -597,8 +607,21 @@ override YAML?
   mappings). For source / target host:port either works — pick **one canonical place**, allow
   `${VAR}` placeholders in YAML for the few values shared with compose, and forbid defining the same
   key in both. Document the precedence table in D5.
-- Instance identity: how `AppInstance` is named and propagated (container name, logs, metrics tags,
-  Deephaven table names).
+- **Naming model (decided v0.8, DL-37)**:
+  - `AppName` = the code base: the Gradle subproject and its image (`source-kafka`, `source-amps`,
+    `source-database`). One AppName serves many business flows and many source / target endpoints.
+  - `business-flow` = the product line the instance serves (`cash`, `deriv`, `swap`).
+  - `AppInstance` = the **business-logic name** of one concrete pipeline run by that code base —
+    usually the data source it reads, optionally with its target: `bbg-equity-ticks`, `reuters-fx`,
+    `trades-db-to-amps`, `positions-db-to-deephaven`. Never a bare number.
+  - Rules: lower-case kebab-case, DNS-label safe (`[a-z0-9-]`, no leading or trailing `-`); unique
+    within `<env>/<flow>/<AppName>`; `<AppName>-<AppInstance>` ≤ 63 characters (Kubernetes name
+    limit), so AppName ≤ 20 and AppInstance ≤ 40. The same AppInstance name may recur under another
+    flow (`bbg-equity-ticks` in `cash` and in `deriv`) because the flow is part of the identity.
+  - Identity tuple `<env>/<flow>/<AppName>/<AppInstance>` is propagated everywhere: compose project
+    `<env>-<flow>-<app>-<instance>`, Helm release `<app>-<instance>` in a namespace per flow (DL-38),
+    labels and log fields `env, flow, app, instance`, metrics tags, Deephaven table-name prefix.
+  - config-lint validates the regex, the length budget and uniqueness.
 - Validation: `@ConfigurationProperties` + `@Validated`; a **config-lint** CI job that checks every
   instance has its required files, renders the merged configuration, and diffs key sets across
   environments (parity check dev vs qa vs prod).
@@ -612,7 +635,8 @@ Tasks
 - [ ] Write the env-var-vs-YAML rule with a worked example: two `source-database` instances with
       different SQL Server hosts and different AMPS topics.
 - [ ] Define the required-file checklist per instance and the config-lint job.
-- [ ] Define the AppInstance naming convention.
+- [x] AppInstance naming convention decided (v0.8, DL-37); write its regex, length and uniqueness
+      check into config-lint.
 
 ### 5.7 Configuration repository and delivery to clusters (GitOps)
 
@@ -1014,7 +1038,7 @@ Tasks
 | DL-20 | Tag vs digest pinning in compose | tag / digest / both | tag in dev; digest + tag comment in qa / prod | no | open |
 | DL-21 | Config promotion between envs | PR per env / directory copy | PR per env with CODEOWNERS | no | open |
 | DL-22 | Gradle DSL | Kotlin / Groovy | Kotlin | no | open |
-| DL-23 | Spring Boot baseline | 3.x / 4.x | latest GA supported on Java 21; upgrade policy documented | no | open |
+| DL-23 | Spring Boot baseline | 3.x / 4.x | **Spring Boot 4.1** on Spring Framework 7, Java 21; upgrade policy: track 4.x minors | no | decided (v0.8) |
 | DL-24 | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | **Demo: ephemeral docker compose stack (model C) on GitHub-hosted runners (decided v0.6)**; `ci-build` container for the build job per DL-28 | yes | decided for demo (v0.6) |
 | DL-25 | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | GitHub-hosted (ephemeral by nature) for the demo; ephemeral ARC runners later | no | decided for demo (v0.4) |
 | DL-26 | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
@@ -1028,6 +1052,8 @@ Tasks
 | DL-34 | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
 | DL-35 | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | open |
 | DL-36 | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | skip bot author + `[skip ci]`; config-only human merges still deploy | yes | open |
+| DL-37 | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base** | yes | decided (v0.8) |
+| DL-38 | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (demo step 2) | open |
 
 ---
 
@@ -1080,7 +1106,8 @@ Tasks
 
 - [ ] `helm lint` and `helm template` pass for every AppInstance in the config tree (config-lint job).
 - [ ] A CI job creates a kind cluster, loads the images built in the run, installs one Helm release
-      per AppInstance for `us-dev/cash/source-database/{inst-01,inst-02}` with `replicas: 1`, waits
+      per AppInstance for `us-dev/cash/source-database/{trades-db-to-amps,positions-db-to-deephaven}`
+      with `replicas: 1`, waits
       for readiness, runs a smoke test proving the two instances differ in config, and deletes the
       cluster.
 
@@ -1137,7 +1164,8 @@ Product and domain
 - [ ] Do other repositories consume `connectors-framework` (needs Maven publishing to JFrog)?
 - [ ] Number of instances and hosts per env; are instances pinned to hosts? (sizes the sync / CD
       design)
-- [ ] What identifies an AppInstance (numeric, upstream name, target name)?
+- [x] AppInstance = business-logic name (data source, optionally with target); AppName = code base
+      (decided v0.8, DL-37).
 - [ ] Deephaven version and auth mode for CI tests (anonymous handler vs pre-shared key)? Must our
       `deephaven-server` image be under test on every PR, or only on `main` / nightly?
 
@@ -1159,8 +1187,8 @@ Process
 |---|---|
 | env | `<region>-<stage>` deployment environment, e.g. `us-dev`, `jp-prod` |
 | business flow | product line the instance serves: `cash`, `deriv`, `swap` |
-| AppName | a deployable Gradle subproject / Docker image, e.g. `source-kafka` |
-| AppInstance | one running copy of an AppName with its own config (same image) |
+| AppName | the code base: a Gradle subproject and its image, e.g. `source-kafka`; one AppName serves many flows and endpoints |
+| AppInstance | one concrete pipeline run by an AppName, named after its business logic — usually the data source, optionally with its target, e.g. `trades-db-to-amps` |
 | app-common | config shared by all instances of one AppName in one env + flow |
 | lockstep versioning | every subproject carries the same version and is released together |
 | promotion | moving the same immutable image (digest) between registry repos / environments without rebuilding |
@@ -1207,6 +1235,7 @@ Process
 | v0.5 | 2026-09-26 | Decided: one Gradle monorepo, git submodules not used anywhere in the project (code, config, test data). DL-01 closed, DL-16 options narrowed, §2.2 rule added, §2.3 / §5.1 / §5.10 wording updated, §8 question resolved. |
 | v0.6 | 2026-09-26 | Decided for the demo: docker compose is the only test-stack mechanism in the GitHub workflows (model C); no kind, no Kubernetes, no Testcontainers. Kubernetes packaging and the Kubernetes test tier move to Phase 2 / 3 (phasing added to §4). DL-15, DL-24, DL-32 decided for the demo; DL-29 and DL-33 no longer block the skeleton. |
 | v0.7 | 2026-09-26 | Decided: Helm chart per app (DL-29); one Application / Helm release per AppInstance from the config tree with `replicas: 1` for now (DL-33); the demo runs in two steps, compose first then kind-based Kubernetes (DL-32, §4 re-sequenced); config stays in this monorepo for now (DL-06); merge to `main` auto-deploys to the dev targets via a `deploy-dev` job with tag write-back and loop guard (§5.12, DL-09, new DL-35 / DL-36). Added `helm/<AppName>/`, `values.yaml` layers and `targets.yml` to the trees; Helm `--set-file` mapping in §5.6; acceptance criteria for step 2 and CD; glossary. |
+| v0.8 | 2026-09-26 | Decided: Spring Boot 4.1 (DL-23) with its consequences in §5.1; AppName / AppInstance naming model (DL-37): AppName is the code base, AppInstance is the business-logic name of one pipeline (data source, optionally with target), never a bare number; rules, length budget and identity propagation in §5.6; example instance names replaced throughout; namespace layout added as DL-38. |
 
 ---
 
@@ -1244,3 +1273,4 @@ Process
 | *(v0.4)* Demo: GitHub-hosted runners, skip Vault | §2.2, §4, §5.2, §5.9, §5.11, §7, DL-11, DL-17, DL-25 |
 | *(v0.6)* Demo: use docker compose in the GitHub workflow for now, for simplicity | §2.2, §4 (phasing), §5.10, §5.11, §7, §8, DL-15, DL-24, DL-32 |
 | *(v0.7)* Helm chart; one Application per AppInstance from the config tree, one replica; demo compose first then kind; config in the same repo for now; CD auto-deploy to target hosts on merge to `main` | §2.2, §2.4, §4, §5.5–§5.8, §5.11, §5.12, §7, §8, DL-06, DL-09, DL-29, DL-30, DL-32, DL-33, DL-35, DL-36 |
+| *(v0.8)* Spring Boot 4.1; AppInstance = detailed business-logic name (may be the data source), AppName = subproject of the code base; one code base serves many flows and endpoints | §2.2, §2.4, §5.1, §5.6, §8, §9, DL-23, DL-37, DL-38 |
