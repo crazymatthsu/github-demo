@@ -502,7 +502,7 @@ project name and label this script assigned.
 | Demo step 1 (compose) | `config/local/cash/source-database/...`, `config/us-dev/cash/source-database/{app-common,trades-db-to-amps,positions-db-to-deephaven}/compose.env` | `local` env for laptops; two instances that differ in endpoints |
 | Demo step 1 (compose) | `test-infra/compose/` + Gradle `devUp` / `devDown` | dependency stack shared by ITs and local development |
 | Demo step 1 (compose) | `.github/workflows/pr.yml` lint job; `scripts/test/run-compose.bats` | ShellCheck, bats cases of §6.8 |
-| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` | `pull`, `start`, `health` on the compose hosts (D9) |
+| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` | `pull`, `start`, `health` on the compose hosts (D9); in the demo a placeholder that runs `start --dry-run` on the runner (`TODO(DL-35)`) |
 | Demo step 2 (kind + Helm) | `deephaven-connectors/<app>/helm/<app>/templates/deployment.yaml` | probes, resources, `securityContext`, `strategy`, checksum annotation, identity labels |
 | Demo step 2 (kind + Helm) | `.../templates/{service,servicemonitor,networkpolicy,pdb}.yaml` with `enabled` switches; `values.yaml` defaults | monitoring and policy objects rendered and linted; PDB only when `replicas > 1` |
 | Demo step 2 (kind + Helm) | kind job: namespace with PSS `restricted` labels, `helm upgrade --install` per instance, readiness wait, smoke test | chart defaults pass `restricted`; the two instances differ in effective config |

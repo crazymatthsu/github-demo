@@ -5,6 +5,7 @@
 | Status | Proposed |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | no (demo skips Vault) |
+| Phase | deferred to Phase 3 (brief v1.1) — not needed for the demo skeleton |
 
 ## Context
 

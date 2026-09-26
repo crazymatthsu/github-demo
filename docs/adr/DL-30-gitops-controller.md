@@ -5,6 +5,7 @@
 | Status | Accepted for the demo (v0.7); Proposed for EKS |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | no (Phase 3) |
+| Phase | deferred to Phase 3 (brief v1.1) — not needed for the demo skeleton |
 
 ## Context
 

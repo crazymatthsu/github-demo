@@ -5,6 +5,7 @@
 | Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes (demo step 1) |
+| Demo | placeholder (v1.1): `run-compose.sh --dry-run` on the runner plus a `TODO(DL-35)` comment; the SSH transport is implemented when dev hosts exist |
 
 ## Context
 

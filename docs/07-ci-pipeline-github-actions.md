@@ -565,7 +565,7 @@ makes, and it is the one commit that does not trigger another run.
 | Ownership | `.github/CODEOWNERS` (`config/**` prod paths → ops; `build-logic/**`, `.github/**` → platform) | Demo step 1 (compose) |
 | Registry | GHCR via `GITHUB_TOKEN` (`packages: write`); `registry-login` has an `oidc` mode ready for Artifactory | Demo step 1 (compose); OIDC in the enterprise |
 | Build environment | `container: ghcr.io/<org>/base/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2; image content in D3 §6.10) | Demo step 1 (compose) |
-| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts; Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
+| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
 | Retention | nightly job calling the GHCR package API (demo) / `jf` cleanup (enterprise), rules from D4 | Demo step 1 (compose) |
 
 ## 9. Open items

@@ -5,7 +5,7 @@
 | Document | D0 |
 | Status | Draft v1 (phase 1) |
 | Date | 2026-09-26 |
-| Source brief | `TODO.md` v1.0 (all sections) |
+| Source brief | `TODO.md` v1.1 (all sections) |
 | Related | D1–D11 in this directory; decision records in `docs/adr/` |
 
 ## 1. The platform on one page
@@ -150,7 +150,7 @@ requests. D7 owns the CI part of this picture, D4 the tags, D9 the deployments.
 
 | Phase | What exists at the end of it | Documents that define it |
 |---|---|---|
-| Demo step 1 (compose) | Monorepo builds with Java 21 and Spring Boot 4.1; images per app; git-derived versions and tags; `run-compose.sh`; the config tree with two `source-database` instances; PR / main / release workflows on GitHub-hosted runners; integration tests against a docker compose stack with Deephaven and SQL Server; `deploy-dev` deploying to the dev compose hosts on merge to `main` | D1, D3, D4, D5, D6, D7, D8, D9, D10 |
+| Demo step 1 (compose) | Monorepo builds with Java 21 and Spring Boot 4.1; images per app; git-derived versions and tags; `run-compose.sh`; the config tree with two `source-database` instances; PR / main / release workflows on GitHub-hosted runners; integration tests against a docker compose stack with Deephaven and SQL Server; `deploy-dev` running on merge to `main` (the compose-host SSH transport is a documented `TODO(DL-35)` placeholder in the demo) | D1, D3, D4, D5, D6, D7, D8, D9, D10 |
 | Demo step 2 (kind + Helm) | A Helm chart per app; one release per AppInstance with one replica; `helm lint` and `helm template` in config-lint; a kind cluster inside the workflow proving the config-tree → values mapping; `deploy-dev` running `helm upgrade --install` into the target cluster | D11, D5, D6, D9, D10 |
 | Phase 3 (EKS + GitOps) | EKS clusters per `<region>-<stage>`; Argo CD reconciling the config tree (ApplicationSets, sync windows); Vault via Kubernetes auth with External Secrets Operator; ephemeral-namespace tests; JFrog or an ECR mirror as the registry | D2, D3, D9, D11 |
 
@@ -186,10 +186,10 @@ implements it, open items.
 
 ## 8. Decision log
 
-Copied from `TODO.md` §6 at v1.0. Rows marked `decided` are fixed; every other row is a recommendation
+Copied from `TODO.md` §6 at v1.1. Rows marked `decided` are fixed; every other row is a recommendation
 the design documents validate. Each ID links to its ADR in `docs/adr/` (index: [adr/README.md](adr/README.md)).
-On 2026-09-26 the eleven rows that blocked the demo skeleton were decided, each as recommended, so no
-blocking row remains open.
+No row blocks the demo skeleton: the eleven blocking rows were decided on 2026-09-26, and the Phase 3 rows
+(Vault delivery, namespace layout, EKS GitOps controller, EKS registry) are deferred until after the demo.
 
 | ID | Decision | Options | Leaning or decision | Blocking for skeleton | Status |
 |---|---|---|---|---|---|
@@ -203,8 +203,8 @@ blocking row remains open.
 | [DL-08](adr/DL-08-env-vars-vs-yaml.md) | Env vars vs YAML | rule of thumb | env vars only for compose-shared / infra knobs | no | open |
 | [DL-09](adr/DL-09-image-and-config-bump-delivery.md) | Image and config bump delivery | GitOps bot PR / deploy-time parameter / deploy + write-back | **Decided (v1.0).** **dev: deploy on merge to `main`, then tag write-back with loop guard (v0.7)**; qa / prod: bot PR with approvals | yes | decided (dev v0.7, qa / prod v1.0) |
 | [DL-10](adr/DL-10-config-sync-to-target-vms.md) | Config sync to target VMs | pull agent / push via SSH-Ansible / artifact | superseded by DL-30 (GitOps to clusters) after the v0.4 platform change | no | closed |
-| [DL-11](adr/DL-11-vault-authentication.md) | Vault authentication | AppRole / TLS cert / Vault Agent / **Kubernetes auth** | Kubernetes auth on EKS, delivery per DL-31; AppRole only for local stacks; **not in the demo** | no (demo skips Vault) | open |
-| [DL-12](adr/DL-12-db-credentials.md) | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open |
+| [DL-11](adr/DL-11-vault-authentication.md) | Vault authentication | AppRole / TLS cert / Vault Agent / **Kubernetes auth** | Kubernetes auth on EKS, delivery per DL-31; AppRole only for local stacks; **not in the demo** | no (demo skips Vault) | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
+| [DL-12](adr/DL-12-db-credentials.md) | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
 | [DL-13](adr/DL-13-enterprise-ca-injection.md) | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | **Decided (v1.0):** company base image | yes | decided (v1.0) |
 | [DL-14](adr/DL-14-image-build-tool.md) | Image build tool | Dockerfile (buildx) / Jib | **Decided (v1.0):** Dockerfile; jar built by Gradle outside Docker | yes | decided (v1.0) |
 | [DL-15](adr/DL-15-it-harness.md) | IT harness | Testcontainers / compose / both | **Demo: compose only (decided v0.6).** Later: Testcontainers for component ITs, compose stack for system ITs | no | decided for demo (v0.6) |
@@ -222,15 +222,15 @@ blocking row remains open.
 | [DL-27](adr/DL-27-teardown-guarantee.md) | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | **Decided (v1.0):** all of them layered, plus a leak-check step | yes | decided (v1.0) |
 | [DL-28](adr/DL-28-ci-build-environment.md) | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | **Decided (v1.0):** `ci-build` image maintained by `base-image.yml` | yes | decided (v1.0) |
 | [DL-29](adr/DL-29-kubernetes-packaging.md) | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm + Kustomize | **Helm chart per app** under `helm/<AppName>/`; config-tree files passed as values (`-f`, `--set-file`) | yes (demo step 2) | decided (v0.7) |
-| [DL-30](adr/DL-30-gitops-controller.md) | GitOps controller | Argo CD / Flux / CI push (`helm upgrade`) | **Demo: CI push — `helm upgrade --install` from `deploy-dev`**; EKS: Argo CD (ApplicationSets, sync windows) | no (Phase 3) | decided for demo (v0.7); EKS open |
-| [DL-31](adr/DL-31-secrets-delivery-in-kubernetes.md) | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open |
+| [DL-30](adr/DL-30-gitops-controller.md) | GitOps controller | Argo CD / Flux / CI push (`helm upgrade`) | **Demo: CI push — `helm upgrade --install` from `deploy-dev`**; EKS: Argo CD (ApplicationSets, sync windows) | no (Phase 3) | decided for demo (v0.7); EKS open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
+| [DL-31](adr/DL-31-secrets-delivery-in-kubernetes.md) | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
 | [DL-32](adr/DL-32-kubernetes-test-tier.md) | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | **Demo step 2: kind inside the workflow — Helm deploy test, and the `deploy-dev` target until a dev cluster exists (v0.7)**; Phase 3: dev EKS namespace | yes (demo step 2) | decided for demo (v0.7) |
 | [DL-33](adr/DL-33-appinstance-modelling-on-kubernetes.md) | AppInstance modelling on Kubernetes | one release per instance / one release with N Deployments / StatefulSet | **One Application / Helm release per AppInstance generated from the config tree, one Deployment, `replicas: 1` for now** | yes (demo step 2) | decided (v0.7) |
-| [DL-34](adr/DL-34-registry-for-eks.md) | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
-| [DL-35](adr/DL-35-reaching-the-dev-compose-hosts-from-ci.md) | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | **Decided (v1.0):** SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | decided (v1.0) |
+| [DL-34](adr/DL-34-registry-for-eks.md) | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
+| [DL-35](adr/DL-35-reaching-the-dev-compose-hosts-from-ci.md) | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | **Decided (v1.0):** SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | decided (v1.0); demo: placeholder with a `TODO(DL-35)` comment (v1.1) |
 | [DL-36](adr/DL-36-loop-guard-for-bot-write-backs.md) | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | **Decided (v1.0):** skip bot author + `[skip ci]`; config-only human merges still deploy | yes | decided (v1.0) |
 | [DL-37](adr/DL-37-appinstance-naming.md) | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
-| [DL-38](adr/DL-38-kubernetes-namespace-layout.md) | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (demo step 2) | open |
+| [DL-38](adr/DL-38-kubernetes-namespace-layout.md) | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (deferred; the demo uses namespace = `<flow>` as a working assumption) | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
 
 ## 9. Traceability from the brief
 
@@ -262,21 +262,20 @@ matrix.
 
 ## 10. Open questions that still gate the design
 
-Unanswered items from `TODO.md` §8 at v1.0. Answers change recommendations, not decided rows.
+Unanswered items from `TODO.md` §8 at v1.1. Items tagged *(Phase 3)* are not needed for the demo skeleton.
 
-- EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
-- Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?
-- Network path from EKS to on-prem AMPS, Kafka and SQL Server (Direct Connect / VPN, latency budget, security groups / NetworkPolicies)? Are any sources also moving to AWS?
-- Image pulls on EKS: JFrog reachable from the nodes, or an ECR mirror required? Node architecture (amd64 only, or Graviton arm64)?
-- Pod security standards, IRSA, service mesh or ingress requirements imposed by the platform team?
-- Can CI create ephemeral namespaces on a dev EKS cluster (GitHub OIDC → IAM role → EKS RBAC)?
-- Dev compose targets for demo step 1: which hosts, and can a GitHub-hosted runner reach them over SSH, or must a self-hosted runner sit on the host (DL-35)?
-- Is a persistent dev Kubernetes cluster available before EKS, or does kind inside the workflow stand in until then?
+- *(Phase 3 — not needed for the demo skeleton)* EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
+- *(Phase 3 — not needed for the demo skeleton)* Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?
+- *(Phase 3 — not needed for the demo skeleton)* Network path from EKS to on-prem AMPS, Kafka and SQL Server (Direct Connect / VPN, latency budget, security groups / NetworkPolicies)? Are any sources also moving to AWS?
+- *(Phase 3 — not needed for the demo skeleton)* Image pulls on EKS: JFrog reachable from the nodes, or an ECR mirror required? Node architecture (amd64 only, or Graviton arm64)?
+- *(Phase 3 — not needed for the demo skeleton)* Pod security standards, IRSA, service mesh or ingress requirements imposed by the platform team?
+- *(Phase 3 — not needed for the demo skeleton)* Can CI create ephemeral namespaces on a dev EKS cluster (GitHub OIDC → IAM role → EKS RBAC)?
+- *(Phase 3 — not needed for the demo skeleton)* Is a persistent dev Kubernetes cluster available before EKS, or does kind inside the workflow stand in until then?
 - GitHub Enterprise Cloud or Server? Self-hosted runners available? Egress policy (Docker Hub blocked → JFrog remotes)?
 - JFrog: Artifactory edition, Xray, OIDC support, existing repository naming conventions, promotion API allowed?
-- Vault: edition, namespaces, enabled auth methods, Database secrets engine allowed for SQL Server?
+- *(Phase 3 — not needed for the demo skeleton)* Vault: edition, namespaces, enabled auth methods, Database secrets engine allowed for SQL Server?
 - Is there an existing company base image and a CA bundle distribution / rotation process?
-- Regional isolation: separate JFrog / Vault / runners per region (us, jp)? Data residency rules?
+- *(Phase 3 — not needed for the demo skeleton)* Regional isolation: separate JFrog / Vault / runners per region (us, jp)? Data residency rules?
 - CI runners: the demo uses GitHub-hosted runners (decided). For the enterprise pipeline: is ARC on EKS the self-hosted option, and can those runners reach JFrog, `ghcr.io` (or its JFrog remote) and the dev cluster?
 - Which container layers are mandatory in CI: dependencies only, or the build / test process too? (The runner-in-a-container layer is out of the demo.)
 - Is mounting the container socket into a job container acceptable to security (root-equivalent on the runner), or must nested access go through a rootless Podman socket?
@@ -289,7 +288,7 @@ Unanswered items from `TODO.md` §8 at v1.0. Answers change recommendations, not
 - Ownership: config repo, base images, Vault policies, runners, test-data repo.
 - Timezone policy (`TZ` per region for the app; UTC in logs?).
 - Compliance: audit retention, image signing, SBOM required?
-- Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); docker compose as the only CI test-stack mechanism, no kind (decided v0.6).
+- Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); docker compose as the only integration-test stack mechanism (decided v0.6); kind in demo step 2 for the Helm deployment demo only (v0.7).
 
 ## 11. Glossary
 
