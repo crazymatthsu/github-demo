@@ -240,7 +240,7 @@ to grasp). Minimum set per document:
 Tasks
 
 - [ ] Agree the document list and numbering.
-- [ ] Write D0–D9 following the template.
+- [ ] Write D0–D11 following the template (phase 1 drafts in progress, 2026-09-26).
 - [ ] Add a traceability table in D0 mapping every §5 "must answer" bullet to a doc section.
 
 ---
@@ -697,7 +697,7 @@ Tasks
 compose hosts of demo step 1** (the `deploy-dev` job runs it there on merge to `main`). Production
 operations go through Kubernetes (GitOps sync, `kubectl`, the controller UI); compose is never run
 in production. The command table applies to all compose stacks; the prod-safety rules reduce to
-"refuse any env other than `local`, the CI env and `*-dev`".
+"refuse any env other than `local` (which the CI test stacks also use) and `*-dev`".
 
 **Must answer**
 
@@ -750,7 +750,7 @@ tests, integration tests, image build and publish to JFrog.
   (full build, ITs, images with pre-release tags → JFrog dev repo, dev config bump PR), `release.yml`
   (on `v*` or `<subproject>/v*` tag: build or retag, promote, GitHub Release + changelog, qa bump
   PR), `nightly.yml` (full IT matrix, dependency / security scans, image retention), `base-image.yml`,
-  and `config-lint.yml` in the config repo.
+  and `config-lint.yml` as a reusable workflow in this repository (config lives here, DL-06).
 - Structure: reusable workflows (`workflow_call`) per concern (gradle-build, docker-build-push,
   integration-test) + composite actions (setup Java / Gradle / JFrog credentials / CA); matrix over
   subprojects from a JSON list produced by a "detect affected" job.
@@ -765,7 +765,9 @@ tests, integration tests, image build and publish to JFrog.
 - Concurrency groups and cancellation, required status checks, branch protection, CODEOWNERS.
 - Quality gates: unit tests + coverage, formatting, static analysis, dependency vulnerability scan,
   hadolint, ShellCheck, secret scanning, licence check.
-- Outputs: JUnit summaries, image digests as job outputs, SBOM, build-info.
+- Outputs: JUnit summaries, image digests as job outputs, SBOM, build-info. PR builds push their
+  images as `pr-<n>-<sha7>` to the dev repository (GHCR in the demo) so the IT matrix pulls the exact
+  digest it built; retention per §5.4.
 - Gating of ITs on PRs (label-triggered vs always) and time budget.
 
 Tasks
@@ -799,14 +801,15 @@ tests; how to spin up SQL Server for JDBC tests, query it, and publish to AMPS o
   Vault dev. All pulled through JFrog remotes.
 - **Test data**: options — checkout of a second repo with a deploy key / GitHub App token (HTTPS
   preferred over raw SSH), or **versioned datasets published to a JFrog generic repo** and downloaded
-  by version (reproducible, large-file friendly); a git submodule is excluded by DL-01. Layout:
-  `testdata/<connector>/<case>/{input/, expected/, manifest.yml}`; versioning compatible with app
-  versions.
+  by version (reproducible, large-file friendly); a git submodule is excluded by DL-01. Layout, with the root at `test-infra/testdata/` in this repository or inside the dataset archive in
+  JFrog: `testdata/<connector>/<case>/{input/, expected/, manifest.yml}`; versioning compatible with
+  app versions.
 - Reference scenario (`source-database`): start SQL Server → apply schema + seed → start AMPS /
   Deephaven → start the **connector image** (not just classes) with an instance config → poll the
   target → compare with expected output (canonical JSON, ordering rules, timestamp tolerance) → tear
   down. Same shape for `source-kafka` (produce input) and `source-amps`.
-- Test levels: unit (no containers) → component IT (one dependency, Testcontainers) → system IT
+- Test levels: unit (no containers) → component IT (one dependency plus Deephaven on a compose
+  stack; Testcontainers is a later option, DL-15) → system IT
   (compose stack including our images; `main` / nightly) → post-deploy smoke test (§5.12).
 - Speed and cost: container reuse, parallelism, image pre-pull, PR budget (~15–20 min).
 - `test-infra/compose/` stacks reused for local development (`dev-up` task).
@@ -1177,7 +1180,8 @@ Process
 - [ ] Timezone policy (`TZ` per region for the app; UTC in logs?).
 - [ ] Compliance: audit retention, image signing, SBOM required?
 - [ ] Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); docker compose
-      as the only CI test-stack mechanism, no kind (decided v0.6).
+      as the only integration-test stack mechanism (decided v0.6); kind in demo step 2 for the Helm
+      deployment demo only (v0.7).
 
 ---
 
