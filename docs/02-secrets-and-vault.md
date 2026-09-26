@@ -334,7 +334,7 @@ sequenceDiagram
   V->>V: validate token against the cluster (TokenReview)
   V-->>E: Vault token, policy ...-read
   E->>V: read secret/us-dev/cash/source-database/trades-db-to-amps
-  V-->>E: {spring.datasource.username, spring.datasource.password}
+  V-->>E: keys spring.datasource.username and spring.datasource.password
   alt Vault reachable
     E->>K: create or update Secret ...-secrets
   else Vault unreachable at sync
@@ -351,7 +351,7 @@ sequenceDiagram
     P->>P: fail fast, exit non-zero
     K->>P: restart with back-off (CrashLoopBackOff), D6
   end
-  Note over E,P: In-process variant: the pod itself performs the four Vault steps with fail-fast; the trust stores are already in the image
+  Note over E,P: In-process variant — the pod itself performs the four Vault steps with fail-fast, the trust stores are already in the image
 ```
 
 *Figure 3 — Start-up path with ESO: Vault authentication happens once per instance identity, the pod only reads files.*
@@ -371,7 +371,7 @@ sequenceDiagram
   participant R as Reloader / rollout controller
   participant P as source-database pods
   D->>S: set new password on the idle login svc_trades_b
-  D->>V: write new version {username=svc_trades_b, password=...} at the instance path
+  D->>V: write a new version with username svc_trades_b and the new password at the instance path
   E->>V: refresh at refreshInterval
   V-->>E: new version
   E->>E: update Secret ...-secrets
@@ -416,7 +416,7 @@ spring:
   config:
     import:
       # ... the four optional file layers from D5 come first ...
-      - optional:configtree:/secrets/      # Demo step 2 and Phase 3 (ESO): one file per property name
+      - optional:configtree:/secrets/      # Demo step 2 (kind + Helm) and Phase 3 (EKS + GitOps) with ESO: one file per property name
   datasource:
     url: jdbc:sqlserver://${connector.source.host}:${connector.source.port};databaseName=${connector.source.database};encrypt=true
     # username and password are never set here: they arrive from the environment, /secrets/ or Vault

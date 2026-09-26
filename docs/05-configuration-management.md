@@ -341,3 +341,182 @@ the file retires (D11).
 | Message | `chore(config): us-dev deployed <tag> to <n> instance(s) [skip ci]` |
 | Loop guard | `if: github.actor != '<bot>'` on the `main` workflow plus `[skip ci]` (R8); a human config-only merge still deploys |
 | Branch protection | the bot needs a bypass for direct pushes to `main`, or the write-back opens an auto-merged PR — decide with DL-09 |
+
+## 7. Diagrams
+
+### 7.1 Structural — config layering and precedence
+
+```mermaid
+flowchart TB
+  l1["1 · jar defaults — src/main/resources/application.yml (import list)"]
+  l2["2 · platform-wide — config/_common/source-database/ → /config/platform/"]
+  l3["3 · env-wide — config/us-dev/_common/ → /config/env/"]
+  l4["4 · app common — config/us-dev/cash/source-database/app-common/ → /config/common/"]
+  l5["5 · instance — config/us-dev/cash/source-database/trades-db-to-amps/ → /config/instance/"]
+  l6["6 · secrets config tree — Secret mounted at /secrets/ (D2)"]
+  l7["7 · environment variables — compose.env / values.yaml env: (identity, JAVA_OPTS, TZ, LOG_LEVEL_ROOT)"]
+  l1 -->|"overridden by"| l2 -->|"overridden by"| l3 -->|"overridden by"| l4 -->|"overridden by"| l5 -->|"overridden by"| l6 -->|"overridden by"| l7
+  subgraph consumers["Two consumers of the same files"]
+    cmp["docker compose (tests, dev hosts) mounts the directories"]
+    k8s["Helm chart renders layers 2–5 into one ConfigMap (D11)"]
+  end
+  l5 -.-> cmp
+  l5 -.-> k8s
+```
+
+*Figure 1 — Seven layers, four of them files in git; a later layer overrides an earlier one.*
+
+The four file layers are the maximum; the instance layer should be the only place where two
+instances of one app differ. Environment variables sit on top but, by the §6.3 rule, never define a
+key that a YAML layer defines, so precedence between them is never exercised in practice.
+
+### 7.2 Structural — the config repository tree
+
+```mermaid
+flowchart TB
+  root["config/"]
+  com["_common/"]
+  comApp["source-database/ (application.yml)"]
+  env["us-dev/  (also us-qa, us-prod, jp-dev, jp-qa, jp-prod, local)"]
+  tgt["targets.yml"]
+  envCom["_common/ (application.yml)"]
+  flow["cash/  (also deriv, swap)"]
+  app["source-database/  (== Gradle subproject, == image name)"]
+  appCom["app-common/ — application.yml, values.yaml, logback.xml"]
+  i1["trades-db-to-amps/ — compose.env, application.yml, values.yaml"]
+  i2["positions-db-to-deephaven/ — compose.env, application.yml, values.yaml"]
+  root --> com --> comApp
+  root --> env
+  env --> tgt
+  env --> envCom
+  env --> flow --> app
+  app --> appCom
+  app --> i1
+  app --> i2
+```
+
+*Figure 2 — The tree for one env and one flow; every other env repeats the same shape.*
+
+Directory names are the identity tuple, which is why config-lint validates them as names and not
+just as paths. The layout carries nothing repository-specific, so moving `config/` to its own
+repository later changes the deployer's checkout, not the tree.
+
+### 7.3 Flow — config change → PR → lint → merge → sync → rolling update
+
+```mermaid
+flowchart LR
+  edit["Edit config/us-dev/cash/source-database/trades-db-to-amps/application.yml"]
+  pr["Pull request (CODEOWNERS review for qa / prod paths)"]
+  lint["config-lint: naming, required files, render, parity, secret scan, helm template"]
+  merge["Merge to main"]
+  guard{"Bot author or skip ci?"}
+  stop["No deploy (loop guard)"]
+  subgraph demo["deploy-dev job — Demo step 1 (compose) / Demo step 2 (kind + Helm)"]
+    tg["read config/us-dev/targets.yml"]
+    rc["run-compose.sh pull, start, health on the compose host"]
+    hu["helm upgrade --install per instance (atomic)"]
+    wb["write back IMAGE_TAG / image.tag with skip ci"]
+  end
+  subgraph gitops["Phase 3 (EKS + GitOps)"]
+    ctl["Argo CD detects the commit"]
+    win{"Inside a sync window?"}
+    sync["Sync: render chart, apply ConfigMap + Deployment"]
+    roll["Rolling update of one instance, readiness-gated"]
+  end
+  edit --> pr --> lint --> merge --> guard
+  guard -->|yes| stop
+  guard -->|no| tg
+  tg --> rc
+  tg --> hu
+  rc --> wb
+  hu --> wb
+  merge --> ctl --> win
+  win -->|"no, wait"| win
+  win -->|yes| sync --> roll
+```
+
+*Figure 3 — One change, two delivery paths: the demo pushes from CI, Phase 3 lets the controller pull.*
+
+The lint and review steps are identical in both worlds; only the last hop differs. The loop guard
+sits between the merge and `deploy-dev`, so a bot write-back ends the cycle while a human
+config-only merge still deploys.
+
+### 7.4 Sequence — controller reconciling a ConfigMap change into a pod restart
+
+```mermaid
+sequenceDiagram
+  participant G as Git (config tree)
+  participant A as Argo CD
+  participant K as Kubernetes API
+  participant D as Deployment controller
+  participant P as Pod (source-database-trades-db-to-amps)
+  G-->>A: new commit on main touching the instance directory
+  A->>A: render chart with values and file parameters, compute checksum/config
+  alt outside the sync window
+    A->>A: hold, status OutOfSync until the window opens
+  else inside the sync window
+    A->>K: apply ConfigMap ...-config (new data) and Deployment (new pod-template annotation)
+    K->>D: Deployment spec changed
+    D->>K: create new ReplicaSet, scale to 1
+    K->>P: start new pod, mount ConfigMap at /config/(layer)/
+    P->>P: import layers, validate @ConfigurationProperties
+    alt readiness passes
+      P-->>K: ready
+      D->>K: scale old ReplicaSet to 0 (SIGTERM, graceful shutdown, D6)
+      A-->>G: status Synced / Healthy
+    else readiness fails
+      D->>K: rollout stalls, old pod keeps serving
+      A-->>G: status Degraded, alert
+      Note over G,A: fix or revert the commit — the same path rolls back
+    end
+  end
+```
+
+*Figure 4 — A ConfigMap change is a normal rollout because the pod template carries the ConfigMap checksum.*
+
+The controller never restarts pods directly; it changes the desired state and the Deployment
+controller does the rest, gated by readiness. With `replicas: 1` the instance is briefly
+unavailable, which the sync window confines to the deployment window.
+
+## 8. How the demo skeleton implements it
+
+| File (planned tree, §2.3 / §2.4) | Role | Phase |
+|---|---|---|
+| `config/us-dev/cash/source-database/app-common/application.yml`, `values.yaml`, `logback.xml` | layer 4 for the demo app; shared AMPS / Deephaven endpoints | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
+| `config/us-dev/cash/source-database/trades-db-to-amps/{compose.env,application.yml,values.yaml}` and `.../positions-db-to-deephaven/{...}` | the two instances whose effective configuration provably differs (§6.3) | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
+| `config/us-dev/_common/application.yml`, `config/_common/source-database/application.yml` | optional layers 3 and 2 with one key each, to prove the precedence order | Demo step 1 (compose) |
+| `config/local/cash/source-database/...` | developer stack: the same shape with `localhost` endpoints (§5.13) | Demo step 1 (compose) |
+| `config/us-dev/targets.yml` | inventory read by `deploy-dev` | Demo step 1 (compose), Demo step 2 (kind + Helm) |
+| `deephaven-connectors/source-database/src/main/resources/application.yml` | layer 1 with the import list of §6.1 | Demo step 1 (compose) |
+| `deephaven-connectors/connectors-framework/` (`ConnectorIdentity`, `@ConfigurationProperties` + `@Validated` bindings, masked start-up summary) | validation and the identity tuple in logs and metrics | Demo step 1 (compose) |
+| `build-logic/` (root task `configLint`) | checks 1–11 runnable locally and in CI; `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |
+| `.github/workflows/pr.yml` (`config-lint` job, path-filtered), `.github/CODEOWNERS` | guard-rails of §6.7 | Demo step 1 (compose) |
+| `.github/workflows/main.yml` (`deploy-dev` job: read `targets.yml`, deploy, write back, loop guard) | R8 and §6.8 | Demo step 1 (compose), Demo step 2 (kind + Helm) |
+| `deephaven-connectors/source-database/helm/source-database/templates/configmap.yaml`, `deployment.yaml` (checksum annotation) | layers 2–5 as a ConfigMap, mounted per layer (D11) | Demo step 2 (kind + Helm) |
+| ApplicationSet per env (location proposed in D11) | replaces `targets.yml` | Phase 3 (EKS + GitOps) |
+| Rendered-config test (`integrationTest` of `source-database`) | asserts the precedence order of §6.1 (R2) | Demo step 1 (compose) |
+
+## 9. Open items
+
+| Item | Status | Needed for |
+|---|---|---|
+| DL-07 layering mechanism (explicit import leaning) | open | Demo step 1 (compose) — blocking |
+| DL-08 env vars vs YAML rule (§6.3 proposed) | open | Demo step 1 (compose) |
+| DL-09 bump delivery for qa / prod (bot PR with approvals) | open for qa / prod | Phase 3 (EKS + GitOps), D9 |
+| DL-20 tag vs digest pinning per env (check 10) | open | config-lint |
+| DL-21 promotion by PR per env | open | D9 |
+| DL-30 GitOps controller on EKS (Argo CD leaning) | open for EKS | Phase 3 (EKS + GitOps) |
+| DL-36 loop guard (skip bot author + `[skip ci]`) | open | Demo step 1 (compose) — blocking |
+| DL-38 namespace layout (namespace per flow leaning) | open | `targets.yml` defaults, D11 |
+| DL-35 reaching the dev compose hosts | open | Demo step 1 (compose) — blocking |
+
+§8 questions this document depends on: EKS topology (cluster per `<region>-<stage>` or shared
+clusters — decides what a cluster generator maps `<env>` to); whether a GitOps controller is
+provided on the platform and who runs it; number of instances and hosts per env; timezone policy
+(`TZ` per region, UTC in logs); ownership of the config tree, base images and Vault policies;
+change-management constraints for prod (approvals per env in D9).
+
+Follow-ups: pin the precedence order with the rendered-config test in the first skeleton build;
+spike the configuration-metadata validation (check 7) before promising it; decide the bot's branch
+protection path (§6.8); decide where ApplicationSet manifests live (D11); write ADRs for DL-07,
+DL-08, DL-36.

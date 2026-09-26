@@ -1,0 +1,539 @@
+# D9 — CD pipeline and release management (dev → qa → prod)
+
+| | |
+|---|---|
+| Document | D9 |
+| Status | Draft v1 (phase 1) |
+| Date | 2026-09-26 |
+| Source brief | TODO.md v0.8, §5.12 (with §2.2 CD trigger, §4 CD on merge to `main`, §5.4 promotion, §5.5 bump delivery, §5.7 delivery to clusters) |
+| Related | D4 (`docs/04-versioning-and-image-tagging.md`), D5 (`docs/05-configuration-management.md`), D6 (`docs/06-runtime-operations.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D10 (`docs/10-containerised-ci-execution.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
+
+## 1. Purpose and scope
+
+This document defines how a build that passed CI reaches `dev`, `qa` and `prod` in each region,
+who approves what, how a deployment is recorded, how it is rolled back, and how releases and
+hotfixes are cut. It covers:
+
+- the environment model `<region>-<stage>` × business flow × AppInstance and the GitHub
+  Environments that protect it;
+- the `deploy-dev` job that auto-deploys every merge to `main` (decided v0.7), for Demo step 1
+  (compose hosts) and Demo step 2 (Helm into the target cluster), and its hand-over to Argo CD in
+  Phase 3;
+- promotion dev → qa → prod of the **same image digest**, rollback, hotfix, release cadence,
+  change-management evidence, access control, environment parity, deployment records.
+
+Not here: how versions and tags are computed and how the release workflow opens bump PRs (D4);
+the workflow topology and reusable jobs (D7); the chart, the ApplicationSet layout and the
+config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
+
+## 2. Context and constraints
+
+| Constraint | Source | Effect |
+|---|---|---|
+| Production on Kubernetes on EKS; compose only for local dev, CI stacks and the dev compose hosts of Demo step 1 | DL-02, §5.8 | qa and prod are Kubernetes-only from the first design; the compose path exists for one demo step |
+| Merge to `main` auto-deploys to the dev targets; qa and prod stay PR-gated | §2.2, §4, §5.12 (decided v0.7) | `deploy-dev` job under GitHub Environment `dev` with no reviewers; never touches qa / prod |
+| Config in this monorepo under `config/<env>/...`, `targets.yml` per env | DL-06, §5.7 (decided) | the config tree is the deployment record; write-backs land in the same repository, hence the loop guard (DL-36) |
+| Helm chart per app; one release `<app>-<instance>` per AppInstance, `replicas: 1` | DL-29, DL-33 (decided) | promotion and rollback are per instance; `helm upgrade --install ... --atomic` is the unit of deploy |
+| Same digest promoted across `docker-dev-local → docker-qa-local → docker-prod-local`, never rebuilt | §5.4, §5.12 | the qa and prod bump PRs change a tag (and pin a digest, DL-20) — no build step in promotion |
+| Deployment windows per region and flow (trading hours); region ordering | §2.1, §5.12 | enforced in the cluster by controller sync windows, not only in the pipeline |
+| No production cluster credentials in GitHub; the controller pulls | §5.12 | Phase 3 replaces CI push with Argo CD reconciliation (DL-30 leaning) |
+| Demo simplifications | §2.2, §4 | GitHub-hosted runners, GHCR instead of JFrog, no qa / prod targets exist, kind inside the workflow stands in for a dev cluster |
+
+## 3. Requirements
+
+| Brief bullet ("must answer", §5.12) | Answered in |
+|---|---|
+| Environment model `<region>-<stage>` × flow × instance; GitHub Environments with protection rules (reviewers for qa / prod, deployment branches limited to release tags) | §6.1, §6.2 |
+| Promotion flow: build once → dev auto on `main` → qa on release tag (bump PR + approval) → prod on approved PR + change ticket; same digest, no rebuild | §6.3, §7.2 |
+| Auto-deploy to dev on merge to `main`: `deploy-dev` job, `targets.yml`, compose adapter (DL-35), Helm adapter (`--atomic --timeout 5m`), Argo CD hand-over, tag write-back with loop guard (DL-36), record, failure behaviour | §4.1, §4.2, §6.4–§6.6 |
+| Deploy mechanics on EKS: controller reconciles a merged bump into a rolling update; probes gate; `maxUnavailable` / `maxSurge` per instance; PDB; progressive delivery where replicas exist; post-sync smoke test | §6.7, §7.4 (details in D6, D11) |
+| Deployment windows per region and flow, region ordering, enforced by sync windows | §6.8 |
+| Rollback: revert the bump PR, time-to-rollback target, schema compatibility | §6.9, §7.4 |
+| Hotfix flow: branch from release tag → patch version → fast-tracked qa → prod | §6.10, §7.3, §7.5 |
+| Release cadence and branching: trunk-based + tags vs release branches; code freeze; release notes from Conventional Commits | §4.6, §6.11, §7.5 |
+| Change-management evidence: test reports, scan results, approvals, GitHub Deployments record, notifications | §6.12 |
+| Access control: prod approvers, bot permissions, controller RBAC, no prod credentials in GitHub | §6.13 |
+| Environment parity: one chart per app, overlays differ, config-lint compares key sets | §6.14 |
+| §3 diagrams: approval matrix; promotion and hotfix flows; prod deploy sequence with rollback; gitGraph | §7 |
+
+## 4. Options considered
+
+### 4.1 Reaching the dev compose hosts from `deploy-dev` (DL-35, open — Demo step 1)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| SSH with a deploy key from the GitHub-hosted runner | no agent on the host; key scoped to a `deploy` user whose shell allows only `run-compose.sh`; simplest to demo | the host must accept inbound SSH from GitHub's address ranges; key rotation; host key pinning | the host is reachable from the runner |
+| Self-hosted runner on the compose host | no inbound network path; runs `run-compose.sh` locally; the one self-hosted exception §7 allows | a runner process per host to patch; the job's `runs-on` label is per host | the host is not reachable from GitHub-hosted runners |
+| Pull agent on the host (cron / systemd timer running `pull`, `start`, `health` against the checked-out config) | no credentials in GitHub at all | no synchronous result for the job; a second mechanism to own; superseded anyway by the controller model (DL-10 → DL-30) | not recommended |
+
+**Recommendation (leaning of DL-35):** SSH from the runner when the host is reachable, otherwise a
+self-hosted runner on the host. Either way the host-side command is the same `run-compose.sh`
+invocation, so the adapter changes only its transport.
+
+### 4.2 Loop guard for the tag write-back (DL-36, open)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| Skip bot-authored commits in the job `if:` (`github.actor != '<bot>'`) | exact: only the bot's commits are skipped; human config-only merges still deploy | relies on the bot identity being stable (GitHub App, DL-09) | always, as the primary guard |
+| `[skip ci]` in the write-back commit message | GitHub skips the whole workflow — no runner minutes; belt and braces | skips `config-lint` too; a human copying the marker skips CI by accident | as the secondary guard |
+| `paths-ignore: config/**` on the `main` workflow | trivial | **breaks the requirement** that a config-only human merge still deploys | rejected |
+
+**Recommendation (leaning of DL-36):** bot author check **and** `[skip ci]`. Both are verified by
+the acceptance test "the write-back commit does not trigger another deploy" (§7 of the brief).
+
+### 4.3 Bump delivery for qa and prod (DL-09, qa / prod part open)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| Bot PR against `config/<region>-qa/**` and `config/<region>-prod/**`, approvals via CODEOWNERS, merge = deploy intent | git is the deployment record; approvals and change ticket live on the PR; rollback is a revert | one PR per stage; PR noise in the code repository until `config/` moves (DL-06) | qa and prod (leaning) |
+| Deploy-time parameter (job input) | no PR | state outside git; weak audit | never for qa / prod |
+| Argo CD Image Updater / Flux image automation writing back to git | fully automatic | automation choosing prod images contradicts the approval gate; acceptable for dev only, and dev already has `deploy-dev` | not needed |
+
+**Recommendation:** bot PR with approvals for qa and prod (DL-09 leaning); dev keeps the decided
+deploy-then-write-back.
+
+### 4.4 GitOps controller on EKS (DL-30, EKS part open — Phase 3)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| Argo CD | ApplicationSets over the config tree, **sync windows** map to trading-hours deployment windows, UI and RBAC per project, health and history, notifications | heavier install; hub-and-spoke vs per-cluster to decide | deployment windows and per-flow RBAC matter — leaning |
+| Flux | lighter, no UI, image automation | windows only via a suspend schedule; less visibility for ops | a Flux-based platform already exists |
+| CI push (`helm upgrade` from a workflow) | what the demo does; simplest | prod cluster credentials in GitHub; no drift detection; state in the pipeline | Demo steps 1–2 only |
+
+**Recommendation:** Argo CD in Phase 3 (DL-30 leaning; the brief's §4 and §5.12 already name it).
+Until then the `deploy-dev` job pushes with `helm upgrade --install` (decided for the demo).
+
+### 4.5 Config promotion between environments (DL-21, open)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| PR per env with CODEOWNERS | same gate for config and image changes; parity check runs on the PR | manual copying of a value into the next env's directory | leaning |
+| Directory copy (`us-qa/` → `us-prod/` by script) | fast | overwrites env-specific values; no review | never for prod |
+
+### 4.6 Branching model
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| Trunk-based development with release tags on `main`, short-lived `hotfix/<major>.<minor>.x` branches only when a patch cannot ship from `main` | one line of history; releases are tags (D4); no merge-back debt | needs disciplined feature flags for unfinished work | leaning (§5.12) |
+| Release branches per version (`release/1.5`) | isolates stabilisation | double maintenance, merge-backs, drift | a long QA cycle forces it |
+| GitFlow | familiar | heavy for a small family with lockstep versions | not recommended |
+
+### 4.7 Cluster topology per `<region>-<stage>` (§8, open)
+
+| Option | Pros | Cons | When to prefer |
+|---|---|---|---|
+| One EKS cluster per `<region>-<stage>` (six clusters) | hard isolation of prod; per-stage upgrades; simplest RBAC story | cost; six controller targets | prod always; recommended baseline |
+| Shared cluster per region with a namespace per stage | cheaper for dev and qa | a cluster upgrade touches two stages; noisy-neighbour risk | dev + qa may share if the platform team prefers |
+
+The approval matrix (§6.1) is written for the baseline; a shared dev/qa cluster changes only the
+`cluster` column of `targets.yml` and the Argo CD cluster generator.
+
+## 5. Decision and rationale
+
+Decided by the brief: merge to `main` deploys to the dev targets automatically through the
+`deploy-dev` job (Demo step 1 via `run-compose.sh`, Demo step 2 via `helm upgrade --install`),
+the deployed tag is written back with a loop guard, qa and prod are PR-gated and never touched by
+that job, the same digest is promoted and never rebuilt, and Phase 3 hands delivery to a GitOps
+controller with deployment windows enforced in the cluster.
+
+Recommendations in this document: SSH from the runner as the first transport to the dev compose
+hosts (DL-35); bot-author check plus `[skip ci]` as the loop guard (DL-36); bot PRs with
+CODEOWNERS approvals for qa and prod bumps (DL-09), one PR per env (DL-21); Argo CD as the
+controller with sync windows per `<region>-<stage>` × flow (DL-30); trunk-based development with
+tags and hotfix branches cut from release tags; one cluster per `<region>-<stage>` as the baseline
+topology. Rationale: every deploy intent is a git commit reviewed under the rules of the target
+env, every deploy is recorded twice (git and GitHub Deployments), and rollback is always "the same
+mechanism in reverse".
+
+## 6. Conventions
+
+### 6.1 Environment model and approval matrix
+
+| Env | Cluster (baseline) | Namespaces | Deployed by | Gate | Approvers | Window |
+|---|---|---|---|---|---|---|
+| `local` | laptop compose / kind | — | developer | none | — | — |
+| `ci` | GitHub-hosted runner (compose; kind in Demo step 2) | `ci-<run_id>` | workflow | none | — | — |
+| `us-dev`, `jp-dev` | Demo step 1: compose hosts; Demo step 2: kind in the workflow, then a dev cluster; Phase 3: dev EKS | `cash`, `deriv`, `swap` (DL-38) | `deploy-dev` job (GitHub Environment `dev`), Phase 3: Argo CD auto-sync | merge to `main` (PR review + green CI) | PR reviewers only | none |
+| `us-qa`, `jp-qa` | qa EKS per region | same | Phase 3: Argo CD; before that: documented only (no demo target) | bump PR on `config/<region>-qa/**` | 1 CODEOWNER of the app + qa owner | business hours |
+| `us-prod`, `jp-prod` | prod EKS per region | same | Argo CD sync within the window | bump PR on `config/<region>-prod/**` with change-ticket reference | 2 approvals: app owner + ops CODEOWNER; GitHub Environment `<region>-prod` reviewers on the promotion job | trading-hours window per flow; `jp` before `us` |
+
+### 6.2 GitHub Environments and protection rules
+
+| Environment | Required reviewers | Deployment branches / tags | Wait timer | Secrets held | Used by |
+|---|---|---|---|---|---|
+| `dev` | none | `main` only | 0 | dev-host SSH key or nothing (self-hosted runner, DL-35); kind needs none | `deploy-dev` job in `main.yml` |
+| `us-qa`, `jp-qa` | 1 (qa owners team) | tags `v*` (and `<subproject>/v*` if DL-03 chooses independent tags) | 0 | JFrog promotion token via OIDC (DL-18); no cluster credentials | `promote` job in `release.yml`: registry promotion + Deployment record |
+| `us-prod`, `jp-prod` | 2 (ops + platform owners); self-review disallowed | tags `v*` only | optional 30 min for change-ticket verification | JFrog promotion via OIDC; **no cluster credentials** | `promote` job: registry promotion, Deployment record, wait for controller health |
+
+The GitHub Environment is not the only gate for qa and prod: the bump PR on `config/<env>/**` must
+also be approved under CODEOWNERS. The Environment protects the job that promotes the digest in the
+registry and records the deployment; the PR protects the deploy intent; the controller enforces the
+window.
+
+### 6.3 Promotion flow
+
+| Stage | Trigger | What changes in git | Registry | Deployer | Record |
+|---|---|---|---|---|---|
+| dev | merge to `main` → `main.yml` publishes pre-release tag `1.5.0-rc.<n>` (format per DL-04 / DL-05) | write-back commit: `image.tag` in `config/us-dev/.../<inst>/values.yaml` and `IMAGE_TAG` in `compose.env` | `docker-dev-local` | `deploy-dev` job | GitHub Deployment `dev`, job summary |
+| release | tag `v1.5.0` → `release.yml` retags the digest as `1.5.0` + `sha-<sha7>` (D4) | bump PR to dev config (release tag) — a human merge that deploys via `deploy-dev` | `docker-dev-local` | `deploy-dev` | as above |
+| qa | same `release.yml` opens bump PR on `config/us-qa/**` and `config/jp-qa/**` | `image.tag: 1.5.0` (+ `image.digest` per DL-20) per instance | promotion `docker-dev-local → docker-qa-local` by the `promote` job (Environment `<region>-qa`) after PR approval | Argo CD sync (Phase 3) | GitHub Deployment `<region>-qa`; Argo CD history |
+| prod | bump PR opened by the `promote` job or by ops: qa values copied per instance into `config/<region>-prod/**`; PR body carries `Change-Ticket: CHG0012345` | `image.tag` + digest per instance | `docker-qa-local → docker-prod-local` by the `promote` job (Environment `<region>-prod`) | Argo CD sync inside the sync window | GitHub Deployment `<region>-prod`; Argo CD history; ticket link |
+
+Nothing is built after `main.yml`; the digest recorded in the dev write-back is the digest that
+reaches prod.
+
+### 6.4 The `deploy-dev` job
+
+| Aspect | Convention |
+|---|---|
+| Position | last job of `main.yml`, `needs: [publish]`, `environment: dev`, `concurrency: deploy-dev` (no parallel deploys, `cancel-in-progress: false`) |
+| Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
+| Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `type: compose` or `type: helm` |
+| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back |
+| Helm adapter (Demo step 2) | per target: `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <flow> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml --atomic --timeout 5m`; kind created in the job and deleted at the end until a dev cluster exists (DL-32) |
+| Health gate | compose: `health` exit code; Helm: `--atomic` plus `kubectl rollout status` and the smoke test (two instances differ in effective config, §7 of the brief) |
+| Write-back | commit `chore(config): us-dev deployed <tag> [skip ci]` by the bot identity (GitHub App token, DL-09 / §5.5) touching only `image.tag` / `IMAGE_TAG` of the deployed instances; pushed to `main` directly (branch protection allows the App) |
+| Record | `GitHub Deployment` (environment `dev`, ref, sha, payload `{instance, tag, digest, target}`) and a job summary table per instance |
+| Failure | job red; compose: `pull` failure changes nothing, a `health` failure re-runs `start` with the previous `IMAGE_TAG` (image still in the local cache); Helm: `--atomic` rolled back, previous release keeps running; no write-back for failed instances |
+| Never | touches `config/*-qa/**` or `config/*-prod/**`; the adapter refuses any env other than `*-dev` (and `run-compose.sh` enforces the same allow-list, D6) |
+| Phase 3 | the adapters are replaced by Argo CD auto-sync on `config/<region>-dev/**`; the job shrinks to "wait for Application health, smoke test, write-back" |
+
+### 6.5 Illustrative `config/us-dev/targets.yml`
+
+```yaml
+# illustrative — schema owned by D5 / D11; one entry per AppInstance deployed in us-dev
+env: us-dev
+defaults:
+  helm:
+    cluster: kind-in-workflow      # Demo step 2; later: arn:aws:eks:us-east-1:<acct>:cluster/us-dev
+instances:
+  - flow: cash
+    app: source-database
+    instance: trades-db-to-amps
+    type: compose                  # Demo step 1
+    host: dev-compose-01.us.<company>.com
+    user: deploy
+  - flow: cash
+    app: source-database
+    instance: positions-db-to-deephaven
+    type: helm                     # Demo step 2
+    namespace: cash
+```
+
+### 6.6 Illustrative `deploy-dev` job skeleton
+
+```yaml
+# illustrative — real job in .github/workflows/main.yml (D7 owns the workflow set)
+deploy-dev:
+  needs: [publish]
+  if: github.actor != 'platform-bot[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
+  runs-on: ubuntu-latest
+  environment: dev
+  concurrency: { group: deploy-dev, cancel-in-progress: false }
+  permissions: { contents: write, deployments: write, id-token: write }
+  steps:
+    - uses: actions/checkout@v4
+    - id: targets
+      run: echo "list=$(yq -o=json -I=0 '.instances' config/us-dev/targets.yml)" >> "$GITHUB_OUTPUT"
+    - name: Deploy compose targets (Demo step 1)
+      env: { IMAGE_TAG: ${{ needs.publish.outputs.tag }} }
+      run: |
+        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.type=="compose")'); do
+          host=$(jq -r .host <<<"$t"); args="us-dev $(jq -r '"\(.flow) \(.app) \(.instance)"' <<<"$t")"
+          for cmd in pull start health; do
+            ssh deploy@"$host" "IMAGE_TAG=$IMAGE_TAG run-compose.sh $args $cmd"
+          done
+        done
+    - name: Deploy helm targets (Demo step 2)
+      run: |
+        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.type=="helm")'); do
+          app=$(jq -r .app <<<"$t"); inst=$(jq -r .instance <<<"$t"); flow=$(jq -r .flow <<<"$t")
+          cfg="config/us-dev/$flow/$app"
+          helm upgrade --install "$app-$inst" "deephaven-connectors/$app/helm/$app" -n "$flow" --create-namespace \
+            -f "$cfg/app-common/values.yaml" -f "$cfg/$inst/values.yaml" \
+            --set image.tag="${{ needs.publish.outputs.tag }}" \
+            --set-file appConfig.common="$cfg/app-common/application.yml" \
+            --set-file appConfig.instance="$cfg/$inst/application.yml" --atomic --timeout 5m
+        done
+    - name: Write back deployed tag
+      run: scripts/ci/write-back-tag.sh us-dev "${{ needs.publish.outputs.tag }}"   # commits "[skip ci]" as the bot
+    - name: Record deployment
+      run: gh api repos/${{ github.repository }}/deployments -f ref="${{ github.sha }}" -f environment=dev
+```
+
+### 6.7 Deploy mechanics on EKS (Phase 3)
+
+| Mechanism | Convention | Owner |
+|---|---|---|
+| Reconciliation | Argo CD `ApplicationSet` (git directory generator over `config/<env>/<flow>/<app>/<instance>` × cluster generator) → one Application per instance, `syncPolicy.automated` with `selfHeal` and `prune` in dev, automated without `prune` in qa, manual-approval-free but window-bound in prod | D11 |
+| Rollout | Deployment `strategy` per instance (`Recreate` default for exclusive consumers, D6 §6.10); probes gate readiness; PDB only when `replicas > 1` | D6 |
+| Progressive delivery | Argo Rollouts only where an instance has `replicas > 1`; out of scope for `replicas: 1` | later |
+| Post-sync smoke test | Argo CD `PostSync` hook Job: `GET /actuator/health/readiness` and a config-differentiation check per instance; hook failure marks the sync Degraded | D11 |
+| Config change | a merged change to `application.yml` re-renders the ConfigMap; checksum annotation restarts that one instance | D5 |
+
+### 6.8 Deployment windows
+
+| Env × flow | Allowed sync window (illustrative, to confirm with §8 change management) | Ordering |
+|---|---|---|
+| `jp-prod` × `cash`, `deriv`, `swap` | Mon–Fri 19:00–22:00 Asia/Tokyo | first |
+| `us-prod` × `cash`, `deriv`, `swap` | Mon–Fri 18:00–21:00 America/New_York | after `jp-prod` is healthy |
+| `*-qa` | Mon–Fri 08:00–18:00 local | — |
+| `*-dev` | always | — |
+
+Windows are Argo CD `syncWindows` on the `AppProject` per `<env>/<flow>` (`kind: allow`, `schedule`
+in cron syntax, `duration`, `applications` selector); outside the window the Application shows
+`OutOfSync` and waits. Emergency changes use a `manualSync: true` window that ops may trigger
+(verify option name). The pipeline may additionally delay the prod bump PR merge, but the cluster
+is the enforcement point.
+
+### 6.9 Rollback
+
+| Situation | Mechanism | Target time | Record |
+|---|---|---|---|
+| `deploy-dev` Helm upgrade fails | `--atomic` restores the previous release automatically; job red; no write-back | immediate | job summary, Deployment `failure` |
+| `deploy-dev` compose `health` fails | adapter re-runs `start` with the previous `IMAGE_TAG` (from the checked-out `compose.env`, image still cached on the host); job red | < 2 min | job summary |
+| Bad release in qa or prod, cluster healthy but behaviour wrong | **revert the bump PR** (same gates, expedited approvals); Argo CD syncs the previous manifest; the previous digest is still in the prod repo (never deleted, D4) | ≤ 15 min from decision to sync (to confirm with change management) | revert PR + Deployment |
+| Prod incident needing seconds, not minutes | ops runs `argocd app rollback <app>-<inst>` (or `helm rollback` with break-glass credentials); auto-sync is disabled on that Application until the revert PR merges — otherwise `selfHeal` would re-apply the bad version | minutes | Argo CD history + follow-up revert PR within the same day |
+| Schema or data compatibility | database or table changes ship expand → migrate → contract across releases so that rolling back the connector never requires rolling back a schema; the release checklist records the compatibility statement | — | PR template field |
+| Rollback drill | quarterly in qa: revert PR, measure time to healthy; result attached to the change-management evidence | — | drill report |
+
+### 6.10 Hotfix flow
+
+| Step | Action | Who |
+|---|---|---|
+| 1 | Branch `hotfix/1.4.x` from tag `v1.4.2` (only if `main` already carries unreleasable changes; otherwise fix on `main` and release normally) | app owner |
+| 2 | Fix commit (`fix: ...`, Conventional Commit) via PR into the hotfix branch; full PR checks including ITs (D7, D10) | developer + reviewer |
+| 3 | Tag `v1.4.3` on the hotfix branch → `release.yml` builds, tags `1.4.3` + `sha-<sha7>`, opens qa bump PR | release workflow |
+| 4 | qa: one approver (fast track), promote, smoke test | qa owner |
+| 5 | prod: bump PR with an **emergency** change ticket; two approvals still required; sync inside the window or via the manual sync window | ops + app owner |
+| 6 | Cherry-pick the fix to `main` (or merge the hotfix branch); delete the branch after the next minor release supersedes it | developer |
+
+### 6.11 Release cadence and branching
+
+| Topic | Convention |
+|---|---|
+| Model | trunk-based: every change merges to `main` through a PR; `main` is always deployable to dev |
+| Versions | pre-release on every `main` merge (`1.5.0-rc.<n>` or the SNAPSHOT form — D4 decides, DL-04 / DL-05); release on tag `v<major>.<minor>.<patch>` (lockstep for the connector family; `deephaven-server/v*` if DL-03 chooses hybrid) |
+| Cadence (proposal, to confirm) | minor release every two weeks or on demand; patch releases as needed via hotfix; no fixed code freeze — freezes are expressed as closed sync windows and paused promotion PRs |
+| Release notes | generated from Conventional Commits by the release tooling (release-please leaning, DL-04); attached to the GitHub Release and linked from the prod bump PR |
+| Branch protection on `main` | required checks (build, unit, config-lint, affected ITs), 1 review, CODEOWNERS, linear history, bot App allowed to push write-back commits |
+
+### 6.12 Change-management evidence
+
+| Evidence | Produced by | Stored | Retention |
+|---|---|---|---|
+| Unit and integration test reports (JUnit) | `pr.yml`, `main.yml` | workflow artefacts, job summary | 90 days (artefacts); the GitHub Release links the run |
+| Image scan result and SBOM | `main.yml` / `release.yml` (Xray or Trivy, D7) | JFrog build-info, release assets | with the image |
+| Approvals | PR reviews on bump PRs; Environment approvals on `promote` | GitHub, immutable | repository lifetime |
+| Change-ticket reference | `Change-Ticket:` trailer in the prod bump PR body, checked by a PR lint | PR, Deployment payload | repository lifetime |
+| Deployment record | GitHub Deployments API entry per env per run (`ref`, `sha`, `payload.instances[]`) | GitHub | repository lifetime |
+| What is running | `config/<env>/**` at any commit; Argo CD sync history | git; controller | git lifetime |
+| Notifications | Argo CD notifications and workflow steps post to the flow's channel on sync success / failure and on rollback | chat / e-mail | — |
+
+### 6.13 Access control
+
+| Actor | May | Mechanism |
+|---|---|---|
+| Developers | merge to `main` after review → dev deploy | branch protection, CODEOWNERS on code |
+| App owners | approve qa bump PRs; co-approve prod | CODEOWNERS on `config/*-qa/**`, `config/*-prod/**` |
+| Ops / platform team | approve prod bump PRs and Environment `<region>-prod`; run break-glass rollbacks | CODEOWNERS, Environment reviewers, Argo CD RBAC role per project |
+| Bot (GitHub App) | write-back commits to `config/*-dev/**`; open bump PRs; **cannot approve** | App installation with `contents: write`, `pull-requests: write` on this repo only (DL-09) |
+| CI (`promote` job) | promote a digest between JFrog repos; create Deployments | OIDC to JFrog (DL-18); no cluster credentials |
+| Argo CD | read the config repo; apply into its own cluster / namespaces | deploy key or App token read-only; per-namespace RBAC; the controller pulls, GitHub never pushes to prod |
+| Dev compose hosts (Demo step 1) | `deploy` user limited to `run-compose.sh` via a forced SSH command or a self-hosted runner | DL-35 |
+
+### 6.14 Environment parity
+
+| Rule | Check |
+|---|---|
+| One chart per app (`helm/<app>/`), one compose template per app; only values and `application.yml` layers differ per env | chart and template are versioned with the code, never copied per env |
+| `app-common` and instance directories exist for every env an instance is deployed to | config-lint required-file check (D5) |
+| Key sets match across `us-dev` → `us-qa` → `us-prod` for the same instance; only values differ | config-lint renders `helm template` and `docker compose config` per env and diffs key sets; a missing key in prod fails the promotion PR |
+| Same digest in every env once promoted | the `promote` job compares the digest in the qa and prod values before promoting (DL-20: digest pinned in qa / prod) |
+
+### 6.15 Deployment records and notifications
+
+| Event | Record | Notification |
+|---|---|---|
+| dev deploy (each `main` merge) | Deployment `dev` with payload per instance; write-back commit | none by default; failure posts to the platform channel |
+| qa / prod promotion | Deployment `<region>-<stage>`; bump PR; JFrog promotion build-info | flow channel: "promoted `source-database` 1.5.0 to `us-qa` (2 instances)" |
+| Argo CD sync result | Application history (revision, author, time) | Argo CD notifications on `on-sync-succeeded`, `on-sync-failed`, `on-health-degraded` |
+| Rollback | revert PR + Deployment marked `inactive` for the bad revision | flow channel and change ticket update |
+
+## 7. Diagrams
+
+### 7.1 Structural — clusters, namespaces and gates per `<region>-<stage>`
+
+```mermaid
+flowchart LR
+  subgraph DEV["stage dev — GitHub Environment dev, no reviewers"]
+    DC["us-dev / jp-dev cluster<br/>(Demo 1: compose hosts, Demo 2: kind, Phase 3: EKS)"]
+    DN1["ns cash"]; DN2["ns deriv"]; DN3["ns swap"]
+    DC --> DN1 & DN2 & DN3
+  end
+  subgraph QA["stage qa — bump PR, 1 CODEOWNER approval"]
+    QC["us-qa / jp-qa EKS cluster"]
+    QN1["ns cash"]; QN2["ns deriv"]; QN3["ns swap"]
+    QC --> QN1 & QN2 & QN3
+  end
+  subgraph PROD["stage prod — bump PR, 2 approvals + change ticket + sync window"]
+    PC["us-prod / jp-prod EKS cluster"]
+    PN1["ns cash"]; PN2["ns deriv"]; PN3["ns swap"]
+    PC --> PN1 & PN2 & PN3
+  end
+  G1["merge to main"] --> DEV
+  G2["release tag v1.5.0 → qa bump PR"] --> QA
+  G3["prod bump PR: Change-Ticket + approvals"] --> PROD
+  DEV -. "same digest promoted" .-> QA -. "same digest promoted" .-> PROD
+```
+
+*Figure 1 — Approval matrix per stage.*
+
+Each region has one cluster per stage in the baseline
+topology, with a namespace per business flow holding one Helm release per AppInstance. The gate
+tightens per stage while the artefact — the image digest recorded in dev — never changes.
+
+### 7.2 Flow — dev → qa → prod promotion through the config tree
+
+```mermaid
+flowchart LR
+  A["PR merged to main"] --> B["main.yml: build, ITs,<br/>publish 1.5.0-rc.n"]
+  B --> C["deploy-dev job<br/>(Environment dev)"]
+  C --> D["run-compose.sh pull/start/health<br/>or helm upgrade --atomic"]
+  D --> E["write-back tag [skip ci]"]
+  E -. "loop guard: no redeploy" .-> C
+  F["tag v1.5.0"] --> G["release.yml: retag 1.5.0 + sha-,<br/>GitHub Release"]
+  G --> H["qa bump PR<br/>config/us-qa/**, config/jp-qa/**"]
+  H --> I{"CODEOWNER approval"}
+  I -- merged --> J["promote job: dev→qa repo,<br/>Deployment us-qa"]
+  J --> K["Argo CD sync qa → smoke test"]
+  K --> L["prod bump PR<br/>Change-Ticket: CHG..."]
+  L --> M{"2 approvals + ticket lint"}
+  M -- merged --> N["promote job: qa→prod repo,<br/>Deployment us-prod"]
+  N --> O["sync window jp-prod, then us-prod"]
+  O --> P["Argo CD sync → PostSync smoke → notify"]
+```
+
+*Figure 2 — Promotion as a chain of git changes.*
+
+Dev is deployed and then written back; qa and
+prod are written first (a reviewed bump PR) and then deployed by the controller. Every arrow to a
+cluster starts from a merged commit, so `git log config/` is the deployment history.
+
+### 7.3 Flow — hotfix path
+
+```mermaid
+flowchart LR
+  T["release tag v1.4.2 in prod"] --> B1["branch hotfix/1.4.x from v1.4.2"]
+  B1 --> F["PR fix: ... → full checks + ITs"]
+  F --> T2["tag v1.4.3 → release.yml"]
+  T2 --> Q["qa bump PR — fast track, 1 approver"]
+  Q --> QS["Argo CD sync us-qa / jp-qa → smoke"]
+  QS --> P["prod bump PR — emergency change ticket, 2 approvals"]
+  P --> W{"inside sync window?"}
+  W -- yes --> S["Argo CD sync jp-prod then us-prod"]
+  W -- no --> MS["ops opens manual sync window"] --> S
+  S --> CP["cherry-pick fix to main; delete branch after 1.5.0"]
+```
+
+*Figure 3 — Hotfix path.*
+
+The hotfix uses the ordinary release and promotion machinery with
+shorter approval queues; only the branch point (a release tag rather than `main`) and the ticket
+class differ. The fix returns to `main` by cherry-pick so the next minor release contains it.
+
+### 7.4 Sequence — prod deploy via GitOps sync, including rollback
+
+```mermaid
+sequenceDiagram
+  participant O as ops / app owner
+  participant G as GitHub (config/us-prod)
+  participant P as promote job (Environment us-prod)
+  participant A as Argo CD (us-prod)
+  participant K as EKS Deployment source-database-trades-db-to-amps
+  participant H as PostSync smoke hook
+  O->>G: approve and merge prod bump PR (Change-Ticket)
+  G->>P: run promote job
+  P->>P: JFrog promote digest qa → prod; create Deployment us-prod
+  A->>G: poll / webhook: new revision
+  alt inside sync window
+    A->>K: apply values → Recreate pod with image 1.5.0
+    K-->>A: readiness probe UP
+    A->>H: run smoke hook
+    alt smoke passed
+      H-->>A: Healthy
+      A-->>O: notification on-sync-succeeded
+    else smoke failed or Degraded
+      A-->>O: notification on-sync-failed / on-health-degraded
+      O->>G: revert bump PR (expedited approvals)
+      A->>K: sync previous revision (digest still in prod repo)
+      Note over O,A: emergency path: argocd app rollback, auto-sync paused until the revert merges
+    end
+  else outside sync window
+    A-->>O: OutOfSync, waiting for window (jp before us)
+  end
+```
+
+*Figure 4 — Production deploy and rollback.*
+
+GitHub never talks to the prod cluster: the promote
+job moves the digest and records the deployment, while Argo CD pulls the merged config and applies
+it only inside the sync window. Rollback is the same path in reverse — a revert commit — with a
+controller-side rollback reserved for emergencies.
+
+### 7.5 gitGraph — release and hotfix branching
+
+```mermaid
+gitGraph
+  commit id: "feat: kafka sink"
+  commit id: "chore: release 1.4.2" tag: "v1.4.2"
+  branch hotfix-1-4-x
+  checkout main
+  commit id: "feat: next work (pre-release rc)"
+  checkout hotfix-1-4-x
+  commit id: "fix: amps reconnect"
+  commit id: "chore: release 1.4.3" tag: "v1.4.3"
+  checkout main
+  cherry-pick id: "fix: amps reconnect"
+  commit id: "feat: more work"
+  commit id: "chore: release 1.5.0" tag: "v1.5.0"
+```
+
+*Figure 5 — Trunk-based development with tags.*
+
+Releases are tags on `main`; a hotfix branch
+(`hotfix/1.4.x`, drawn as `hotfix-1-4-x`) is cut from the release tag only when `main` has moved
+on, receives the fix and its own tag, and the fix is cherry-picked back. No long-lived release
+branches exist.
+
+## 8. How the demo skeleton implements it
+
+| Phase | File / path | What it proves |
+|---|---|---|
+| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` deploys to the hosts in `config/us-dev/targets.yml` without a manual step |
+| Demo step 1 (compose) | `config/us-dev/targets.yml` (§6.5) | inventory of dev targets; `type: compose` entries |
+| Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
+| Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → bump PR to dev config (§4 of the brief); qa bump PR path documented, no qa target in the demo |
+| Demo step 1 (compose) | GitHub Environment `dev` settings; branch protection on `main`; `CODEOWNERS` with `config/**` rules | gates as in §6.2 |
+| Demo step 2 (kind + Helm) | `deploy-dev` Helm adapter: kind cluster in the job, `helm upgrade --install ... --atomic --timeout 5m` per `type: helm` target, readiness wait, smoke test, cluster deleted | one release per AppInstance from the config tree; `--atomic` rollback on a failing release |
+| Demo step 2 (kind + Helm) | `helm lint` / `helm template` for every instance in the config-lint job | parity check of §6.14 |
+| Phase 3 (EKS + GitOps) | Argo CD `ApplicationSet` and `AppProject` with `syncWindows` per `<env>/<flow>` (D11); `promote` job under Environments `<region>-qa` / `<region>-prod`; Argo CD notifications | documented, not provisioned by the demo |
+
+## 9. Open items
+
+| Item | Status | Effect here |
+|---|---|---|
+| DL-03 / DL-04 / DL-05 versioning scope, computation, tag scheme | open | the tag strings in §6.3 and in bump PRs; whether `<subproject>/v*` tags exist |
+| DL-09 qa / prod bump delivery | open, leaning bot PR with approvals | §4.3, §6.3 |
+| DL-20 tag vs digest pinning | open, leaning digest + tag in qa / prod | what the bump PR writes; the `promote` job's digest comparison |
+| DL-21 config promotion between envs | open, leaning PR per env | §4.5 |
+| DL-30 GitOps controller on EKS | open, leaning Argo CD (already named in §4 and §5.12 of the brief) | §4.4, §6.7, §6.8, Figure 4 |
+| DL-35 reaching the dev compose hosts | open, leaning SSH from the runner | §4.1, §6.4; Environment `dev` secrets |
+| DL-36 loop guard | open, leaning bot author + `[skip ci]` | §4.2, §6.4 |
+| DL-38 namespace per flow | open, leaning per flow | Figure 1, `targets.yml` `namespace` field |
+| §8: EKS topology per `<region>-<stage>`; are dev and qa on EKS; AWS regions | to confirm | §4.7, §6.1 |
+| §8: is a GitOps controller provided on the platform and who runs it | to confirm | §6.7 ownership |
+| §8: change-management constraints (CAB, evidence, windows per region / flow) | to confirm | §6.8 windows, §6.12 evidence, rollback target in §6.9 |
+| §8: GitHub Enterprise Cloud or Server; JFrog promotion API allowed | to confirm | Environments features, `promote` job |
+| §8: dev compose hosts and reachability; persistent dev cluster before EKS | to confirm | Demo step 1 and 2 targets |
+| Follow-ups | — | define the `Change-Ticket:` PR lint; schedule the first rollback drill; verify the Argo CD manual sync window option name; agree the release cadence in §6.11 |

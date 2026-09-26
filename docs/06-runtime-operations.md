@@ -243,9 +243,9 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 
 | Mount / setting | Container path | Mode | Source |
 |---|---|---|---|
-| `COMMON_DIR` | `/config/app-common/` | read-only | bind (compose) / ConfigMap `<app>-<instance>-app-common` (Kubernetes) |
+| `COMMON_DIR` | `/config/common/` | read-only | bind (compose) / ConfigMap `<app>-<instance>-app-common` (Kubernetes) |
 | `CONFIG_DIR` | `/config/instance/` | read-only | bind / ConfigMap `<app>-<instance>-instance` |
-| optional extra layers (DL-07 open: `_common` levels) | `/config/platform/`, `/config/env-common/` | read-only | same mechanism; the Spring import list in D5 marks them `optional:` |
+| optional extra layers (DL-07 open: `_common` levels) | `/config/platform/`, `/config/env/` | read-only | same mechanism; the Spring import list in D5 marks them `optional:` |
 | logs | `/logs` | named volume `<PROJECT>_logs` (compose only, for optional file appenders) | primary log channel is stdout (§6.9) |
 | truststore override | `/etc/ssl/<company>/truststore.p12` | read-only, **optional** (`TRUSTSTORE_FILE` in `compose.env`) | default is the truststore baked into the image (D3); the override exists for CA rotation tests |
 | `/tmp` | `/tmp` | `tmpfs` (compose) / `emptyDir` (Kubernetes) | required by the read-only root filesystem |
@@ -348,7 +348,7 @@ flowchart TB
   end
   FB["Fluent Bit DaemonSet"]
   PROM["Prometheus Operator"]
-  CMC -- "/config/app-common ro" --> APP
+  CMC -- "/config/common ro" --> APP
   CMI -- "/config/instance ro" --> APP
   SEC -- "env DB_PASSWORD" --> APP
   SA --> POD
@@ -359,7 +359,9 @@ flowchart TB
   NP -. "deny ingress, allow-list egress" .-> POD
 ```
 
-*Figure 1 — Pod internals of one Helm release.* Everything the app needs at runtime is either a
+*Figure 1 — Pod internals of one Helm release.*
+
+Everything the app needs at runtime is either a
 read-only mount from the config tree, an environment variable from a `Secret`, or an annotation on
 its `ServiceAccount`. The three probes hit the actuator; logs leave on stdout and metrics through the
 `Service` — the app itself knows nothing about Fluent Bit, Prometheus or Vault.
@@ -381,13 +383,15 @@ flowchart TB
   RC["run-compose.sh -p project --env-file compose.env"]
   RC --> PRJ
   ENVF --> RC
-  COMMON -- "/config/app-common" --> SVCAPP
+  COMMON -- "/config/common" --> SVCAPP
   INST -- "/config/instance" --> SVCAPP
   SVCAPP -- "DEPS_NETWORK" --> DEPS
   HC --> SVCAPP
 ```
 
-*Figure 2 — The same instance as a compose project.* The mounts, the health endpoint, the
+*Figure 2 — The same instance as a compose project.*
+
+The mounts, the health endpoint, the
 identity labels and the security options mirror Figure 1 one to one; only the delivery mechanism
 differs (bind mounts and `compose.env` instead of ConfigMaps and values). This is what CI test
 stacks and the dev compose hosts of Demo step 1 run.
@@ -417,7 +421,9 @@ flowchart LR
   W --> Z["exit 0 / 1 / 124"]
 ```
 
-*Figure 3 — Command dispatch.* Every safety decision is taken before the engine is touched, so a
+*Figure 3 — Command dispatch.*
+
+Every safety decision is taken before the engine is touched, so a
 refusal or a validation failure never leaves a half-started stack. The audit line is written on
 every path that reached the engine, including failures.
 
@@ -431,7 +437,7 @@ sequenceDiagram
   participant S as Spring Boot app
   participant E as Endpoints / Service
   participant M as Prometheus
-  K->>C: mount /config/app-common, /config/instance; inject env
+  K->>C: mount /config/common, /config/instance; inject env
   K->>P: start container (non-root, read-only FS)
   P->>S: java (JAVA_TOOL_OPTIONS, MaxRAMPercentage)
   S->>S: spring.config.import optional:file:/config/...
@@ -450,7 +456,9 @@ sequenceDiagram
   end
 ```
 
-*Figure 4 — From pod creation to a scraped, ready instance.* The startup probe gives the JVM and
+*Figure 4 — From pod creation to a scraped, ready instance.*
+
+The startup probe gives the JVM and
 the first source connection a two-minute budget before liveness starts counting; readiness decides
 when the instance is treated as working. On failure the previous release stays in place because
 `--atomic` (Demo step 2) or the controller (Phase 3) never removes it before the new pod is ready.
@@ -480,7 +488,9 @@ sequenceDiagram
   end
 ```
 
-*Figure 5 — Starting a test stack.* `start` returns only when compose reports every service
+*Figure 5 — Starting a test stack.*
+
+`start` returns only when compose reports every service
 healthy, so the test step can begin immediately without its own polling. Teardown is not the
 script's job on the success path; the CI job's `always()` step owns it (D10), using the run-scoped
 project name and label this script assigned.
