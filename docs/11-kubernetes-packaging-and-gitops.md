@@ -162,7 +162,7 @@ Recommended (to validate):
 | `templates/_helpers.tpl` | names (`<app>-<instance>`), labels, checksum helper | release name comes from `helm upgrade` / Argo CD `releaseName` |
 | `templates/serviceaccount.yaml` | `ServiceAccount <app>-<instance>` | Vault Kubernetes auth and IRSA identity (D2) |
 | `templates/configmap.yaml` | one ConfigMap `<app>-<instance>-config` with a key per layer file | §6.3 |
-| `templates/deployment.yaml` | `replicas` from values (1), `strategy` (`maxSurge: 0`, `maxUnavailable: 1` for single-consumer connectors, D6), checksum and Reloader annotations, `env` from the values map, ConfigMap items mounted per layer, `Secret` at `/secrets/`, startup / liveness / readiness probes on the actuator, resources, restricted securityContext, `terminationGracePeriodSeconds` | probe paths and sizing in D6 |
+| `templates/deployment.yaml` | `replicas` from values (1), `strategy` (`Recreate` by default for single-consumer connectors, D6 §6.10), checksum and Reloader annotations, `env` from the values map, ConfigMap items mounted per layer, `Secret` at `/secrets/`, startup / liveness / readiness probes on the actuator, resources, restricted securityContext, `terminationGracePeriodSeconds` | probe paths and sizing in D6 |
 | `templates/service.yaml` | ClusterIP exposing the management port (metrics, health) | connectors have no ingress |
 | `templates/externalsecret.yaml` | rendered when `secrets.externalSecret.enabled` | Phase 3 (EKS + GitOps), D2 |
 | `templates/servicemonitor.yaml`, `templates/pdb.yaml` | rendered behind flags | PDB is meaningful only when `replicaCount > 1` (D6) |
@@ -436,15 +436,15 @@ appFiles: {}                          # <layer>: { <key>: <content> } → /confi
 secrets:
   existingSecret: ""                  # defaults to <release>-secrets; mounted at /secrets/ (D2)
   externalSecret: { enabled: false, storeRef: "", vaultPath: "" }   # Phase 3
-service: { port: 8081 }               # management port: health, metrics
+service: { port: 8080 }               # HTTP / actuator port: health, metrics (D3 EXPOSE 8080, D6 §6.9)
 probes:                               # paths and timings sized in D6
-  startup:   { path: /actuator/health/readiness, failureThreshold: 30, periodSeconds: 5 }
+  startup:   { path: /actuator/health/liveness,  failureThreshold: 24, periodSeconds: 5 }   # 2-minute budget (D6 §6.9)
   readiness: { path: /actuator/health/readiness, periodSeconds: 10 }
   liveness:  { path: /actuator/health/liveness,  periodSeconds: 10 }
 resources:
-  requests: { cpu: 250m, memory: 768Mi }
-  limits:   { memory: 768Mi }         # JVM sized by -XX:MaxRAMPercentage in JAVA_OPTS (D3, D6)
-strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 0, maxUnavailable: 1 } }
+  requests: { cpu: 250m, memory: 1Gi }
+  limits:   { memory: 1Gi }           # requests == limits; JVM -XX:MaxRAMPercentage=70 in JAVA_OPTS (D3, D6 §6.10)
+strategy: { type: Recreate }          # single-consumer default; RollingUpdate only for idempotent pipelines (D6 §6.10)
 terminationGracePeriodSeconds: 30
 podSecurityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
 securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }

@@ -264,7 +264,7 @@ public registries directly, still by digest. Switching is one edit to `versions.
 
 | Item | Convention |
 |---|---|
-| Compose project name | `ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` (local: `local-<AppName>`) |
+| Compose project name | `ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` for the `test-infra` stack (local: `local-<AppName>`); a `run-compose.sh` stack started in CI uses `ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-<app>-<instance>` (D6 §6.5) and carries the same run label, so the run-label filter of the leak check covers both |
 | Run label | `com.<company>.ci.run=${GITHUB_RUN_ID}`; `com.<company>.ci.attempt=${GITHUB_RUN_ATTEMPT}`; local runs use `local` |
 | Job timeouts | `build` 20 min (PR) / 25 (`main`); `integration-test` 30; `system-test` 45; `kind-deploy` 30 |
 | Job container | `ghcr.io/<org>/base/ci-build:<tag>` (demo); `artifactory.<company>.com/docker-base-local/<company>/ci-build:<tag>` (enterprise) — content in D3 §6.10 |

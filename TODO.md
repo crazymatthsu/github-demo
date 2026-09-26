@@ -1,12 +1,13 @@
 # TODO — Architecture Design Brief: Deephaven Platform & Connectors
 
-> **Status:** DRAFT v0.8 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
+> **Status:** DRAFT v0.9 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
 > execution with an ephemeral Deephaven server; v0.4 set **production on Kubernetes / EKS**,
 > compose for tests only, and the demo simplifications; v0.5 decides **one Gradle monorepo, no git
 > submodules**; v0.6 decides **docker compose for the demo's CI test stack**; v0.7 decides **Helm, one
 > release per AppInstance with one replica, a two-step demo (compose, then kind), config in this repo,
 > and auto-deploy to dev on merge to `main`**; v0.8 decides **Spring Boot 4.1** and the **AppName /
-> AppInstance naming model**; see §10).
+> AppInstance naming model**; v0.9 records the **phase 1 design documents** (D0–D11, 38 ADRs) and the
+> corrections they surfaced; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -246,9 +247,11 @@ to grasp). Minimum set per document:
 
 Tasks
 
-- [ ] Agree the document list and numbering.
-- [ ] Write D0–D11 following the template (phase 1 drafts in progress, 2026-09-26).
-- [ ] Add a traceability table in D0 mapping every §5 "must answer" bullet to a doc section.
+- [x] Agree the document list and numbering (D0–D11 plus `docs/adr/`).
+- [x] Write D0–D11 following the template — phase 1 drafts committed 2026-09-26 under `docs/`, every
+      Mermaid diagram parse-checked.
+- [x] Traceability: D0 §9 maps brief sections to documents; each document's §3 maps every "must
+      answer" bullet to the heading that answers it.
 
 ---
 
@@ -720,7 +723,7 @@ in production. The command table applies to all compose stacks; the prod-safety 
   |---|---|---|
   | `start` | `up -d` | pull policy? wait for healthy? |
   | `stop` | `stop` | graceful timeout |
-  | `down` | `down` | **never** `-v` by default; refuse in prod without `--force` |
+  | `down` | `down` | **never** `-v` by default; `--volumes` needs `--force` on `*-dev` hosts (prod is refused outright by the env allow-list, D6) |
   | `restart` | `restart` or `down` + `up` | choose semantics |
   | `config` | render merged compose config | secrets masked |
   | `app-config` (new) | render effective Spring configuration | via actuator `/configprops` or dry-run |
@@ -961,8 +964,9 @@ Tasks
   `compose.env` and commits with a **loop guard** (DL-36: skip bot-authored commits in the workflow
   `if:`, plus `[skip ci]`) so the write-back does not start another deploy. A config-only merge by a
   human still deploys. Record: GitHub Deployment + job summary. Failure: job red, previous release
-  keeps running (`--atomic` rolls back Helm; compose keeps the old container). qa and prod are never
-  touched by this job.
+  keeps running (`--atomic` rolls back Helm; on the compose hosts `pull` runs first so a registry
+  failure changes nothing, and a failed `health` re-runs `start` with the previous tag — D9 §6.9). qa
+  and prod are never touched by this job.
 - Deploy mechanics on EKS (v0.4, consistent with §5.7): a merged bump in the config repo is
   reconciled by the GitOps controller into a rolling update of the instance Deployment; readiness
   probes gate traffic; `maxUnavailable` / `maxSurge` per instance; PodDisruptionBudgets; optional
@@ -1014,7 +1018,8 @@ Tasks
 - **Local developer experience**: run one app + its dependencies with the same compose template and
   a `local` env in the config tree; kind for chart / overlay work; documented in each subproject
   README.
-- **Decision records**: one ADR per §6 row under `docs/adr/`.
+- **Decision records**: one ADR per §6 row under `docs/adr/` (38 written in phase 1; index in
+  `docs/adr/README.md`).
 
 Tasks
 
@@ -1249,6 +1254,7 @@ Process
 | v0.6 | 2026-09-26 | Decided for the demo: docker compose is the only test-stack mechanism in the GitHub workflows (model C); no kind, no Kubernetes, no Testcontainers. Kubernetes packaging and the Kubernetes test tier move to Phase 2 / 3 (phasing added to §4). DL-15, DL-24, DL-32 decided for the demo; DL-29 and DL-33 no longer block the skeleton. |
 | v0.7 | 2026-09-26 | Decided: Helm chart per app (DL-29); one Application / Helm release per AppInstance from the config tree with `replicas: 1` for now (DL-33); the demo runs in two steps, compose first then kind-based Kubernetes (DL-32, §4 re-sequenced); config stays in this monorepo for now (DL-06); merge to `main` auto-deploys to the dev targets via a `deploy-dev` job with tag write-back and loop guard (§5.12, DL-09, new DL-35 / DL-36). Added `helm/<AppName>/`, `values.yaml` layers and `targets.yml` to the trees; Helm `--set-file` mapping in §5.6; acceptance criteria for step 2 and CD; glossary. |
 | v0.8 | 2026-09-26 | Decided: Spring Boot 4.1 (DL-23) with its consequences in §5.1; AppName / AppInstance naming model (DL-37): AppName is the code base, AppInstance is the business-logic name of one pipeline (data source, optionally with target), never a bare number; rules, length budget and identity propagation in §5.6; example instance names replaced throughout; namespace layout added as DL-38. |
+| v0.9 | 2026-09-26 | Phase 1 design documents written: D0–D11 under `docs/` and one ADR per decision under `docs/adr/`, every Mermaid diagram parse-checked. Corrections surfaced by the documents: the config tree lives at the repository root; the release workflow opens the qa bump PR; pre-release form `rc.<n>`; `helm/<AppName>/` replaces `k8s/`; config-lint lives in this repository; component ITs run on compose; CI test stacks use the `local` env; test data root `test-infra/testdata/`; PR images pushed as `pr-<n>-<sha7>`; `<AppName>-<AppInstance>` ≤ 53 (Helm) with AppInstance ≤ 32; environment variables rank above imported config data; failed compose deploys re-run `start` with the previous tag; `down --volumes` rule; §3 tasks closed. |
 
 ---
 

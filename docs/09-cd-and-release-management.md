@@ -152,7 +152,7 @@ mechanism in reverse".
 | Env | Cluster (baseline) | Namespaces | Deployed by | Gate | Approvers | Window |
 |---|---|---|---|---|---|---|
 | `local` | laptop compose / kind | — | developer | none | — | — |
-| `ci` | GitHub-hosted runner (compose; kind in Demo step 2) | `ci-<run_id>` | workflow | none | — | — |
+| CI test stacks (env `local`, run-scoped project names, D6 §6.5) | GitHub-hosted runner (compose; kind in Demo step 2) | kind cluster `ci-<run_id>` | workflow | none | — | — |
 | `us-dev`, `jp-dev` | Demo step 1: compose hosts; Demo step 2: kind in the workflow, then a dev cluster; Phase 3: dev EKS | `cash`, `deriv`, `swap` (DL-38) | `deploy-dev` job (GitHub Environment `dev`), Phase 3: Argo CD auto-sync | merge to `main` (PR review + green CI) | PR reviewers only | none |
 | `us-qa`, `jp-qa` | qa EKS per region | same | Phase 3: Argo CD; before that: documented only (no demo target) | bump PR on `config/<region>-qa/**` | 1 CODEOWNER of the app + qa owner | business hours |
 | `us-prod`, `jp-prod` | prod EKS per region | same | Argo CD sync within the window | bump PR on `config/<region>-prod/**` with change-ticket reference | 2 approvals: app owner + ops CODEOWNER; GitHub Environment `<region>-prod` reviewers on the promotion job | trading-hours window per flow; `jp` before `us` |
@@ -188,7 +188,7 @@ reaches prod.
 |---|---|
 | Position | last job of `main.yml`, `needs: [publish]`, `environment: dev`, `concurrency: deploy-dev` (no parallel deploys, `cancel-in-progress: false`) |
 | Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
-| Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `type: compose` or `type: helm` |
+| Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `kind: compose` or `kind: helm` (schema in D5 §6.6) |
 | Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back |
 | Helm adapter (Demo step 2) | per target: `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <flow> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml --atomic --timeout 5m`; kind created in the job and deleted at the end until a dev cluster exists (DL-32) |
 | Health gate | compose: `health` exit code; Helm: `--atomic` plus `kubectl rollout status` and the smoke test (two instances differ in effective config, §7 of the brief) |
@@ -201,23 +201,18 @@ reaches prod.
 ### 6.5 Illustrative `config/us-dev/targets.yml`
 
 ```yaml
-# illustrative — schema owned by D5 / D11; one entry per AppInstance deployed in us-dev
+# illustrative — schema owned by D5 (§6.6); one entry per AppInstance deployed in us-dev
 env: us-dev
 defaults:
-  helm:
-    cluster: kind-in-workflow      # Demo step 2; later: arn:aws:eks:us-east-1:<acct>:cluster/us-dev
-instances:
-  - flow: cash
-    app: source-database
-    instance: trades-db-to-amps
-    type: compose                  # Demo step 1
+  kind: helm                       # compose | helm
+  cluster: kind-ci                 # Demo step 2: kind inside the workflow; later the dev EKS cluster
+  namespace: "{flow}"              # DL-38 leaning: namespace per flow
+targets:
+  - instance: cash/source-database/trades-db-to-amps
+    kind: compose                  # Demo step 1
     host: dev-compose-01.us.<company>.com
     user: deploy
-  - flow: cash
-    app: source-database
-    instance: positions-db-to-deephaven
-    type: helm                     # Demo step 2
-    namespace: cash
+  - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
 ```
 
 ### 6.6 Illustrative `deploy-dev` job skeleton
@@ -234,20 +229,20 @@ deploy-dev:
   steps:
     - uses: actions/checkout@v4
     - id: targets
-      run: echo "list=$(yq -o=json -I=0 '.instances' config/us-dev/targets.yml)" >> "$GITHUB_OUTPUT"
+      run: echo "list=$(yq -o=json -I=0 '.targets' config/us-dev/targets.yml)" >> "$GITHUB_OUTPUT"   # schema: D5 §6.6
     - name: Deploy compose targets (Demo step 1)
       env: { IMAGE_TAG: ${{ needs.publish.outputs.tag }} }
       run: |
-        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.type=="compose")'); do
-          host=$(jq -r .host <<<"$t"); args="us-dev $(jq -r '"\(.flow) \(.app) \(.instance)"' <<<"$t")"
+        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.kind=="compose")'); do
+          host=$(jq -r .host <<<"$t"); args="us-dev $(jq -r '.instance | split("/") | join(" ")' <<<"$t")"
           for cmd in pull start health; do
             ssh deploy@"$host" "IMAGE_TAG=$IMAGE_TAG run-compose.sh $args $cmd"
           done
         done
     - name: Deploy helm targets (Demo step 2)
       run: |
-        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.type=="helm")'); do
-          app=$(jq -r .app <<<"$t"); inst=$(jq -r .instance <<<"$t"); flow=$(jq -r .flow <<<"$t")
+        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select((.kind // "helm")=="helm")'); do
+          IFS=/ read -r flow app inst <<<"$(jq -r .instance <<<"$t")"
           cfg="config/us-dev/$flow/$app"
           helm upgrade --install "$app-$inst" "deephaven-connectors/$app/helm/$app" -n "$flow" --create-namespace \
             -f "$cfg/app-common/values.yaml" -f "$cfg/$inst/values.yaml" \
@@ -454,7 +449,7 @@ sequenceDiagram
   participant H as PostSync smoke hook
   O->>G: approve and merge prod bump PR (Change-Ticket)
   G->>P: run promote job
-  P->>P: JFrog promote digest qa → prod; create Deployment us-prod
+  P->>P: JFrog promote digest qa → prod, create Deployment us-prod
   A->>G: poll / webhook: new revision
   alt inside sync window
     A->>K: apply values → Recreate pod with image 1.5.0
@@ -511,9 +506,9 @@ branches exist.
 | Phase | File / path | What it proves |
 |---|---|---|
 | Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` deploys to the hosts in `config/us-dev/targets.yml` without a manual step |
-| Demo step 1 (compose) | `config/us-dev/targets.yml` (§6.5) | inventory of dev targets; `type: compose` entries |
+| Demo step 1 (compose) | `config/us-dev/targets.yml` (§6.5) | inventory of dev targets; `kind: compose` entries |
 | Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
-| Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → bump PR to dev config (§4 of the brief); qa bump PR path documented, no qa target in the demo |
+| Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof) and a dev bump PR so dev runs the release tag |
 | Demo step 1 (compose) | GitHub Environment `dev` settings; branch protection on `main`; `CODEOWNERS` with `config/**` rules | gates as in §6.2 |
 | Demo step 2 (kind + Helm) | `deploy-dev` Helm adapter: kind cluster in the job, `helm upgrade --install ... --atomic --timeout 5m` per `type: helm` target, readiness wait, smoke test, cluster deleted | one release per AppInstance from the config tree; `--atomic` rollback on a failing release |
 | Demo step 2 (kind + Helm) | `helm lint` / `helm template` for every instance in the config-lint job | parity check of §6.14 |

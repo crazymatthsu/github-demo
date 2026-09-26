@@ -22,7 +22,7 @@ This document specifies two things that every deployable app (`source-kafka`, `s
 Production runs on Kubernetes on Amazon EKS (DL-02). Production operations go through the GitOps
 controller, `kubectl` and the controller UI — D9 (`docs/09-cd-and-release-management.md`) and D11
 (`docs/11-kubernetes-packaging-and-gitops.md`). `run-compose.sh` is never run in production and
-refuses every env other than `local`, the CI env and `*-dev`.
+refuses every env other than `local` (which the CI test stacks also use) and `*-dev`.
 
 Out of scope here: the Helm chart structure and the config-tree → values mapping (D11), the
 configuration layering itself (D5), the Dockerfile (D3), the CI job lifecycle and teardown (D10),
@@ -156,10 +156,10 @@ Recommendations made in this document:
 
 | Argument | Rule | Check performed | Example |
 |---|---|---|---|
-| `<env>` | `local`, `ci`, or `<region>-<stage>` matching `^[a-z]{2}-(dev\|qa\|prod)$` | directory `config/<env>/` exists; env is in the **allow-list** `local`, `ci`, `*-dev` (§6.5) | `us-dev` |
+| `<env>` | `local` or `<region>-<stage>` matching `^[a-z]{2}-(dev\|qa\|prod)$` | directory `config/<env>/` exists; env is in the **allow-list** `local`, `*-dev` (§6.5); CI test stacks run under `local` with run-scoped project names (D5, D8) | `us-dev` |
 | `<business-flow>` | `cash`, `deriv`, `swap` | directory `config/<env>/<flow>/` exists | `cash` |
 | `<AppName>` | lower-case kebab-case, ≤ 20 chars; must equal the subproject that owns the script | `config/<env>/<flow>/<AppName>/app-common/` exists; `<AppName>` == basename of the script's subproject directory | `source-database` |
-| `<AppInstance>` | `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`, ≤ 40 chars; `<AppName>-<AppInstance>` ≤ 63 (DL-37) | directory exists; required files present (`compose.env`, `application.yml`) | `trades-db-to-amps` |
+| `<AppInstance>` | `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`, ≤ 32 chars; `<AppName>-<AppInstance>` ≤ 53 (DL-37, D5 §6.2) | directory exists; required files present (`compose.env`, `application.yml`) | `trades-db-to-amps` |
 | `<command>` | one of the commands in §6.4 | unknown → usage error | `start` |
 
 Validation failures print the offending path and exit with code 2 (usage) or 4 (config tree),
@@ -178,7 +178,7 @@ config-lint job calls (D5).
 | `CONFIG_DIR` | `$ENV_DIR/<flow>/<app>/<instance>` | `config/us-dev/cash/source-database/trades-db-to-amps` |
 | `COMPOSE_FILE` | `$APP_DIR/docker/docker-compose.yml` | `deephaven-connectors/source-database/docker/docker-compose.yml` |
 | `ENV_FILE` | `$CONFIG_DIR/compose.env` | `.../trades-db-to-amps/compose.env` |
-| `PROJECT` | `<env>-<flow>-<app>-<instance>`; in the CI env prefixed with the run identity (§6.5) | `us-dev-cash-source-database-trades-db-to-amps` |
+| `PROJECT` | `<env>-<flow>-<app>-<instance>`; in CI (`GITHUB_RUN_ID` set) prefixed with the run identity (§6.5) | `us-dev-cash-source-database-trades-db-to-amps` |
 
 The script exports the identity for the template: `APP_ENV`, `APP_FLOW`, `APP_NAME`,
 `APP_INSTANCE`, plus `CONFIG_DIR`, `COMMON_DIR` and `PROJECT`. D5 owns the final variable names
@@ -200,7 +200,7 @@ template references `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` (§5.5) and mounts 
 |---|---|---|---|
 | `start [--no-wait]` | `up -d --wait --wait-timeout ${START_TIMEOUT:-180}` (verify flag) | 0 healthy; 1 compose error; 124 timeout | never pulls a newer tag by itself (§4.1) |
 | `stop` | `stop -t ${STOP_TIMEOUT:-30}` | 0 / 1 | graceful: SIGTERM then SIGKILL after the timeout |
-| `down [--volumes]` | `down --remove-orphans`; `--volumes` adds `-v` | 0 / 1; 3 refused | **never `-v` by default**; `--volumes` allowed in `local` and `ci`, requires `--force` on `*-dev` hosts |
+| `down [--volumes]` | `down --remove-orphans`; `--volumes` adds `-v` | 0 / 1; 3 refused | **never `-v` by default**; `--volumes` allowed in `local` (including CI stacks), requires `--force` on `*-dev` hosts |
 | `restart` | `stop` then `start` | as `start` | recreates the container when `compose.env`, image or mounts changed |
 | `config` | `config` | 0 / 1 | secrets masked (§4.3) |
 | `app-config [--offline]` | actuator query, or `run --rm --no-deps app --print-config` | 0 / 1 | secrets masked; `--offline` needs no running stack |
@@ -220,12 +220,12 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 
 | Rule | Behaviour |
 |---|---|
-| Env allow-list | `<env>` must be `local`, `ci` or `*-dev`. Anything else (`us-qa`, `jp-prod`, …) exits 3 with "production operations go through Kubernetes — see D9 / D11". `--force` does **not** override this |
+| Env allow-list | `<env>` must be `local` or `*-dev`. Anything else (`us-qa`, `jp-prod`, …) exits 3 with "production operations go through Kubernetes — see D9 / D11". `--force` does **not** override this |
 | Volumes | `down` never removes volumes unless `--volumes`; on `*-dev` hosts `--volumes` also needs `--force` |
 | `--dry-run` | prints the resolved paths, the identity, the engine and the exact compose command line, then exits 0 without invoking the engine. Valid for every command |
 | Exit codes | 0 success or check passed · 1 operation failed or check negative (unhealthy, drift, lint) · 2 usage · 3 refused by a safety rule · 4 config tree error · 5 engine not found or daemon not running · 124 timeout |
 | Audit line | one line per invocation to syslog (`logger -t run-compose`, if present) and stderr: `ts=<iso8601> who=<SUDO_USER or USER> host=<hostname> env=<env> flow=<flow> app=<app> instance=<inst> cmd=<cmd> opts=<…> result=<exit>`; when `GITHUB_RUN_ID` is set the line adds `run=<GITHUB_SERVER_URL>/<repo>/actions/runs/<id> actor=<GITHUB_ACTOR>` |
-| CI project name | in env `ci` with `GITHUB_RUN_ID` set, `PROJECT` becomes `ci-<run_id>-<attempt>-<flow>-<app>-<instance>` and every resource gets the label `com.<company>.ci.run=<run_id>` (§5.11), so D10's `always()` teardown and leak check find exactly this run's resources |
+| CI project name | when `GITHUB_RUN_ID` is set (CI test stacks run under env `local`), `PROJECT` becomes `ci-<run_id>-<attempt>-<app>-<instance>`: the prefix matches the run-scoped `COMPOSE_PROJECT_NAME` that D10 defines for its `test-infra` stacks, so a name-prefix filter finds it, and every resource also carries the label `com.<company>.ci.run=<run_id>` (§5.11) that D10's `always()` teardown and leak check use. There is no separate `ci` env token in the config tree (D5 §6.2) |
 
 ### 6.6 Engine detection, rootless Podman, SELinux
 
@@ -243,14 +243,14 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 
 | Mount / setting | Container path | Mode | Source |
 |---|---|---|---|
-| `COMMON_DIR` | `/config/common/` | read-only | bind (compose) / ConfigMap `<app>-<instance>-app-common` (Kubernetes) |
-| `CONFIG_DIR` | `/config/instance/` | read-only | bind / ConfigMap `<app>-<instance>-instance` |
+| `COMMON_DIR` | `/config/common/` | read-only | bind (compose) / key `common.application.yml` of the ConfigMap `<app>-<instance>-config` (Kubernetes, D11 §6.3) |
+| `CONFIG_DIR` | `/config/instance/` | read-only | bind / key `instance.application.yml` of the same ConfigMap |
 | optional extra layers (DL-07 open: `_common` levels) | `/config/platform/`, `/config/env/` | read-only | same mechanism; the Spring import list in D5 marks them `optional:` |
 | logs | `/logs` | named volume `<PROJECT>_logs` (compose only, for optional file appenders) | primary log channel is stdout (§6.9) |
 | truststore override | `/etc/ssl/<company>/truststore.p12` | read-only, **optional** (`TRUSTSTORE_FILE` in `compose.env`) | default is the truststore baked into the image (D3); the override exists for CA rotation tests |
 | `/tmp` | `/tmp` | `tmpfs` (compose) / `emptyDir` (Kubernetes) | required by the read-only root filesystem |
 | `TZ` | env | `TZ` from `compose.env`, default `UTC` (policy open, §8) | logs carry UTC timestamps regardless |
-| Secrets (demo) | env | `compose.env` never holds them; the value comes from the host environment (`DB_PASSWORD`) or a Kubernetes `Secret` bound to the final property name (§4, D2) | Vault later (DL-11, DL-31) |
+| Secrets (demo) | env (compose) / `/secrets/` config tree (Kubernetes) | `compose.env` never holds them; the value comes from the host environment (`SPRING_DATASOURCE_PASSWORD`, D2 §6.4) or a Kubernetes `Secret` mounted at `/secrets/` with property-name keys (D2) | Vault later (DL-11, DL-31) |
 
 ### 6.8 Quality of the script
 
@@ -338,9 +338,8 @@ flowchart TB
       LP["livenessProbe /actuator/health/liveness"]
       RP["readinessProbe /actuator/health/readiness"]
     end
-    CMC["ConfigMap app-common<br/>application.yml"]
-    CMI["ConfigMap instance<br/>application.yml"]
-    SEC["Secret (demo: plain Secret; later ESO from Vault)"]
+    CM["ConfigMap app-instance-config<br/>one key per layer (D11)"]
+    SEC["Secret app-instance-secrets (demo: plain Secret; later ESO from Vault)"]
     SA["ServiceAccount + IRSA annotation"]
     SVC["Service http"]
     SM["ServiceMonitor"]
@@ -348,9 +347,8 @@ flowchart TB
   end
   FB["Fluent Bit DaemonSet"]
   PROM["Prometheus Operator"]
-  CMC -- "/config/common ro" --> APP
-  CMI -- "/config/instance ro" --> APP
-  SEC -- "env DB_PASSWORD" --> APP
+  CM -- "/config/(layer)/ ro" --> APP
+  SEC -- "/secrets/ config tree ro (D2)" --> APP
   SA --> POD
   SVC --> APP
   SM --> SVC
@@ -362,7 +360,7 @@ flowchart TB
 *Figure 1 — Pod internals of one Helm release.*
 
 Everything the app needs at runtime is either a
-read-only mount from the config tree, an environment variable from a `Secret`, or an annotation on
+read-only mount from the config tree, a `Secret` mounted as a Spring config tree, or an annotation on
 its `ServiceAccount`. The three probes hit the actuator; logs leave on stdout and metrics through the
 `Service` — the app itself knows nothing about Fluent Bit, Prometheus or Vault.
 
@@ -402,7 +400,7 @@ stacks and the dev compose hosts of Demo step 1 run.
 flowchart LR
   A["parse args + options"] --> B{"5 args and known command?"}
   B -- no --> X2["exit 2 usage"]
-  B -- yes --> C{"env in allow-list<br/>local, ci, *-dev?"}
+  B -- yes --> C{"env in allow-list<br/>local, *-dev?"}
   C -- no --> X3["exit 3 refused"]
   C -- yes --> D["resolve CONFIG_ROOT, ENV_DIR,<br/>COMMON_DIR, CONFIG_DIR, PROJECT"]
   D --> E{"dirs and required files exist?"}
@@ -437,7 +435,7 @@ sequenceDiagram
   participant S as Spring Boot app
   participant E as Endpoints / Service
   participant M as Prometheus
-  K->>C: mount /config/common, /config/instance; inject env
+  K->>C: mount /config/common and /config/instance, inject env
   K->>P: start container (non-root, read-only FS)
   P->>S: java (JAVA_TOOL_OPTIONS, MaxRAMPercentage)
   S->>S: spring.config.import optional:file:/config/...
@@ -445,14 +443,14 @@ sequenceDiagram
     K->>S: GET /actuator/health/liveness
   end
   alt start-up succeeded
-    S->>S: connect source and target; readiness indicators UP
+    S->>S: connect source and target, readiness indicators UP
     K->>S: GET /actuator/health/readiness → 200
     K->>E: add pod to endpoints
     M->>S: scrape /actuator/prometheus via ServiceMonitor
     Note over S: liveness every 10s stays minimal
   else start-up failed or timed out
     K->>P: kill and restart (backoff)
-    Note over K,P: helm --atomic / Argo CD health report Degraded; old ReplicaSet kept
+    Note over K,P: helm --atomic / Argo CD health report Degraded, old ReplicaSet kept
   end
 ```
 
@@ -472,7 +470,7 @@ sequenceDiagram
   participant D as docker / podman compose
   participant A as app container
   participant Q as dependency containers
-  J->>R: ci cash source-database trades-db-to-amps start
+  J->>R: local cash source-database trades-db-to-amps start (GITHUB_RUN_ID set)
   R->>R: validate args, resolve paths, project ci-<run>-<attempt>-...
   R->>D: compose -p ... --env-file compose.env up -d --wait
   D->>Q: create network, start deephaven, sqlserver (healthchecks)
@@ -484,7 +482,7 @@ sequenceDiagram
   else a healthcheck fails or times out
     D-->>R: non-zero
     R->>D: compose logs --tail (diagnostics to stderr)
-    R-->>J: exit 1 or 124 — job fails; always() teardown in D10 runs down -v
+    R-->>J: exit 1 or 124 — job fails, the always() teardown in D10 runs down -v
   end
 ```
 
