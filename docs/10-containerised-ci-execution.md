@@ -267,7 +267,7 @@ public registries directly, still by digest. Switching is one edit to `versions.
 | Compose project name | `ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` (local: `local-<AppName>`) |
 | Run label | `com.<company>.ci.run=${GITHUB_RUN_ID}`; `com.<company>.ci.attempt=${GITHUB_RUN_ATTEMPT}`; local runs use `local` |
 | Job timeouts | `build` 20 min (PR) / 25 (`main`); `integration-test` 30; `system-test` 45; `kind-deploy` 30 |
-| Job container | `ghcr.io/<org>/ci-build:<tag>` (demo); `artifactory.<company>.com/docker-tools-local/ci-build:<tag>` (enterprise) |
+| Job container | `ghcr.io/<org>/base/ci-build:<tag>` (demo); `artifactory.<company>.com/docker-base-local/<company>/ci-build:<tag>` (enterprise) — content in D3 §6.10 |
 | Diagnostics artefact | `it-diagnostics-<run_id>-<matrix index>`, 7 days (14 on `main`) |
 
 ### 6.2 `test-infra/compose/stack.sh` — one script, two callers
@@ -372,8 +372,8 @@ home bind-mounted, `IT_DEEPHAVEN_HOST=deephaven`, `IT_SQLSERVER_HOST=sqlserver`,
 | `DEEPHAVEN_IMAGE` | `ghcr.io/deephaven/server@sha256:<pin>` | `artifactory.<company>.com/ghcr-remote/deephaven/server@sha256:<pin>` |
 | `MSSQL_IMAGE` | `mcr.microsoft.com/mssql/server@sha256:<pin>` | `artifactory.<company>.com/mcr-remote/mssql/server@sha256:<pin>` |
 | `KAFKA_IMAGE` | Docker Hub image by digest | `artifactory.<company>.com/dockerhub-remote/...@sha256:<pin>` |
-| `CI_BUILD_IMAGE` | `ghcr.io/<org>/ci-build:<tag>` | `artifactory.<company>.com/docker-tools-local/ci-build:<tag>` |
-| `AMPS_IMAGE` | — (stub sink) | `artifactory.<company>.com/docker-tools-local/amps:<pin>` |
+| `CI_BUILD_IMAGE` | `ghcr.io/<org>/base/ci-build:<tag>` | `artifactory.<company>.com/docker-base-local/<company>/ci-build:<tag>` |
+| `AMPS_IMAGE` | — (stub sink) | `artifactory.<company>.com/docker-internal-local/test-infra/amps:<pin>` |
 
 ### 6.11 Illustrative `integration-test` job skeleton
 
@@ -568,7 +568,7 @@ are the same `always()` steps on every path. A cancel interrupts the test step, 
 
 | Item | Location | Phase |
 |---|---|---|
-| `build` job in the `ci-build` container | `.github/workflows/_gradle-build.yml` (`container:`), image from `docker/base/ci-build/Dockerfile` (location to confirm with D3) built by `.github/workflows/base-image.yml` | Demo step 1 (compose) |
+| `build` job in the `ci-build` container | `.github/workflows/_gradle-build.yml` (`container:`), image from `docker/base/ci-build/Dockerfile` (D3 §8) built by `.github/workflows/base-image.yml` | Demo step 1 (compose) |
 | `integration-test` and `system-test` jobs | `.github/workflows/_integration-test.yml`; skeleton in §6.11 | Demo step 1 (compose) |
 | Stack lifecycle, teardown, leak check | `test-infra/compose/stack.sh`; composite action `.github/actions/compose-stack/action.yml` wraps it | Demo step 1 (compose) |
 | Labels, project name, Deephaven profile, `it-runner` | `test-infra/compose/{base,deephaven,sqlserver,it-runner,local-ports}.yml`, `versions.env` | Demo step 1 (compose) |

@@ -330,7 +330,7 @@ only when publishing is confirmed.
 | push to `main`, nightly, tag | everything | full build regardless of paths |
 
 The `detect-affected` job (D7) turns the mapping into a JSON list for the `matrix:` of the build and
-IT jobs; the mapping lives in `.github/affected-projects.yml` next to the workflows.
+IT jobs; the mapping lives in `.github/affected-map.yml` next to the workflows.
 
 ### 6.10 `project.version` from git
 
@@ -475,7 +475,7 @@ PR is reproducible locally with one command. Only the version string and the ima
 | `deephaven-connectors/source-database/build.gradle.kts` (and `source-kafka`, `source-amps`) | `spring-boot-app` + `docker-image` + `integration-test`; hello-world app logging `env / flow / AppName / AppInstance` | Demo step 1 (compose) |
 | `deephaven-connectors/source-database/src/integrationTest/java/…` | the end-to-end IT (SQL Server → app image → target) started by the compose lifecycle | Demo step 1 (compose) |
 | `deephaven-server/build.gradle.kts`, `deephaven-server/docker/` | image-only subproject, independent version line | Demo step 1 (compose) |
-| `.github/affected-projects.yml`, `.github/workflows/pr.yml` (`detect-affected` job) | the §6.9 mapping feeding the matrix (D7) | Demo step 1 (compose) |
+| `.github/affected-map.yml`, `.github/workflows/pr.yml` (`detect-affected` job) | the §6.9 mapping feeding the matrix (D7) | Demo step 1 (compose) |
 | `deephaven-connectors/source-database/helm/source-database/` | chart linted and templated from the config tree (D11) | Demo step 2 (kind + Helm) |
 | No `version.txt`, no version in `gradle.properties` | `./gradlew printVersion` on a `v0.1.0` checkout prints `0.1.0` (acceptance criterion §7) | Demo step 1 (compose) |
 

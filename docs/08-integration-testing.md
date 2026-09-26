@@ -278,7 +278,7 @@ test-infra/
 | `sqlserver` | `mcr.microsoft.com/mssql/server@sha256:<pin>` → `mcr-remote/mssql/server` | `ACCEPT_EULA=Y`, `MSSQL_SA_PASSWORD` (test-only value), `MSSQL_PID=Developer`, memory limit | `sqlcmd -Q "SELECT 1"` (tools path differs by image version, verify) | 30–60 s | amd64 only; about 2 GB; Developer edition is non-production; EULA acceptance recorded in the compose file |
 | `kafka` | Apache Kafka KRaft single node → `dockerhub-remote` | one broker, `PLAINTEXT`, auto-create topics | broker API probe | about 10 s | Confluent or Redpanda images are alternatives; pick one and pin |
 | `hazelcast` | `hazelcast/hazelcast@sha256:<pin>` → `dockerhub-remote` | single member, cluster name per run | health endpoint on 5701 (verify) | about 10 s | role to confirm before any suite depends on it (§8) |
-| `amps` | `artifactory.<company>.com/docker-tools-local/amps:<pin>` | licence file from a CI secret | admin port probe (verify) | a few seconds | licensed; nightly only; contract tests as fallback |
+| `amps` | `artifactory.<company>.com/docker-internal-local/test-infra/amps:<pin>` (D3 §6.10) | licence file from a CI secret | admin port probe (verify) | a few seconds | licensed; nightly only; contract tests as fallback |
 | `vault` | `hashicorp/vault@sha256:<pin>` dev mode | `VAULT_DEV_ROOT_TOKEN_ID` | `/v1/sys/health` | a few seconds | not in the demo (D2) |
 
 ### 6.5 Test-data layout and manifest

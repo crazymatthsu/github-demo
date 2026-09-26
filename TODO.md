@@ -148,20 +148,27 @@ and `source-kafka`.
 │   └── run-compose.sh                 # <env> <business-flow> <AppName> <AppInstance> <cmd>   (spec in §5.8)
 ├── helm/<AppName>/                    # Helm chart for THIS app (decided v0.7, DL-29): Chart.yaml, values.yaml,
 │   └── templates/                     #   Deployment (replicas 1), Service, ConfigMap from application.yml, probes
-└── config/                            # in this monorepo for now (decided v0.7, DL-06)
-    └── <env>/                         # us-dev | us-qa | us-prod | jp-dev | jp-qa | jp-prod
-        ├── targets.yml                # dev deploy targets: compose hosts (step 1) or cluster + namespace (step 2 / EKS)
-        └── <business-flow>/           # cash | deriv | swap
-            └── <AppName>/             # == subproject name, e.g. source-kafka
-                ├── app-common/        # shared by all instances of this app in this env + flow
-                │   ├── application.yml
-                │   ├── values.yaml    # shared Helm values for this app in this env + flow
-                │   └── ...            # logback.xml, client properties, ...
-                └── <AppInstance>/     # business-logic name, e.g. bbg-equity-ticks, trades-db-to-amps (§5.6)
-                    ├── compose.env    # variables consumed by docker-compose.yml: IMAGE_TAG, ports, JVM opts, paths
-                    ├── application.yml # instance overrides: endpoints, topics, subscriptions, table names
-                    ├── values.yaml    # Helm values for this instance: image.tag, replicas (1), resources, env
-                    └── ...            # other instance files
+└── (no config/ inside the subproject: configuration lives at the repository root, next tree)
+```
+
+Configuration tree at the repository root (`config/`, in this monorepo for now — DL-06; the
+v0.1 draft drew it under each subproject, the root location is the one used by D1 and D5):
+
+```
+config/
+└── <env>/                         # us-dev | us-qa | us-prod | jp-dev | jp-qa | jp-prod
+    ├── targets.yml                # dev deploy targets: compose hosts (step 1) or cluster + namespace (step 2 / EKS)
+    └── <business-flow>/           # cash | deriv | swap
+        └── <AppName>/             # == subproject name, e.g. source-kafka
+            ├── app-common/        # shared by all instances of this app in this env + flow
+            │   ├── application.yml
+            │   ├── values.yaml    # shared Helm values for this app in this env + flow
+            │   └── ...            # logback.xml, client properties, ...
+            └── <AppInstance>/     # business-logic name, e.g. bbg-equity-ticks, trades-db-to-amps (§5.6)
+                ├── compose.env    # variables consumed by docker-compose.yml: IMAGE_TAG, ports, JVM opts, paths
+                ├── application.yml # instance overrides: endpoints, topics, subscriptions, table names
+                ├── values.yaml    # Helm values for this instance: image.tag, replicas (1), resources, env
+                └── ...            # other instance files
 ```
 
 Gaps in the v0.1 tree to resolve while writing D5:
@@ -297,7 +304,8 @@ Tasks
 3. Phase 3 (after the demo) — EKS clusters, GitOps controller (Argo CD) replacing `helm upgrade`
    from CI, Vault via Kubernetes auth, ephemeral-namespace tests.
 - Versioning: main push produces a pre-release tag; pushing `v0.1.0` produces `0.1.0` image tags;
-  release workflow opens a PR bumping `IMAGE_TAG` in the dev config.
+  the release workflow opens the **qa** bump PR (`config/us-qa/**`); dev is auto-deployed with a
+  write-back instead (§5.12).
 - CI proof (§5.11): the PR workflow builds and unit-tests inside the `ci-build` container image; an
   integration-test job starts a Deephaven server container, waits for its readiness probe, runs one
   IT that writes and reads a table through the Deephaven client, uploads logs on failure, tears
@@ -500,7 +508,7 @@ git tags trigger image tagging; tag naming conventions; clean up old unused non-
   | Event | Image tag(s) | Mutable? | Lifetime |
   |---|---|---|---|
   | PR build | `pr-123-<sha7>` | no | until PR closed + 7 days |
-  | `main` push | `1.5.0-rc.<n>` or `1.5.0-SNAPSHOT.<yyyymmdd>.<sha7>` (pick one; must sort and be unique) | no | last N per subproject |
+  | `main` push | `1.5.0-rc.<n>` (n = commits since the last release tag; chosen in D4 over the `SNAPSHOT.<date>.<sha7>` form) plus `sha-<sha7>` | no | last N per subproject |
   | Release tag `v1.4.2` (or `source-kafka/v1.4.2`) | `1.4.2` **and** `sha-<sha7>` | no | forever (promoted) |
   | Convenience | `1.4`, `1`, `main`, `latest` | yes | dev / local only — **never referenced by qa or prod compose** |
 
@@ -848,7 +856,7 @@ project within containers**, with a **Deephaven server running** during the inte
      GitHub OIDC → IAM role → EKS RBAC — deleted in the `always()` step with a namespace TTL as
      backstop; or into a **kind** cluster created inside the job (no cloud access, images loaded
      straight from the build).
-  3. **Deployment tests**: the real chart / overlay for the app applied to kind (PRs touching `k8s/`,
+  3. **Deployment tests**: the real chart for the app applied to kind (PRs touching `helm/<AppName>/`,
      config or Dockerfiles) or to the dev EKS namespace (`main` / nightly), followed by a smoke test.
      This is the part compose cannot test, and with production on EKS it is required (DL-32).
   Component ITs stay on compose / Testcontainers: faster to start and identical on a laptop.
@@ -1089,7 +1097,7 @@ Tasks
       app image under test), runs the tests, and tears it down in an always-run step; no Kubernetes
       and no Testcontainers appear in the demo workflows.
 - [ ] PR, main and release workflows are green in this repo; images are pushed with the §5.4 tags.
-- [ ] Pushing `v0.1.0` produces `0.1.0` image tags and a config-bump PR; no `version.txt` exists.
+- [ ] Pushing `v0.1.0` produces `0.1.0` image tags and a qa config-bump PR; no `version.txt` exists.
 - [ ] Every subproject has a README; `docs/00-overview.md` indexes everything.
 
 **Containerised CI execution (§5.11)**

@@ -337,7 +337,7 @@ not network reach, is the limit.
 |---|---|---|
 | PR and pre-release images | `artifactory.<company>.com/docker-dev-local/deephaven-connectors/<AppName>` | OIDC identities `gha-<repo>-pr` (`pr-*` tags only) and `gha-<repo>-main` |
 | Promoted images | `docker-qa-local`, `docker-prod-local` | `gha-<repo>-release`; prod promotion only from the approved prod job (D9) |
-| Base and tools images | `docker-tools-local/jre-base`, `docker-tools-local/ci-build` | `base-image.yml` identity |
+| Base and build images | `docker-base-local/<company>/jre21`, `docker-base-local/<company>/ci-build` (D3 §6.1) | `base-image.yml` identity |
 | Gradle / Maven | virtual repository (read); `maven-dev-local` (write from `main`) | `gha-<repo>-main` |
 | Test data | `generic-testdata-local` (D8) | data owners write; CI reads |
 | Layer cache | `docker-cache-local` | all workflow identities |
@@ -564,7 +564,7 @@ makes, and it is the one commit that does not trigger another run.
 | Affected map | `.github/affected-map.yml` | Demo step 1 (compose) |
 | Ownership | `.github/CODEOWNERS` (`config/**` prod paths → ops; `build-logic/**`, `.github/**` → platform) | Demo step 1 (compose) |
 | Registry | GHCR via `GITHUB_TOKEN` (`packages: write`); `registry-login` has an `oidc` mode ready for Artifactory | Demo step 1 (compose); OIDC in the enterprise |
-| Build environment | `container: ghcr.io/<org>/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2) | Demo step 1 (compose) |
+| Build environment | `container: ghcr.io/<org>/base/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2; image content in D3 §6.10) | Demo step 1 (compose) |
 | Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts; Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
 | Retention | nightly job calling the GHCR package API (demo) / `jf` cleanup (enterprise), rules from D4 | Demo step 1 (compose) |
 

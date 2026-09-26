@@ -262,7 +262,7 @@ and are confirmed in §8; the `<group>/<AppName>` part is fixed by D1 §6.1.
 | Control | Demo step 1 (compose) | Enterprise / Phase 3 (EKS + GitOps) |
 |---|---|---|
 | Scan | Trivy step, fails `main` on critical CVEs with an allowlist file | Xray policy on `docker-dev-local` push; promotion blocked on failing scan |
-| SBOM | CycloneDX generated and uploaded as workflow artifact and OCI attestation | same, plus `jf rt build-publish` build-info |
+| SBOM | CycloneDX generated and uploaded as workflow artefact and OCI attestation | same, plus `jf rt build-publish` build-info |
 | Sign | cosign keyless from `release.yml` (GitHub OIDC identity) | same; admission policy verifies signature and issuer in qa / prod clusters |
 | Base image drift | Renovate PR on new base tag | same; nightly re-scan of promoted images |
 
@@ -419,6 +419,7 @@ laggard.
 | File / directory | What it proves | Phase |
 |---|---|---|
 | `.github/workflows/base-image.yml` | builds `ghcr.io/<org>/base/jre21` and `ghcr.io/<org>/base/ci-build` from upstream Temurin (no JFrog on GitHub-hosted runners), injects the demo CA bundle, runs the `keytool` / `curl` verification, pushes with `<yyyymmdd>-<n>` tags | Demo step 1 (compose) |
+| `docker/base/jre21/Dockerfile`, `docker/base/ci-build/Dockerfile` | the two company base images of §6.1; `base-image.yml` triggers on changes under `docker/base/**` (D7 §6.1); D10 runs the `build` job in `ci-build` | Demo step 1 (compose) |
 | `test-infra/ca/demo-root-ca.pem` | a self-signed **public** root certificate standing in for the enterprise bundle (no private key in the repository); a TLS-enabled test service in `test-infra/compose/` presents a leaf signed by it so the trust path is exercised end to end | Demo step 1 (compose) |
 | `deephaven-connectors/<AppName>/docker/Dockerfile`, `scripts/entrypoint.sh`, `.dockerignore` (subproject root) | the §6.11 skeleton per app; `JAVA_OPTS`, non-root, `HEALTHCHECK`, labels | Demo step 1 (compose) |
 | `build-logic/src/main/kotlin/buildlogic.docker-image.gradle.kts` | engine detection (Docker → `buildx`, Podman → `--format docker`), staged context `build/docker/`, `--label` and `--build-arg` values from `project.version` and git (D1) | Demo step 1 (compose) |
