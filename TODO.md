@@ -1,25 +1,30 @@
 Give me a design plan in .md files for the below architecture design topics and also build a demo project with working skeleton hello world implementation , 
 assume in this git repo, there are many git subprojects under this repo, 
 for example 
-- deephaven-server
+- deephaven-server (subproject) 
 - deephaven-connectors ( parent subproject) 
-  - source-Kafka
-  - source-amps
-  - source-database
-  - connectors-framework
+  - source-Kafka (subproject)
+  - source-amps (subproject)
+  - source-database (subproject)
+  - connectors-framework (subproject)
 
 Under each gradle subproject, the directory structure should have : 
  - docker
    - DockerFile 
    - docker-compose.yml
  - scripts
-   - run-compose.sh
+   - run-compose.sh ( parameters: <env> <business-flow> <AppName> <AppInstnace> <cmd: start,stop,down,restart,comfig,printenv,health, ...>
  - src/main/java
  - config
   - <env: us-dev, us-prod, jp-dev, jp-prod> 
     - <business-flow: cash, deriv, swap> 
       - <AppName(subproject name)> 
-        - <AppInstance> (same image, different config files ) 
+        - app-common
+        - <AppInstance(same image, different config files ) >
+          - compose.env ( env variables for docker-compose.yml) 
+          - application.yml 
+          - other config files 
+
 
 
 
