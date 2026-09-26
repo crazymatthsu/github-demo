@@ -1,7 +1,8 @@
 # TODO — Architecture Design Brief: Deephaven Platform & Connectors
 
-> **Status:** DRAFT v0.3 (v0.2 restructured the v0.1 question list; v0.3 adds the containerised CI
-> execution requirement with an ephemeral Deephaven server; see §10).
+> **Status:** DRAFT v0.4 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
+> execution with an ephemeral Deephaven server; v0.4 sets **production on Kubernetes / EKS**,
+> compose for tests only, and the demo simplifications; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -64,9 +65,11 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
   source/target?) needs clarifying.
 - Business flows `cash`, `deriv`, `swap` and regions `us`, `jp` suggest trading / market-data
   flows → deployment windows and regional isolation matter (§5.12).
-- **Deployment target: VMs running Docker or Podman with `docker compose`, not Kubernetes.**
-  This single assumption shapes most answers below (config sync, CD, health checks). If Kubernetes
-  is a realistic option within 12–18 months, say so now — several recommendations change.
+- **Deployment target (confirmed v0.4): production runs on Kubernetes — Amazon EKS.**
+  docker-compose is used **only** for local development and CI test stacks; it is not a production
+  artefact. Every runtime answer below (config delivery, secrets, CD, health, operations) targets
+  Kubernetes; compose answers apply to tests and developer machines. Still open: are dev and qa on
+  EKS too, one cluster per `<region>-<stage>` or namespaces in shared clusters (§8)?
 
 ### 2.2 Technology constraints (given)
 
@@ -77,15 +80,17 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 | Secrets | HashiCorp Vault for **all** secrets; Spring Vault / Spring Cloud Vault for database credential retrieval |
 | Trust | Enterprise CA certificate must be trusted inside every image (OS trust store **and** JVM truststore) |
 | CI/CD | GitHub Actions; JFrog Artifactory as Docker registry + Maven/Gradle repository (+ Xray scanning if available) |
-| Containers | Docker **and** Podman must work for local development and integration tests |
+| Production platform | **Kubernetes on Amazon EKS** (confirmed v0.4); cluster topology per `<region>-<stage>` to confirm (§8) |
+| Containers | Docker **and** Podman must work for local development and CI test stacks; compose is never deployed to production |
 | Versioning | Derived from git (tags / commits); **never** stored in a `version.txt` |
 | Environments | `dev` → `qa` → `prod`, per region (`us`, `jp`) |
 | CI execution | Build, unit tests and integration tests run on GitHub runners **inside containers**; a **Deephaven server container** is up for the integration tests; **everything is torn down** after each run, also on failure or cancel (§5.11) |
+| Demo simplifications (v0.4) | **GitHub-hosted runners**; **no Vault** in the demo — secrets stubbed behind the final Spring property names; GHCR as registry stand-in (§4) |
 
 ### 2.3 Repository layout (monorepo with Gradle subprojects)
 
-"Git subprojects" is read as **Gradle subprojects inside one git repository** (not git submodules) —
-confirm in §8.
+"Git subprojects" is read as **Gradle subprojects inside one git repository**, not git submodules.
+Recommendation and rationale in §5.1 (DL-01).
 
 ```
 <repo-root>/
@@ -128,9 +133,11 @@ and `source-kafka`.
 │   └── integrationTest/java/...       # separate source set — needs docker / podman
 ├── docker/
 │   ├── Dockerfile                     # multi-stage, enterprise CA, non-root, container-aware JVM flags
-│   └── docker-compose.yml             # ONE template for all env/flow/instance; parameterised by compose.env
+│   └── docker-compose.yml             # ONE template for all env/flow/instance; LOCAL DEV + CI TEST STACKS ONLY
 ├── scripts/
 │   └── run-compose.sh                 # <env> <business-flow> <AppName> <AppInstance> <cmd>   (spec in §5.8)
+├── k8s/                               # Kubernetes packaging for THIS app: Helm chart or Kustomize base (DL-29)
+│   └── ...                            # Deployment, Service, ConfigMap mounts, probes, resources
 └── config/                            # may live in the config repo instead (§5.7)
     └── <env>/                         # us-dev | us-qa | us-prod | jp-dev | jp-qa | jp-prod
         └── <business-flow>/           # cash | deriv | swap
@@ -153,7 +160,12 @@ Gaps in the v0.1 tree to resolve while writing D5:
   `config/<env>/_common/`, `config/<env>/<flow>/_common/`. Decide the maximum number of layers
   (suggest ≤ 4 file layers) and the precedence order (§5.6).
 - **AppInstance naming** is undefined: numeric (`-01`), by upstream (`-bbg-feed`), or by target?
-  The instance id will appear in container names, logs, metrics and possibly Deephaven table names.
+  The instance id will appear in Deployment and container names, logs, metrics and possibly
+  Deephaven table names.
+- **Kubernetes mapping (v0.4)**: every `application.yml` layer becomes a ConfigMap entry mounted
+  under `/config/...`; `compose.env` values become container `env` and overlay values (image tag,
+  resources, ports); one Deployment per AppInstance; the config tree doubles as the GitOps
+  inventory (§5.6, §5.7, DL-33). Compose mounts the same files for tests.
 - Typos fixed from v0.1: `DockerFile` → `Dockerfile`, `AppInstnace` → `AppInstance`,
   `comfig` → `config`.
 
@@ -171,12 +183,13 @@ One document per topic under `docs/`, Mermaid diagrams so they render on GitHub.
 | D2 | `docs/02-secrets-and-vault.md` | §5.2 Vault layout, authentication, Spring Vault DB credentials, local dev Vault |
 | D3 | `docs/03-docker-images.md` | §5.3 Dockerfile standard, enterprise CA, base image, image naming |
 | D4 | `docs/04-versioning-and-image-tagging.md` | §5.4 semver automation, git-tag triggers, lockstep vs independent, tag conventions, retention; §5.5 tags in compose |
-| D5 | `docs/05-configuration-management.md` | §5.6 config hierarchy, layering & precedence, env vars vs YAML; §5.7 config repo, sync to targets |
-| D6 | `docs/06-runtime-operations.md` | §5.8 `run-compose.sh` spec; §5.13 health, logging, restart policy, resource limits |
+| D5 | `docs/05-configuration-management.md` | §5.6 config hierarchy, layering & precedence, env vars vs YAML; §5.7 config repo and GitOps delivery |
+| D6 | `docs/06-runtime-operations.md` | §5.8 `run-compose.sh` for local / test stacks; §5.13 Kubernetes runtime: probes, resources, logging, restart behaviour |
 | D7 | `docs/07-ci-pipeline-github-actions.md` | §5.9 workflows, affected-subproject detection, caching, JFrog publish |
 | D8 | `docs/08-integration-testing.md` | §5.10 docker/podman test infrastructure, test-data repository, golden-file comparison |
-| D9 | `docs/09-cd-and-release-management.md` | §5.12 dev → qa → prod promotion, deploy to VMs, rollback, hotfix, release cycle |
-| D10 | `docs/10-containerised-ci-execution.md` | §5.11 job layout on GitHub runners, CI build image, Deephaven server lifecycle in CI, layered teardown guarantee, leak check, local parity |
+| D9 | `docs/09-cd-and-release-management.md` | §5.12 dev → qa → prod promotion via GitOps to EKS, rollback, hotfix, release cycle |
+| D10 | `docs/10-containerised-ci-execution.md` | §5.11 job layout on GitHub runners, CI build image, Deephaven server lifecycle in CI, Kubernetes test tier (kind / ephemeral namespace / ARC), layered teardown guarantee, leak check, local parity |
+| D11 | `docs/11-kubernetes-packaging-and-gitops.md` | §5.5–§5.7 Helm / Kustomize packaging per app, AppInstance modelling, config-tree → manifests mapping, Argo CD / Flux delivery, secrets delivery in Kubernetes |
 
 **Template for every document**
 
@@ -200,12 +213,13 @@ to grasp). Minimum set per document:
 | D2 | Vault path layout mirroring config hierarchy | Secret provisioning (who writes secrets, when) | App start → Vault auth → fetch DB creds → JDBC connect; credential rotation |
 | D3 | Image layering (enterprise base → JRE base → app) | CA bundle → base image → app images; CA rotation rebuild | — |
 | D4 | Registry / repository layout in JFrog | git event (PR, main, tag) → version → image tags → JFrog → promotion; retention job | Tag push → workflow → JFrog → config-bump PR |
-| D5 | Config layering & precedence; config repo tree | Config change → PR → lint → merge → sync → restart | Sync agent / push deploy on a target VM |
-| D6 | Container internals (mounts, ports, env, healthcheck) | `run-compose.sh` command dispatch | `run-compose.sh start` → resolve config → compose → container → health |
+| D5 | Config layering & precedence; config repo tree | Config change → PR → lint → merge → GitOps sync → rolling update | Controller reconciling a ConfigMap change into a pod restart |
+| D6 | Pod internals (containers, mounts, probes, resources) and the compose equivalent for tests | `run-compose.sh` command dispatch | Pod start → config mount → readiness → traffic; `run-compose.sh start` for a test stack |
 | D7 | Workflow topology (triggers → jobs → artifacts) | PR checks; main build; nightly | PR → checks → merge → main build → publish |
 | D8 | Test-infra stack | Test levels (unit → component IT → system IT → smoke) | Start deps → seed → run connector → assert → teardown |
-| D9 | Environment / approval matrix | dev → qa → prod promotion with gates; hotfix path | Prod deploy incl. rollback; gitGraph for release / hotfix branching |
-| D10 | Runner → job container → Deephaven and dependency containers → job network (one per execution model A–D) | Job lifecycle: pull → start dependencies → wait healthy → build / test → collect logs → teardown → leak check | Workflow job → compose or Testcontainers → Deephaven → tests → teardown, with the failure and cancel paths drawn |
+| D9 | Cluster / namespace / approval matrix per `<region>-<stage>` | dev → qa → prod promotion through the config repo with gates; hotfix path | Prod deploy via GitOps sync incl. rollback; gitGraph for release / hotfix branching |
+| D10 | Runner → job container → Deephaven and dependency containers → job network (one per execution model A–D); Kubernetes variants (kind in job, ephemeral namespace, ARC) | Job lifecycle: pull → start dependencies → wait healthy → build / test → collect logs → teardown → leak check | Workflow job → compose or Testcontainers → Deephaven → tests → teardown, with the failure and cancel paths drawn |
+| D11 | Config tree → ApplicationSet → Application per instance → Deployment + ConfigMap + Secret | Config or image change → PR → lint → merge → controller sync → rolling update | Image bump PR → merge → controller sync → rollout → readiness → smoke test |
 
 Tasks
 
@@ -228,12 +242,21 @@ Tasks
 - Per app: `Dockerfile`, `docker-compose.yml` template, `run-compose.sh` with every command in §5.8,
   and config for at least `us-dev/cash/<AppName>/{app-common, <inst-01>, <inst-02>}` where the two
   instances differ in endpoints — proving the override mechanism.
-- Vault: compose-based dev Vault + seed script; `source-database` retrieves a DB password through
-  Spring Vault and runs a hello-world query against SQL Server.
+- Secrets (demo simplification, v0.4): **no Vault**. The DB password and any other secret arrive as
+  environment variables (compose) or a Kubernetes `Secret` (kind slice), bound to the **same Spring
+  property names** the Vault integration will use later, so moving to Vault is a property-source
+  change (`spring.config.import=vault://...`), not a code change. D2 still designs the Vault path.
+  `source-database` runs a hello-world query against SQL Server with that password.
 - One end-to-end integration test (SQL Server → `source-database` → stub target, or Deephaven / AMPS
-  if images are available) that passes locally on Docker **and** Podman, and in CI.
-- GitHub workflows: PR, main, release (tag) — green in this repo; images pushed to a registry
-  (JFrog, or GHCR as stand-in for the demo).
+  if images are available) that passes locally on Docker **and** Podman, and on a GitHub-hosted
+  runner.
+- GitHub workflows: PR, main, release (tag) — green in this repo on **GitHub-hosted runners**
+  (`ubuntu-latest`); images pushed to a registry (GHCR as stand-in for JFrog).
+- Kubernetes slice (proposed, confirm — DL-32): minimal packaging for one app (`source-database`)
+  as a Helm chart or Kustomize base plus the overlay for `us-dev/cash/source-database/<inst-01>`,
+  deployed to a `kind` cluster in a CI job with a readiness wait and a smoke test, then deleted. It
+  proves the config-tree → manifest mapping before any EKS cluster exists. Argo CD / Flux wiring is
+  documented in D11, not built.
 - Versioning: main push produces a pre-release tag; pushing `v0.1.0` produces `0.1.0` image tags;
   release workflow opens a PR bumping `IMAGE_TAG` in the dev config.
 - CI proof (§5.11): the PR workflow builds and unit-tests inside the `ci-build` container image; an
@@ -244,13 +267,16 @@ Tasks
 **Out of scope**
 
 - Real connector logic, schemas, performance work.
-- Production Vault / JFrog / runner set-up (documented, not provisioned).
-- Kubernetes manifests.
+- Production Vault / JFrog / self-hosted runner set-up (documented, not provisioned).
+- Vault integration in code (designed in D2, deferred to the next iteration).
+- Real EKS clusters, Argo CD / Flux installation, IRSA, ingress, network to on-prem sources
+  (documented in D11, not provisioned).
 
 Tasks
 
 - [ ] Confirm the in/out list above before starting.
-- [ ] Decide the stand-in registry and stand-in Vault for the demo (§8).
+- [ ] Confirm GHCR as the stand-in registry and the no-Vault stub (§8).
+- [ ] Confirm whether the kind-based Kubernetes slice is part of the demo (DL-32).
 
 ---
 
@@ -261,7 +287,23 @@ Each topic: **Original ask** (from v0.1) → **Must answer** → **Options to ev
 ### 5.1 Repository and build (Gradle, Java 21)
 
 **Original ask:** "use gradle build, java 21"; many subprojects under one repo, including a parent
-subproject (`deephaven-connectors`) with children.
+subproject (`deephaven-connectors`) with children. **Asked v0.4:** Gradle monorepo or git submodules?
+
+**Monorepo vs git submodules — recommendation: one Gradle monorepo (DL-01).**
+
+| | Gradle monorepo (one repo, multi-project build) | Git submodules (one repo per subproject, pinned SHAs) |
+|---|---|---|
+| Change touching framework + a connector | one atomic commit, one PR, one CI run | several PRs plus a pin-bump PR; easy to leave inconsistent |
+| Dependency versions | one version catalog, one BOM | drift between repos unless policed |
+| CI | one pipeline with affected-project detection | recursive clone with credentials per repo; pins bumped by CI |
+| Refactoring / IDE | whole codebase in one workspace | detached HEADs, `--recurse-submodules`, forgotten pin updates |
+| Release | tags per repo or per subproject (§5.4) | natural per-repo releases |
+| Access control | per path (CODEOWNERS) | per repo |
+| Fits when | one team owns the family and the framework API is still moving | a hard boundary is imposed: different owners, compliance, a vendor component |
+
+If a boundary is ever needed, split into separate repositories that consume `connectors-framework`
+as a **published, versioned artifact** from JFrog — not submodules. `deephaven-server` is the only
+later candidate for that (different cadence, mostly upstream packaging); start it in the monorepo.
 
 **Must answer**
 
@@ -310,8 +352,9 @@ retrieval".
 - Vault topology: one cluster or per region; namespaces (Enterprise); who owns policies.
 - **Path convention mirroring the config hierarchy**, e.g. `secret/<env>/<flow>/<app>/<instance>/...`
   plus common levels; policy per app / instance with least privilege.
-- Authentication and the "secret zero" problem on VMs: how the first credential reaches the
-  container without living in git or an image.
+- Authentication and the "secret zero" problem: on Kubernetes the pod's service-account token solves
+  it (Vault Kubernetes auth); for local / test stacks, how the first credential reaches the container
+  without living in git or an image.
 - What counts as a secret (DB passwords, Kafka SASL / AMPS credentials, keystores, API tokens,
   licence files?) vs configuration (hostnames, ports) that stays in the config repo.
 - Database credentials: static KV v2 vs Vault Database secrets engine (dynamic, leased, rotated);
@@ -325,9 +368,14 @@ retrieval".
 
 **Options to evaluate**
 
-- Auth: AppRole (role_id in config, secret_id delivered per host via the deploy / sync channel,
-  response-wrapped) vs TLS certificate auth (machine cert) vs Vault Agent sidecar (auto-auth +
-  template rendering to files, app stays Vault-agnostic) vs Spring Cloud Vault in-process (DL-11).
+- Auth on Kubernetes (production, v0.4): Vault **Kubernetes auth** — the pod's service-account token
+  proves identity, so there is no secret zero to deliver. Delivery options (DL-31): **External
+  Secrets Operator** (Vault → Kubernetes `Secret` → env / volume; app stays Vault-agnostic),
+  **Vault Agent Injector** (sidecar / init container renders files), **Secrets Store CSI driver**
+  with the Vault provider, or **Spring Cloud Vault in-process** using Kubernetes auth (no operator).
+  AWS IRSA is the parallel for any AWS-native secret (DL-11).
+- Auth for local / test stacks: AppRole or a dev-mode token against a compose Vault. **Not built in
+  the demo** (skipped, §4): secrets come from env / `Secret` behind the final property names.
 - DB credentials: static KV first, dynamic later (DL-12).
 
 Tasks
@@ -336,7 +384,8 @@ Tasks
 - [ ] Decide auth method and secret-zero delivery.
 - [ ] Decide static vs dynamic DB credentials.
 - [ ] Define path and policy naming convention aligned with `env/flow/app/instance`.
-- [ ] Define the local-dev Vault bootstrap for the demo.
+- [ ] Demo: stub secrets behind the final property names and document the switch to Vault in D2.
+- [ ] Define the local-dev Vault bootstrap for the iteration after the demo.
 
 ### 5.3 Docker images and the enterprise CA certificate
 
@@ -360,6 +409,9 @@ Tasks
 - Image scanning gate (Xray / Trivy), SBOM generation, signing (cosign) — required or optional?
 - Image naming: `<registry>/<docker-repo>/<group>/<subproject>`, e.g.
   `artifactory.<company>.com/docker-dev-local/deephaven-connectors/source-kafka`.
+- EKS image pull (v0.4): nodes pull from JFrog (`imagePullSecrets`, egress) or from an **ECR mirror**
+  in-region (IAM auth, faster pulls, replicated from JFrog) (DL-34). Node architecture: amd64 only,
+  or multi-arch for Graviton (arm64)? The SQL Server test image is amd64-only, so CI stays amd64.
 - Special images: `deephaven-server` (upstream `ghcr.io/deephaven/server` + CA + plugins), test-infra
   images (AMPS is licensed — likely an internal image; SQL Server; Hazelcast; Kafka).
 
@@ -426,18 +478,24 @@ Tasks
 - [ ] Define retention rules and the in-use protection mechanism.
 - [ ] Define the hotfix versioning path (`1.4.2` → `1.4.3`) end to end.
 
-### 5.5 Image tags in docker-compose
+### 5.5 Image tags in deployment manifests and in compose
 
 **Original ask:** how to manage the image tag version in docker-compose; should the CI/CD process
-auto-change the image tag in docker-compose?
+auto-change the image tag in docker-compose? **Re-scoped v0.4:** in production the tag lives in
+Kubernetes manifests; compose only carries it for local and test stacks.
 
 **Must answer**
 
-- The compose file is a template: `image: ${IMAGE_REPO}/source-kafka:${IMAGE_TAG}`; the value lives
-  in the instance `compose.env`, so each env / flow / instance can pin its own version.
+- Production: the tag is a field of the instance's manifests in the config repo — Helm
+  `image.tag` in `values.yaml` or Kustomize `images[].newTag` under
+  `config/<env>/<flow>/<app>/<instance>/` — and the GitOps controller (§5.7) rolls the Deployment
+  when it changes. Same digest promoted across envs (§5.4), never rebuilt.
+- Local and test stacks: the compose file is a template, `image: ${IMAGE_REPO}/source-kafka:${IMAGE_TAG}`
+  with `IMAGE_TAG` in `compose.env`; CI sets it to the image built in the same run.
 - Who changes `IMAGE_TAG` and where the record lives: git must be the deployment record.
 - Tag vs digest pinning (`image@sha256:...` is immutable but unreadable; store both?) (DL-20).
-- Drift detection: `run-compose.sh status` shows desired tag vs running digest.
+- Drift detection: the controller reports desired vs live image (Argo CD `OutOfSync`, Flux status)
+  and can self-heal; `run-compose.sh status` does the same for test stacks.
 - Rollback = revert the bump commit.
 
 **Options to evaluate**
@@ -447,6 +505,8 @@ auto-change the image tag in docker-compose?
 - Deploy-time parameter: CD passes the tag at deploy and records it elsewhere (state outside git —
   weak audit).
 - Manual edit by an operator (baseline, still via PR).
+- Dev auto-bump by **Argo CD Image Updater** or Flux image automation (writes back to git), PR-only
+  for qa / prod.
 - Bot identity for the PRs: GitHub App token vs PAT (DL-09).
 
 Tasks
@@ -454,6 +514,7 @@ Tasks
 - [ ] Decide GitOps bump vs deploy-time parameter.
 - [ ] Decide tag vs digest pinning per environment (e.g. tag in dev, digest + tag comment in qa/prod).
 - [ ] Define the bot identity and permissions for config-repo PRs.
+- [ ] Decide dev auto-bump (image updater) vs PR-only for every env.
 
 ### 5.6 Configuration model for the Spring Boot services
 
@@ -480,6 +541,12 @@ override YAML?
   files mounted under `/config/...` (deterministic, visible) vs Spring profiles
   (`spring.profiles.active=us-dev,cash,inst01` with `application-<profile>.yml`) (DL-07). Spring
   config-tree for file-based secrets if Vault Agent is used.
+- **Kubernetes delivery (v0.4)**: each file layer becomes a ConfigMap entry — Kustomize
+  `configMapGenerator` from the very same `application.yml` files that compose mounts for tests, or
+  Helm `.Files.Get` — mounted under `/config/<layer>/`; `compose.env` values become container `env`
+  in the overlay / values; one Deployment per AppInstance named `<app>-<instance>` (DL-33). Same
+  files, two consumers: compose for tests, Kubernetes for production; the config-lint job renders
+  both.
 - **Env vars vs YAML rule** (to formalise): env vars for knobs that are per host / per instance and
   are **also consumed by compose** (image tag, published ports, memory, volume paths, instance id,
   Vault role, log level); YAML for structured application config (lists of topics / subscriptions,
@@ -503,10 +570,11 @@ Tasks
 - [ ] Define the required-file checklist per instance and the config-lint job.
 - [ ] Define the AppInstance naming convention.
 
-### 5.7 Configuration repository and synchronisation to target machines
+### 5.7 Configuration repository and delivery to clusters (GitOps)
 
 **Original ask:** should config be separated into its own repo; how to auto-sync config to target
-machines across environments, business flows, AppNames and AppInstances.
+machines across environments, business flows, AppNames and AppInstances. **Re-scoped v0.4:** the
+targets are EKS clusters, so "auto-sync" becomes GitOps reconciliation.
 
 **Must answer**
 
@@ -518,33 +586,41 @@ machines across environments, business flows, AppNames and AppInstances.
 - Alternatives: same monorepo `config/` with CODEOWNERS and path-restricted workflows; one repo per
   env (prod isolation, usually overkill); code repo holds `app-common` defaults + schema while the
   env repo holds env / instance values.
-- **Inventory**: where "which instances run on which host" is recorded (e.g. `inventory.yml` per env
-  in the config repo) — needed by sync and by CD.
-- **Sync mechanisms** for compose on VMs:
-  - Pull: agent / systemd timer on each VM does a sparse `git pull` limited to its env / flow /
-    instances, validates, switches atomically (`releases/<sha>` + `current` symlink), optionally
-    restarts affected instances.
-  - Push: CD job over SSH (rsync / Ansible) from a runner with network reach, driven by the inventory.
-  - Artifact: config packaged as a versioned tarball / OCI artifact in JFrog; target pulls by version
-    (same promotion story as images).
-  - Config server (Spring Cloud Config / Consul): adds a runtime dependency; probably not for compose
-    on VMs.
-- Criteria: allowed network direction (may runners SSH into prod?), audit, rollback, drift detection,
-  whether a config change implies a restart and who triggers it, and reuse of this channel to deliver
-  the Vault secret-zero (§5.2).
+- **Inventory**: on Kubernetes the config tree *is* the inventory — an Argo CD `ApplicationSet`
+  (git directory generator × cluster generator) or Flux `Kustomization`s create one Application per
+  `config/<env>/<flow>/<app>/<instance>/` directory and target the `<region>-<stage>` cluster. No
+  separate host inventory (the VM inventory of v0.2 is dropped).
+- **Delivery mechanism (v0.4)**: a controller in each cluster (or a hub) watches the config repo and
+  reconciles; nothing is pushed to machines.
+  - **Argo CD**: ApplicationSets, sync waves, **sync windows** (maps directly to trading-hours
+    deployment windows), UI and RBAC, Image Updater; hub-and-spoke or per-cluster install.
+  - **Flux**: `GitRepository` + `Kustomization` / `HelmRelease`, image automation; lighter, no UI.
+  - CI push (`kubectl apply` / `helm upgrade` from a workflow): simplest, but state and audit live in
+    the pipeline rather than the cluster; acceptable for the kind-based demo only.
+  - Compose stacks (local / CI tests) read the checked-out config tree directly; nothing to sync.
+- Criteria: is a controller already provided on the EKS platform (DL-30)? How a ConfigMap change
+  becomes a rolling restart (checksum annotation vs Reloader); drift detection and self-heal; RBAC per
+  env; audit; rollback = git revert; secrets never in the config repo (delivered per §5.2 / DL-31).
 - Promotion of a config change dev → qa → prod: same PR flow as image bumps?
 
 Tasks
 
 - [ ] Decide monorepo vs separate config repo (DL-06).
-- [ ] Decide pull vs push sync (DL-10) and define the inventory format.
-- [ ] Define atomic switch, rollback and drift-report behaviour.
-- [ ] Define restart semantics after a config change.
+- [ ] Decide the GitOps controller (DL-30) and the ApplicationSet / Kustomization layout that mirrors
+      the config tree (DL-33).
+- [ ] Define drift / self-heal policy, rollback and sync windows per env.
+- [ ] Define how a ConfigMap change triggers a rollout (checksum annotation vs Reloader) and its blast
+      radius (one instance at a time).
 
 ### 5.8 `run-compose.sh` specification
 
 **Original ask:** `run-compose.sh <env> <business-flow> <AppName> <AppInstance> <cmd>` with
 `start, stop, down, restart, config, printenv, health, ...`.
+
+**Scope (v0.4):** `run-compose.sh` serves **local development and CI test stacks only**. Production
+operations go through Kubernetes (GitOps sync, `kubectl`, the controller UI); compose is never run
+in production. The command table still applies to test stacks; the prod-safety rules reduce to
+"refuse any env other than `local` and the CI env".
 
 **Must answer**
 
@@ -601,8 +677,9 @@ tests, integration tests, image build and publish to JFrog.
 - Structure: reusable workflows (`workflow_call`) per concern (gradle-build, docker-build-push,
   integration-test) + composite actions (setup Java / Gradle / JFrog credentials / CA); matrix over
   subprojects from a JSON list produced by a "detect affected" job.
-- Runners: GitHub-hosted vs self-hosted (network reach to JFrog / Vault, CA pre-installed, Docker or
-  Podman available, capacity for ITs) (DL-17).
+- Runners: **GitHub-hosted for the demo (decided v0.4)**. For the enterprise pipeline: GitHub-hosted
+  vs self-hosted — Actions Runner Controller on EKS is the natural self-hosted form (network reach to
+  JFrog / Vault, CA pre-installed, Docker via `dind`, capacity for ITs) (DL-17, DL-25).
 - Authentication to JFrog: OIDC (GitHub → Artifactory) preferred over static tokens (DL-18); `jf`
   CLI for build-info and Xray scans; `maven-publish` for `connectors-framework` if other repos consume
   it.
@@ -677,6 +754,23 @@ project within containers**, with a **Deephaven server running** during the inte
      the same environment;
   3. the runner itself is a container (Actions Runner Controller, or a Podman-hosted runner), which
      implies nested containers (socket mount or Docker-in-Docker) and their security trade-offs.
+- **Kubernetes as the test substrate (asked v0.4)** — yes, in three ways, usable alone or together:
+  1. **Runners on Kubernetes**: Actions Runner Controller (ARC) on EKS. Runner pods are created per
+     job and destroyed after it, which gives the spin-down guarantee for free. `dind` mode keeps a
+     Docker daemon in the pod so compose and Testcontainers work unchanged; `kubernetes` mode has no
+     Docker, so dependencies must be Kubernetes resources and Testcontainers is out.
+  2. **Dependencies in Kubernetes**: Deephaven (and SQL Server, Kafka) installed by Helm / manifests
+     into an ephemeral namespace `ci-<run_id>` on a dev EKS cluster — the runner authenticates via
+     GitHub OIDC → IAM role → EKS RBAC — deleted in the `always()` step with a namespace TTL as
+     backstop; or into a **kind** cluster created inside the job (no cloud access, images loaded
+     straight from the build).
+  3. **Deployment tests**: the real chart / overlay for the app applied to kind (PRs touching `k8s/`,
+     config or Dockerfiles) or to the dev EKS namespace (`main` / nightly), followed by a smoke test.
+     This is the part compose cannot test, and with production on EKS it is required (DL-32).
+  Component ITs stay on compose / Testcontainers: faster to start and identical on a laptop.
+- **Demo decision (v0.4)**: GitHub-hosted runners (`ubuntu-latest`; Docker and compose preinstalled).
+  Layer 3 (runner in a container) is out of scope for the demo; ARC on EKS is the enterprise
+  follow-up (DL-17, DL-25).
 - **Job layout** in the PR and `main` workflows: `build` (compile, unit tests, static checks, jar and
   image artifacts) → `integration-test` (start Deephaven plus only the dependencies the subproject
   needs, run `integrationTest`, collect logs, tear down) → `system-test` on `main` / nightly (compose
@@ -726,7 +820,8 @@ project within containers**, with a **Deephaven server running** during the inte
 
 Leaning: **C**, with the `build` job running in the `ci-build` image (`container:`) — this covers
 layers 1 and 2. Deephaven is a compose service with a health condition. Testcontainers stays for
-single-dependency component ITs where it is already the natural fit.
+single-dependency component ITs where it is already the natural fit. For the Kubernetes tier: kind
+inside the job on PRs, an ephemeral namespace on dev EKS on `main` / nightly (DL-32).
 
 Tasks
 
@@ -739,6 +834,8 @@ Tasks
 - [ ] Measure the resource budget with Deephaven + SQL Server on the target runner.
 - [ ] Decide whether ITs run against upstream Deephaven, our `deephaven-server` image, or both by test
       level (DL-26).
+- [ ] Define the Kubernetes test tier: kind vs dev EKS namespace, its triggers, RBAC for namespace
+      creation, TTL backstop (DL-32).
 - [ ] Draw the job topology and the start → test → teardown sequence, including failure and cancel
       paths, in D10.
 
@@ -754,10 +851,14 @@ Tasks
 - **Promotion flow**: build once → dev auto-deploy on `main` pre-release → qa on release tag (bump
   PR + approval) → prod on approved PR + change-ticket reference; same digest promoted across JFrog
   repos; no rebuild.
-- Deploy mechanics on VMs (consistent with §5.7): push (CD job over SSH / Ansible: pull image,
-  `run-compose.sh start`, `health`, smoke test) or pull (sync agent sees the bump and restarts).
-  Rolling per instance, stop-on-failure, pre / post hooks.
-- **Deployment windows** per region and flow (trading hours), region ordering (e.g. jp before us).
+- Deploy mechanics on EKS (v0.4, consistent with §5.7): a merged bump in the config repo is
+  reconciled by the GitOps controller into a rolling update of the instance Deployment; readiness
+  probes gate traffic; `maxUnavailable` / `maxSurge` per instance; PodDisruptionBudgets; optional
+  progressive delivery (Argo Rollouts) where an instance has replicas; post-sync hooks run the smoke
+  test.
+- **Deployment windows** per region and flow (trading hours), region ordering (e.g. jp before us);
+  enforced in the cluster by Argo CD sync windows (or a Flux suspend schedule), not only in the
+  pipeline.
 - Rollback: revert the bump PR, same mechanism; target time-to-rollback; compatibility of any
   schema changes.
 - **Hotfix flow**: branch from release tag → patch version → fast-tracked qa → prod.
@@ -765,31 +866,39 @@ Tasks
   release notes generated from Conventional Commits.
 - Change management evidence the pipeline must produce (test reports, scan results, approvals,
   deployment record via GitHub Deployments API, notifications).
-- Access control: who approves prod, bot permissions, CD credentials (SSH keys in Vault, short-lived).
-- Environment parity: one compose template, only config differs; config-lint parity check.
+- Access control: who approves prod, bot permissions on the config repo, controller RBAC per cluster /
+  namespace; no production cluster credentials in GitHub — the controller pulls.
+- Environment parity: one chart / base per app, only overlays differ; config-lint renders every
+  overlay and compares key sets.
 
 Tasks
 
 - [ ] Draw the dev → qa → prod flow and the prod-deploy sequence (incl. rollback) in D9.
-- [ ] Decide push vs pull deploy, consistently with DL-10.
+- [ ] Decide the GitOps controller and promotion mechanics, consistently with DL-30.
+- [ ] Define the EKS cluster topology per `<region>-<stage>` and controller placement (hub vs per
+      cluster).
 - [ ] Define deployment windows and the approval matrix per region / flow.
 - [ ] Define rollback procedure and a rollback drill.
 - [ ] Define the hotfix procedure.
 
 ### 5.13 Cross-cutting topics (not in v0.1 — proposed additions)
 
-- **Observability**: structured JSON logs and shipping (which stack?), Micrometer metrics
-  (Prometheus endpoint; scraping VMs), liveness / readiness used by `HEALTHCHECK` and
-  `run-compose.sh health`, optional tracing; `env / flow / app / instance` labels on every log line
-  and metric.
-- **Resilience**: restart policy (`unless-stopped`), graceful shutdown (`SIGTERM`, Spring lifecycle
-  timeout), memory limits + JVM percentage, `depends_on` with health conditions, behaviour on config
-  change.
-- **Security and compliance**: non-root, read-only filesystem, scanning gates, dependency updates,
-  secret scanning, SBOM, audit trail for deploys and script runs, least-privilege tokens (OIDC),
-  CODEOWNERS.
+- **Observability**: structured JSON logs shipped by Fluent Bit (CloudWatch or the enterprise stack),
+  Micrometer metrics scraped via Prometheus Operator `ServiceMonitor`s, liveness / readiness /
+  startup probes on Kubernetes (`HEALTHCHECK` in compose test stacks), optional tracing;
+  `env / flow / app / instance` labels on every log line and metric.
+- **Resilience**: probes and Kubernetes restart policy (compose `unless-stopped` for test stacks),
+  graceful shutdown (`SIGTERM`, Spring lifecycle timeout, `terminationGracePeriodSeconds`), resource
+  requests / limits sized with the JVM percentage, PodDisruptionBudget, topology spread across AZs,
+  replicas per instance (most connectors are single-consumer: `replicas: 1` with fast restart, or
+  leader election), behaviour on config change.
+- **Security and compliance**: non-root, read-only filesystem, pod security standards (restricted),
+  NetworkPolicies towards on-prem sources, IRSA instead of static AWS keys, pulls from trusted
+  registries only, scanning gates, dependency updates, secret scanning, SBOM, audit trail for deploys,
+  least-privilege tokens (OIDC), CODEOWNERS.
 - **Local developer experience**: run one app + its dependencies with the same compose template and
-  a `local` env in the config tree; Vault dev; documented in each subproject README.
+  a `local` env in the config tree; kind for chart / overlay work; documented in each subproject
+  README.
 - **Decision records**: one ADR per §6 row under `docs/adr/`.
 
 Tasks
@@ -804,8 +913,8 @@ Tasks
 
 | ID | Decision | Options | Leaning (to validate) | Blocking for skeleton | Status |
 |---|---|---|---|---|---|
-| DL-01 | Repository model | monorepo with Gradle subprojects / git submodules / polyrepo | monorepo | yes | open |
-| DL-02 | Deployment platform | compose on VMs / Kubernetes | compose on VMs (given) | yes | confirm |
+| DL-01 | Repository model | monorepo with Gradle subprojects / git submodules / polyrepo | **monorepo** — rationale in §5.1; split into polyrepos consuming published artifacts only if a hard boundary appears | yes | recommended (confirm) |
+| DL-02 | Deployment platform | compose on VMs / Kubernetes | **Kubernetes on Amazon EKS** for production; compose for local dev and CI test stacks only | yes | decided (v0.4) |
 | DL-03 | Versioning scope | lockstep / independent / hybrid | hybrid: connector family lockstep, `deephaven-server` independent | yes | open |
 | DL-04 | Version computation | git-describe plugin / Conventional Commits + release PR / manual tag | Conventional Commits + release PR, tag-triggered release, pre-release on `main` | yes | open |
 | DL-05 | Image tag scheme | see §5.4 table | semver + `sha-` tag; no floating tags beyond dev | yes | open |
@@ -813,14 +922,14 @@ Tasks
 | DL-07 | Config layering mechanism | explicit `spring.config.import` list / profile chain | explicit import list, ≤ 4 file layers | yes | open |
 | DL-08 | Env vars vs YAML | rule of thumb | env vars only for compose-shared / infra knobs | no | open |
 | DL-09 | Image and config bump delivery | GitOps bot PR / deploy-time parameter | GitOps bot PR | yes | open |
-| DL-10 | Config sync to targets | pull agent / push via SSH-Ansible / artifact | pull agent with sparse checkout; push if network policy forbids | no | open |
-| DL-11 | Vault authentication | AppRole / TLS cert / Vault Agent | AppRole via Spring Cloud Vault; Vault Agent if rotation is required | yes | open |
+| DL-10 | Config sync to target VMs | pull agent / push via SSH-Ansible / artifact | superseded by DL-30 (GitOps to clusters) after the v0.4 platform change | no | closed |
+| DL-11 | Vault authentication | AppRole / TLS cert / Vault Agent / **Kubernetes auth** | Kubernetes auth on EKS, delivery per DL-31; AppRole only for local stacks; **not in the demo** | no (demo skips Vault) | open |
 | DL-12 | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open |
 | DL-13 | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | company base image | yes | open |
 | DL-14 | Image build tool | Dockerfile (buildx) / Jib | Dockerfile; jar built by Gradle outside Docker | yes | open |
 | DL-15 | IT harness | Testcontainers / compose / both | Testcontainers for component ITs, compose stack for system ITs | no | open |
 | DL-16 | Test-data distribution | repo checkout / submodule / JFrog artifact | JFrog versioned artifact | no | open |
-| DL-17 | CI runners | GitHub-hosted / self-hosted | self-hosted (enterprise network) | yes | confirm |
+| DL-17 | CI runners | GitHub-hosted / self-hosted (ARC on EKS) | **GitHub-hosted for the demo**; ARC on EKS when enterprise network reach is required | yes | decided for demo (v0.4) |
 | DL-18 | Registry / JFrog auth from CI | static token / OIDC | OIDC | no | open |
 | DL-19 | Docker vs Podman support | Docker first-class / both | both, parity tested in CI | no | open |
 | DL-20 | Tag vs digest pinning in compose | tag / digest / both | tag in dev; digest + tag comment in qa / prod | no | open |
@@ -828,10 +937,16 @@ Tasks
 | DL-22 | Gradle DSL | Kotlin / Groovy | Kotlin | no | open |
 | DL-23 | Spring Boot baseline | 3.x / 4.x | latest GA supported on Java 21; upgrade policy documented | no | open |
 | DL-24 | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | ephemeral compose stack driven from Gradle, build job in the `ci-build` container | yes | open |
-| DL-25 | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | ephemeral | no | confirm |
+| DL-25 | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | GitHub-hosted (ephemeral by nature) for the demo; ephemeral ARC runners later | no | decided for demo (v0.4) |
 | DL-26 | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
 | DL-27 | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | all of them layered, plus a leak-check step | yes | open |
 | DL-28 | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | `ci-build` image maintained by `base-image.yml` | yes | open |
+| DL-29 | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm chart + Kustomize overlays for config | Kustomize overlays generated from the same `application.yml` files the compose stacks use; Helm only where templating is needed | yes | open |
+| DL-30 | GitOps controller | Argo CD / Flux / CI push (`kubectl`, `helm`) | Argo CD (ApplicationSets, sync windows); CI push for the kind demo only | no | open |
+| DL-31 | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open |
+| DL-32 | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | kind on PRs touching packaging, dev EKS namespace on `main` / nightly; kind slice in the demo | no | open (confirm demo slice) |
+| DL-33 | AppInstance modelling on Kubernetes | one Application per instance / one release with N Deployments / StatefulSet | one Application per instance generated from the config tree, each owning one Deployment | yes | open |
+| DL-34 | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
 
 ---
 
@@ -846,6 +961,8 @@ Tasks
 - [ ] §6 updated with a recommendation and rationale per row; one ADR per row.
 - [ ] D10 covers the three container layers, the job layout, the Deephaven CI profile and the
       layered teardown guarantee; its sequence diagram shows the failure and cancel paths.
+- [ ] D11 shows the mapping from the config tree to Kubernetes objects with one worked instance, the
+      GitOps sync flow, and the secrets delivery path.
 
 **Demo skeleton**
 
@@ -854,9 +971,12 @@ Tasks
       `run-compose.sh` implementing every §5.8 command, and config for `us-dev/cash/<AppName>` with
       `app-common` + two instances whose effective configuration provably differs.
 - [ ] `connectors-framework` is consumed by all three source apps; `deephaven-server` skeleton starts.
-- [ ] Dev Vault in compose; `source-database` reads a DB password via Spring Vault and connects to
-      SQL Server.
-- [ ] One end-to-end IT passes locally on Docker and Podman, and in CI.
+- [ ] No Vault in the demo: `source-database` reads its DB password from an environment variable
+      (compose) or a Kubernetes `Secret` (kind slice) bound to the property name the Vault integration
+      will use; D2 documents the switch and it needs no code change.
+- [ ] One end-to-end IT passes locally on Docker and Podman, and on a GitHub-hosted runner.
+- [ ] If the kind slice is in scope: a CI job creates a kind cluster, deploys the `source-database`
+      overlay for one instance, waits for readiness, runs a smoke test and deletes the cluster.
 - [ ] PR, main and release workflows are green in this repo; images are pushed with the §5.4 tags.
 - [ ] Pushing `v0.1.0` produces `0.1.0` image tags and a config-bump PR; no `version.txt` exists.
 - [ ] Every subproject has a README; `docs/00-overview.md` indexes everything.
@@ -871,6 +991,7 @@ Tasks
 - [ ] Deephaven and dependency logs plus JUnit reports are uploaded as artifacts when the job fails.
 - [ ] The same start → test → stop lifecycle runs locally with one Gradle command on Docker and Podman.
 - [ ] The `integration-test` job finishes within the agreed time budget and fits the runner's memory.
+- [ ] Every demo workflow runs on GitHub-hosted runners; no self-hosted runner is required.
 
 ---
 
@@ -879,8 +1000,15 @@ Tasks
 Infrastructure and platform
 
 - [ ] "Git subprojects" = Gradle subprojects in one git repository, not git submodules?
-- [ ] Deployment target is VMs + compose, no Kubernetes? Docker or Podman in production (rootless?)?
-      Host OS (RHEL?) — affects CA store commands and SELinux labels.
+- [ ] EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per
+      stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
+- [ ] Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?
+- [ ] Network path from EKS to on-prem AMPS, Kafka and SQL Server (Direct Connect / VPN, latency
+      budget, security groups / NetworkPolicies)? Are any sources also moving to AWS?
+- [ ] Image pulls on EKS: JFrog reachable from the nodes, or an ECR mirror required? Node
+      architecture (amd64 only, or Graviton arm64)?
+- [ ] Pod security standards, IRSA, service mesh or ingress requirements imposed by the platform team?
+- [ ] Can CI create ephemeral namespaces on a dev EKS cluster (GitHub OIDC → IAM role → EKS RBAC)?
 - [ ] GitHub Enterprise Cloud or Server? Self-hosted runners available? Egress policy (Docker Hub
       blocked → JFrog remotes)?
 - [ ] JFrog: Artifactory edition, Xray, OIDC support, existing repository naming conventions,
@@ -888,11 +1016,11 @@ Infrastructure and platform
 - [ ] Vault: edition, namespaces, enabled auth methods, Database secrets engine allowed for SQL Server?
 - [ ] Is there an existing company base image and a CA bundle distribution / rotation process?
 - [ ] Regional isolation: separate JFrog / Vault / runners per region (us, jp)? Data residency rules?
-- [ ] CI runner class (§5.11): GitHub-hosted standard or larger, or self-hosted? Docker or Podman on
-      it? Ephemeral or persistent? Can it pull `ghcr.io/deephaven/server` and the SQL Server image,
-      directly or through a JFrog remote?
-- [ ] Which container layers are mandatory in CI: dependencies only, the build / test process too, or
-      the runner itself?
+- [ ] CI runners: the demo uses GitHub-hosted runners (decided). For the enterprise pipeline: is ARC
+      on EKS the self-hosted option, and can those runners reach JFrog, `ghcr.io` (or its JFrog
+      remote) and the dev cluster?
+- [ ] Which container layers are mandatory in CI: dependencies only, or the build / test process too?
+      (The runner-in-a-container layer is out of the demo.)
 - [ ] Is mounting the container socket into a job container acceptable to security (root-equivalent
       on the runner), or must nested access go through a rootless Podman socket?
 
@@ -915,7 +1043,8 @@ Process
 - [ ] Ownership: config repo, base images, Vault policies, runners, test-data repo.
 - [ ] Timezone policy (`TZ` per region for the app; UTC in logs?).
 - [ ] Compliance: audit retention, image signing, SBOM required?
-- [ ] Stand-ins for the demo (GHCR instead of JFrog? Vault dev server?) acceptable?
+- [ ] Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); kind for the
+      Kubernetes slice (confirm).
 
 ---
 
@@ -946,6 +1075,15 @@ Process
 | ARC | Actions Runner Controller, the Kubernetes operator for self-hosted runners |
 | DinD | Docker-in-Docker: a container engine running inside a container |
 | leak check | a post-teardown step that fails if resources labelled with the run id still exist |
+| EKS | Amazon Elastic Kubernetes Service, the production platform |
+| Helm / Kustomize | Kubernetes packaging: templated charts with values, or plain manifests with base + overlays |
+| overlay | a Kustomize directory that patches a base for one env / flow / instance |
+| GitOps controller | Argo CD or Flux: reconciles the config repo into the cluster and reports drift |
+| ApplicationSet | Argo CD object that generates one Application per directory, cluster or list entry |
+| sync window | Argo CD schedule that allows or denies syncs, used for deployment windows |
+| ESO | External Secrets Operator: copies secrets from Vault into Kubernetes `Secret`s |
+| IRSA | IAM Roles for Service Accounts: AWS identity for a pod without static keys |
+| kind | Kubernetes in Docker: a throw-away cluster inside a CI job or on a laptop |
 
 ---
 
@@ -956,6 +1094,7 @@ Process
 | v0.1 | — | Original question list (brain-dump). |
 | v0.2 | 2026-09-26 | Restructured into a brief: context, two deliverables with scope, per-topic "must answer / options / tasks", decision log, acceptance criteria, open questions, glossary, traceability. Added missing pieces: `qa` environment, extra config layers, AppInstance naming, `run-compose.sh` command table, completed CD section, cross-cutting topics (observability, resilience, security, local dev). Fixed typos and naming inconsistencies. |
 | v0.3 | 2026-09-26 | Added the containerised CI execution requirement: build, unit and integration tests on GitHub runners inside containers, Deephaven server container alive during ITs, guaranteed teardown. New §5.11 (CD and cross-cutting renumbered to §5.12 / §5.13), new design doc D10 with diagram requirements, constraint row in §2.2, skeleton scope in §4, decision rows DL-24 to DL-28, acceptance criteria, open questions, glossary terms. |
+| v0.4 | 2026-09-26 | Platform correction: production is Kubernetes on Amazon EKS; compose is for local dev and CI test stacks only. Re-scoped §5.5 (tags in manifests), §5.7 (GitOps delivery replaces VM sync), §5.8 (test stacks only), §5.12 (rolling updates via controller, sync windows), §5.13 (Kubernetes runtime). Added Kubernetes mapping of the config tree, `k8s/` per app, design doc D11, decisions DL-29 to DL-34, EKS open questions and glossary. Answered v0.4 questions: Kubernetes as CI test substrate (§5.11), monorepo vs submodules (§5.1). Demo decisions: GitHub-hosted runners, no Vault (DL-02, DL-11, DL-17, DL-25 updated). |
 
 ---
 
@@ -987,3 +1126,7 @@ Process
 | "for CD pipeline," (unfinished) | §5.12 |
 | Flow, structural and sequence diagrams in every `.md` | §3 |
 | *(v0.3)* GitHub runner builds, unit-tests and integration-tests within containers, with a Deephaven server running, spun down after the tests | §2.2, §4, §5.11, §6 (DL-24 to DL-28), §7 |
+| *(v0.4)* Production is Kubernetes on EKS; compose only for testing | §2.1, §2.2, §2.4, §5.5–§5.8, §5.12, §5.13, DL-02, DL-29 to DL-34 |
+| *(v0.4)* Can the GitHub tests run in Kubernetes? | §5.11, DL-32 |
+| *(v0.4)* Gradle monorepo or git submodules? | §5.1, DL-01 |
+| *(v0.4)* Demo: GitHub-hosted runners, skip Vault | §2.2, §4, §5.2, §5.9, §5.11, §7, DL-11, DL-17, DL-25 |
