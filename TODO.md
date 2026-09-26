@@ -3,7 +3,8 @@
 > **Status:** DRAFT v0.5 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
 > execution with an ephemeral Deephaven server; v0.4 set **production on Kubernetes / EKS**,
 > compose for tests only, and the demo simplifications; v0.5 decides **one Gradle monorepo, no git
-> submodules**; see §10).
+> submodules**; v0.6 decides **docker compose for the demo's CI test stack, Kubernetes tier later**;
+> see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -87,7 +88,7 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 | Versioning | Derived from git (tags / commits); **never** stored in a `version.txt` |
 | Environments | `dev` → `qa` → `prod`, per region (`us`, `jp`) |
 | CI execution | Build, unit tests and integration tests run on GitHub runners **inside containers**; a **Deephaven server container** is up for the integration tests; **everything is torn down** after each run, also on failure or cancel (§5.11) |
-| Demo simplifications (v0.4) | **GitHub-hosted runners**; **no Vault** in the demo — secrets stubbed behind the final Spring property names; GHCR as registry stand-in (§4) |
+| Demo simplifications (v0.4, v0.6) | **GitHub-hosted runners**; **no Vault** in the demo — secrets stubbed behind the final Spring property names; GHCR as registry stand-in; **docker compose is the one and only test-stack mechanism in the demo workflows** — no kind, no Kubernetes, no Testcontainers (§4, §5.11) |
 
 ### 2.3 Repository layout (monorepo with Gradle subprojects)
 
@@ -254,11 +255,17 @@ Tasks
   runner.
 - GitHub workflows: PR, main, release (tag) — green in this repo on **GitHub-hosted runners**
   (`ubuntu-latest`); images pushed to a registry (GHCR as stand-in for JFrog).
-- Kubernetes slice (proposed, confirm — DL-32): minimal packaging for one app (`source-database`)
-  as a Helm chart or Kustomize base plus the overlay for `us-dev/cash/source-database/<inst-01>`,
-  deployed to a `kind` cluster in a CI job with a readiness wait and a smoke test, then deleted. It
-  proves the config-tree → manifest mapping before any EKS cluster exists. Argo CD / Flux wiring is
-  documented in D11, not built.
+- Test stack in CI (decided v0.6): **docker compose, and only docker compose**. The workflow starts
+  the stack (Deephaven, SQL Server, the app image under test) with `docker compose up --wait`, runs
+  the tests, collects logs, and tears down with `docker compose down -v` in an always-run step. No
+  kind, no Kubernetes, no Testcontainers in the demo; one mechanism, same on a laptop and in CI.
+
+**Phasing after the demo** (design now in D11, build later)
+
+1. Phase 1 — this demo: compose-based build, tests and CI on GitHub-hosted runners.
+2. Phase 2 — Kubernetes packaging for one app (Helm or Kustomize, DL-29) and a kind-based deploy
+   test in CI (DL-32), proving the config-tree → manifest mapping.
+3. Phase 3 — EKS clusters, GitOps controller, Vault via Kubernetes auth, ephemeral-namespace tests.
 - Versioning: main push produces a pre-release tag; pushing `v0.1.0` produces `0.1.0` image tags;
   release workflow opens a PR bumping `IMAGE_TAG` in the dev config.
 - CI proof (§5.11): the PR workflow builds and unit-tests inside the `ci-build` container image; an
@@ -271,14 +278,15 @@ Tasks
 - Real connector logic, schemas, performance work.
 - Production Vault / JFrog / self-hosted runner set-up (documented, not provisioned).
 - Vault integration in code (designed in D2, deferred to the next iteration).
+- Kubernetes packaging and any kind-based test (Phase 2; designed in D11, not built in the demo).
 - Real EKS clusters, Argo CD / Flux installation, IRSA, ingress, network to on-prem sources
-  (documented in D11, not provisioned).
+  (Phase 3; documented in D11, not provisioned).
 
 Tasks
 
 - [ ] Confirm the in/out list above before starting.
 - [ ] Confirm GHCR as the stand-in registry and the no-Vault stub (§8).
-- [ ] Confirm whether the kind-based Kubernetes slice is part of the demo (DL-32).
+- [x] Kubernetes slice is **not** part of the demo; the demo test stack is docker compose (decided v0.6, DL-32).
 
 ---
 
@@ -716,6 +724,10 @@ tests; how to spin up SQL Server for JDBC tests, query it, and publish to AMPS o
 
 - CI-side lifecycle (runner class, start-up, readiness, teardown, leak check) is specified in §5.11;
   this section owns test levels, test content, test data and the harness.
+- **Demo harness (decided v0.6)**: a docker compose stack per test suite, started and stopped by the
+  workflow (or by the Gradle compose lifecycle so `./gradlew integrationTest` does the same locally);
+  tests reach services by compose service name. Testcontainers is not introduced in the demo; it
+  remains an option for component ITs later (DL-15).
 - Harness: Testcontainers (JUnit 5) per test class vs a `docker compose` stack per suite
   (Testcontainers `ComposeContainer`); Podman compatibility (`DOCKER_HOST` to the Podman socket,
   Ryuk considerations); runner topology if the runner itself is a container (socket mount vs DinD).
@@ -776,9 +788,11 @@ project within containers**, with a **Deephaven server running** during the inte
      config or Dockerfiles) or to the dev EKS namespace (`main` / nightly), followed by a smoke test.
      This is the part compose cannot test, and with production on EKS it is required (DL-32).
   Component ITs stay on compose / Testcontainers: faster to start and identical on a laptop.
-- **Demo decision (v0.4)**: GitHub-hosted runners (`ubuntu-latest`; Docker and compose preinstalled).
-  Layer 3 (runner in a container) is out of scope for the demo; ARC on EKS is the enterprise
-  follow-up (DL-17, DL-25).
+- **Demo decision (v0.4, v0.6)**: GitHub-hosted runners (`ubuntu-latest`; Docker and compose
+  preinstalled) and **docker compose as the only test-stack mechanism** — model C below, decided for
+  the demo. No kind, no ephemeral EKS namespace, no Testcontainers in the demo. Layer 3 (runner in a
+  container) is out of scope; ARC on EKS and the Kubernetes test tier are Phase 2 / 3 (§4) (DL-17,
+  DL-24, DL-25, DL-32).
 - **Job layout** in the PR and `main` workflows: `build` (compile, unit tests, static checks, jar and
   image artifacts) → `integration-test` (start Deephaven plus only the dependencies the subproject
   needs, run `integrationTest`, collect logs, tear down) → `system-test` on `main` / nightly (compose
@@ -827,9 +841,10 @@ project within containers**, with a **Deephaven server running** during the inte
 | D. Fully containerised build in compose | `compose run --rm build ./gradlew build integrationTest` against the `deephaven` service | build and tests both in containers from one file, trivially reproducible | Gradle cache plumbing; slower cold starts; nested access if tests also use Testcontainers |
 
 Leaning: **C**, with the `build` job running in the `ci-build` image (`container:`) — this covers
-layers 1 and 2. Deephaven is a compose service with a health condition. Testcontainers stays for
-single-dependency component ITs where it is already the natural fit. For the Kubernetes tier: kind
-inside the job on PRs, an ephemeral namespace on dev EKS on `main` / nightly (DL-32).
+layers 1 and 2. Deephaven is a compose service with a health condition. **Decided for the demo
+(v0.6): model C with docker compose only.** Testcontainers may join later for single-dependency
+component ITs (DL-15). For the Kubernetes tier, later: kind inside the job on PRs, an ephemeral
+namespace on dev EKS on `main` / nightly (DL-32).
 
 Tasks
 
@@ -935,7 +950,7 @@ Tasks
 | DL-12 | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open |
 | DL-13 | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | company base image | yes | open |
 | DL-14 | Image build tool | Dockerfile (buildx) / Jib | Dockerfile; jar built by Gradle outside Docker | yes | open |
-| DL-15 | IT harness | Testcontainers / compose / both | Testcontainers for component ITs, compose stack for system ITs | no | open |
+| DL-15 | IT harness | Testcontainers / compose / both | **Demo: compose only (decided v0.6).** Later: Testcontainers for component ITs, compose stack for system ITs | no | decided for demo (v0.6) |
 | DL-16 | Test-data distribution | second-repo checkout in CI / JFrog artifact (submodule excluded by DL-01) | JFrog versioned artifact | no | open |
 | DL-17 | CI runners | GitHub-hosted / self-hosted (ARC on EKS) | **GitHub-hosted for the demo**; ARC on EKS when enterprise network reach is required | yes | decided for demo (v0.4) |
 | DL-18 | Registry / JFrog auth from CI | static token / OIDC | OIDC | no | open |
@@ -944,16 +959,16 @@ Tasks
 | DL-21 | Config promotion between envs | PR per env / directory copy | PR per env with CODEOWNERS | no | open |
 | DL-22 | Gradle DSL | Kotlin / Groovy | Kotlin | no | open |
 | DL-23 | Spring Boot baseline | 3.x / 4.x | latest GA supported on Java 21; upgrade policy documented | no | open |
-| DL-24 | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | ephemeral compose stack driven from Gradle, build job in the `ci-build` container | yes | open |
+| DL-24 | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | **Demo: ephemeral docker compose stack (model C) on GitHub-hosted runners (decided v0.6)**; `ci-build` container for the build job per DL-28 | yes | decided for demo (v0.6) |
 | DL-25 | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | GitHub-hosted (ephemeral by nature) for the demo; ephemeral ARC runners later | no | decided for demo (v0.4) |
 | DL-26 | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
 | DL-27 | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | all of them layered, plus a leak-check step | yes | open |
 | DL-28 | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | `ci-build` image maintained by `base-image.yml` | yes | open |
-| DL-29 | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm chart + Kustomize overlays for config | Kustomize overlays generated from the same `application.yml` files the compose stacks use; Helm only where templating is needed | yes | open |
+| DL-29 | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm chart + Kustomize overlays for config | Kustomize overlays generated from the same `application.yml` files the compose stacks use; Helm only where templating is needed | no (Phase 2) | open |
 | DL-30 | GitOps controller | Argo CD / Flux / CI push (`kubectl`, `helm`) | Argo CD (ApplicationSets, sync windows); CI push for the kind demo only | no | open |
 | DL-31 | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open |
-| DL-32 | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | kind on PRs touching packaging, dev EKS namespace on `main` / nightly; kind slice in the demo | no | open (confirm demo slice) |
-| DL-33 | AppInstance modelling on Kubernetes | one Application per instance / one release with N Deployments / StatefulSet | one Application per instance generated from the config tree, each owning one Deployment | yes | open |
+| DL-32 | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | **Demo: none — docker compose only (decided v0.6).** Phase 2: kind on PRs touching packaging; Phase 3: dev EKS namespace on `main` / nightly | no (Phase 2) | decided for demo (v0.6) |
+| DL-33 | AppInstance modelling on Kubernetes | one Application per instance / one release with N Deployments / StatefulSet | one Application per instance generated from the config tree, each owning one Deployment | no (Phase 2) | open |
 | DL-34 | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
 
 ---
@@ -983,8 +998,9 @@ Tasks
       (compose) or a Kubernetes `Secret` (kind slice) bound to the property name the Vault integration
       will use; D2 documents the switch and it needs no code change.
 - [ ] One end-to-end IT passes locally on Docker and Podman, and on a GitHub-hosted runner.
-- [ ] If the kind slice is in scope: a CI job creates a kind cluster, deploys the `source-database`
-      overlay for one instance, waits for readiness, runs a smoke test and deletes the cluster.
+- [ ] The demo's integration-test job starts its stack with docker compose (Deephaven, SQL Server, the
+      app image under test), runs the tests, and tears it down in an always-run step; no Kubernetes
+      and no Testcontainers appear in the demo workflows.
 - [ ] PR, main and release workflows are green in this repo; images are pushed with the §5.4 tags.
 - [ ] Pushing `v0.1.0` produces `0.1.0` image tags and a config-bump PR; no `version.txt` exists.
 - [ ] Every subproject has a README; `docs/00-overview.md` indexes everything.
@@ -1051,8 +1067,8 @@ Process
 - [ ] Ownership: config repo, base images, Vault policies, runners, test-data repo.
 - [ ] Timezone policy (`TZ` per region for the app; UTC in logs?).
 - [ ] Compliance: audit retention, image signing, SBOM required?
-- [ ] Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); kind for the
-      Kubernetes slice (confirm).
+- [ ] Stand-ins for the demo: GHCR instead of JFrog (confirm); Vault skipped (decided); docker compose
+      as the only CI test-stack mechanism, no kind (decided v0.6).
 
 ---
 
@@ -1104,6 +1120,7 @@ Process
 | v0.3 | 2026-09-26 | Added the containerised CI execution requirement: build, unit and integration tests on GitHub runners inside containers, Deephaven server container alive during ITs, guaranteed teardown. New §5.11 (CD and cross-cutting renumbered to §5.12 / §5.13), new design doc D10 with diagram requirements, constraint row in §2.2, skeleton scope in §4, decision rows DL-24 to DL-28, acceptance criteria, open questions, glossary terms. |
 | v0.4 | 2026-09-26 | Platform correction: production is Kubernetes on Amazon EKS; compose is for local dev and CI test stacks only. Re-scoped §5.5 (tags in manifests), §5.7 (GitOps delivery replaces VM sync), §5.8 (test stacks only), §5.12 (rolling updates via controller, sync windows), §5.13 (Kubernetes runtime). Added Kubernetes mapping of the config tree, `k8s/` per app, design doc D11, decisions DL-29 to DL-34, EKS open questions and glossary. Answered v0.4 questions: Kubernetes as CI test substrate (§5.11), monorepo vs submodules (§5.1). Demo decisions: GitHub-hosted runners, no Vault (DL-02, DL-11, DL-17, DL-25 updated). |
 | v0.5 | 2026-09-26 | Decided: one Gradle monorepo, git submodules not used anywhere in the project (code, config, test data). DL-01 closed, DL-16 options narrowed, §2.2 rule added, §2.3 / §5.1 / §5.10 wording updated, §8 question resolved. |
+| v0.6 | 2026-09-26 | Decided for the demo: docker compose is the only test-stack mechanism in the GitHub workflows (model C); no kind, no Kubernetes, no Testcontainers. Kubernetes packaging and the Kubernetes test tier move to Phase 2 / 3 (phasing added to §4). DL-15, DL-24, DL-32 decided for the demo; DL-29 and DL-33 no longer block the skeleton. |
 
 ---
 
@@ -1139,3 +1156,4 @@ Process
 | *(v0.4)* Can the GitHub tests run in Kubernetes? | §5.11, DL-32 |
 | *(v0.4)* Gradle monorepo or git submodules? *(v0.5: decided — monorepo, no submodules)* | §2.2, §2.3, §5.1, DL-01 |
 | *(v0.4)* Demo: GitHub-hosted runners, skip Vault | §2.2, §4, §5.2, §5.9, §5.11, §7, DL-11, DL-17, DL-25 |
+| *(v0.6)* Demo: use docker compose in the GitHub workflow for now, for simplicity | §2.2, §4 (phasing), §5.10, §5.11, §7, §8, DL-15, DL-24, DL-32 |
