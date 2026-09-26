@@ -28,7 +28,13 @@ Under each gradle subproject, the directory structure should have :
 
 
 
-using gradle build, java 21, need to use vault for secrets, use spring vault for database password retrieval, ? The docker images needs CA certificate from enterprise company; Config structure will be : environments (us-dev, us-prod, jp-dev, jp-prod …) / business flows/AppNames(subproject name)/AppInstance ; how to manage CI/CD release cycle in dev, qa, production ; 
+- use gradle build, 
+- java 21, 
+- need to use vault for secrets 
+- use spring vault for database password retrieval, 
+- The docker images needs CA certificate from enterprise company; 
+
+- how to manage CI/CD release cycle in dev, qa, production ; 
 
 how to build docker images for all subprojects with correct image tagging versioning strategy in an enterprise environment , should all subprojects be built with the same versions? 
 
