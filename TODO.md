@@ -1,8 +1,9 @@
 # TODO — Architecture Design Brief: Deephaven Platform & Connectors
 
-> **Status:** DRAFT v0.4 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
-> execution with an ephemeral Deephaven server; v0.4 sets **production on Kubernetes / EKS**,
-> compose for tests only, and the demo simplifications; see §10).
+> **Status:** DRAFT v0.5 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
+> execution with an ephemeral Deephaven server; v0.4 set **production on Kubernetes / EKS**,
+> compose for tests only, and the demo simplifications; v0.5 decides **one Gradle monorepo, no git
+> submodules**; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -75,6 +76,7 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 
 | Area | Constraint |
 |---|---|
+| Repository | **One Gradle monorepo. Git submodules are not used anywhere in this project** — not for code, config or test data (decided v0.5, DL-01) |
 | Build | Gradle multi-project, Gradle wrapper pinned, all dependencies resolved through JFrog (no direct internet) |
 | Language / runtime | Java 21 (LTS); Spring Boot 3.x or 4.x — baseline to decide (DL-23) |
 | Secrets | HashiCorp Vault for **all** secrets; Spring Vault / Spring Cloud Vault for database credential retrieval |
@@ -89,8 +91,8 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 
 ### 2.3 Repository layout (monorepo with Gradle subprojects)
 
-"Git subprojects" is read as **Gradle subprojects inside one git repository**, not git submodules.
-Recommendation and rationale in §5.1 (DL-01).
+"Git subprojects" means **Gradle subprojects inside one git repository**. Decided v0.5: one Gradle
+monorepo, **no git submodules** in this project. Rationale in §5.1 (DL-01).
 
 ```
 <repo-root>/
@@ -288,8 +290,9 @@ Each topic: **Original ask** (from v0.1) → **Must answer** → **Options to ev
 
 **Original ask:** "use gradle build, java 21"; many subprojects under one repo, including a parent
 subproject (`deephaven-connectors`) with children. **Asked v0.4:** Gradle monorepo or git submodules?
+**Decided v0.5: one Gradle monorepo; git submodules are not used in this project, for simplicity.**
 
-**Monorepo vs git submodules — recommendation: one Gradle monorepo (DL-01).**
+**Rationale kept for the record (DL-01).**
 
 | | Gradle monorepo (one repo, multi-project build) | Git submodules (one repo per subproject, pinned SHAs) |
 |---|---|---|
@@ -302,8 +305,13 @@ subproject (`deephaven-connectors`) with children. **Asked v0.4:** Gradle monore
 | Fits when | one team owns the family and the framework API is still moving | a hard boundary is imposed: different owners, compliance, a vendor component |
 
 If a boundary is ever needed, split into separate repositories that consume `connectors-framework`
-as a **published, versioned artifact** from JFrog — not submodules. `deephaven-server` is the only
+as a **published, versioned artifact** from JFrog — never submodules. `deephaven-server` is the only
 later candidate for that (different cadence, mostly upstream packaging); start it in the monorepo.
+
+Consequences of the no-submodule rule elsewhere in this brief: test data comes from a JFrog artifact
+or a second-repo checkout in CI (§5.10, DL-16); a separate config repo, if chosen, is consumed by the
+GitOps controller and by CI checkouts, never embedded (§5.7, DL-06); the design docs live in this
+repository under `docs/`.
 
 **Must answer**
 
@@ -717,8 +725,8 @@ tests; how to spin up SQL Server for JDBC tests, query it, and publish to AMPS o
   licence — CI licensing must be confirmed; fallback: contract tests against a shared dev AMPS),
   Vault dev. All pulled through JFrog remotes.
 - **Test data**: options — checkout of a second repo with a deploy key / GitHub App token (HTTPS
-  preferred over raw SSH), git submodule pinned to a commit, or **versioned datasets published to a
-  JFrog generic repo** and downloaded by version (reproducible, large-file friendly). Layout:
+  preferred over raw SSH), or **versioned datasets published to a JFrog generic repo** and downloaded
+  by version (reproducible, large-file friendly); a git submodule is excluded by DL-01. Layout:
   `testdata/<connector>/<case>/{input/, expected/, manifest.yml}`; versioning compatible with app
   versions.
 - Reference scenario (`source-database`): start SQL Server → apply schema + seed → start AMPS /
@@ -913,7 +921,7 @@ Tasks
 
 | ID | Decision | Options | Leaning (to validate) | Blocking for skeleton | Status |
 |---|---|---|---|---|---|
-| DL-01 | Repository model | monorepo with Gradle subprojects / git submodules / polyrepo | **monorepo** — rationale in §5.1; split into polyrepos consuming published artifacts only if a hard boundary appears | yes | recommended (confirm) |
+| DL-01 | Repository model | monorepo with Gradle subprojects / git submodules / polyrepo | **One Gradle monorepo; no git submodules anywhere in the project.** Rationale in §5.1; a future split, if ever, is into polyrepos consuming published artifacts | yes | decided (v0.5) |
 | DL-02 | Deployment platform | compose on VMs / Kubernetes | **Kubernetes on Amazon EKS** for production; compose for local dev and CI test stacks only | yes | decided (v0.4) |
 | DL-03 | Versioning scope | lockstep / independent / hybrid | hybrid: connector family lockstep, `deephaven-server` independent | yes | open |
 | DL-04 | Version computation | git-describe plugin / Conventional Commits + release PR / manual tag | Conventional Commits + release PR, tag-triggered release, pre-release on `main` | yes | open |
@@ -928,7 +936,7 @@ Tasks
 | DL-13 | Enterprise CA injection | company base image / per-Dockerfile ARG / runtime mount | company base image | yes | open |
 | DL-14 | Image build tool | Dockerfile (buildx) / Jib | Dockerfile; jar built by Gradle outside Docker | yes | open |
 | DL-15 | IT harness | Testcontainers / compose / both | Testcontainers for component ITs, compose stack for system ITs | no | open |
-| DL-16 | Test-data distribution | repo checkout / submodule / JFrog artifact | JFrog versioned artifact | no | open |
+| DL-16 | Test-data distribution | second-repo checkout in CI / JFrog artifact (submodule excluded by DL-01) | JFrog versioned artifact | no | open |
 | DL-17 | CI runners | GitHub-hosted / self-hosted (ARC on EKS) | **GitHub-hosted for the demo**; ARC on EKS when enterprise network reach is required | yes | decided for demo (v0.4) |
 | DL-18 | Registry / JFrog auth from CI | static token / OIDC | OIDC | no | open |
 | DL-19 | Docker vs Podman support | Docker first-class / both | both, parity tested in CI | no | open |
@@ -999,7 +1007,7 @@ Tasks
 
 Infrastructure and platform
 
-- [ ] "Git subprojects" = Gradle subprojects in one git repository, not git submodules?
+- [x] "Git subprojects" = Gradle subprojects in one git repository; no git submodules (decided v0.5).
 - [ ] EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per
       stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
 - [ ] Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?
@@ -1095,6 +1103,7 @@ Process
 | v0.2 | 2026-09-26 | Restructured into a brief: context, two deliverables with scope, per-topic "must answer / options / tasks", decision log, acceptance criteria, open questions, glossary, traceability. Added missing pieces: `qa` environment, extra config layers, AppInstance naming, `run-compose.sh` command table, completed CD section, cross-cutting topics (observability, resilience, security, local dev). Fixed typos and naming inconsistencies. |
 | v0.3 | 2026-09-26 | Added the containerised CI execution requirement: build, unit and integration tests on GitHub runners inside containers, Deephaven server container alive during ITs, guaranteed teardown. New §5.11 (CD and cross-cutting renumbered to §5.12 / §5.13), new design doc D10 with diagram requirements, constraint row in §2.2, skeleton scope in §4, decision rows DL-24 to DL-28, acceptance criteria, open questions, glossary terms. |
 | v0.4 | 2026-09-26 | Platform correction: production is Kubernetes on Amazon EKS; compose is for local dev and CI test stacks only. Re-scoped §5.5 (tags in manifests), §5.7 (GitOps delivery replaces VM sync), §5.8 (test stacks only), §5.12 (rolling updates via controller, sync windows), §5.13 (Kubernetes runtime). Added Kubernetes mapping of the config tree, `k8s/` per app, design doc D11, decisions DL-29 to DL-34, EKS open questions and glossary. Answered v0.4 questions: Kubernetes as CI test substrate (§5.11), monorepo vs submodules (§5.1). Demo decisions: GitHub-hosted runners, no Vault (DL-02, DL-11, DL-17, DL-25 updated). |
+| v0.5 | 2026-09-26 | Decided: one Gradle monorepo, git submodules not used anywhere in the project (code, config, test data). DL-01 closed, DL-16 options narrowed, §2.2 rule added, §2.3 / §5.1 / §5.10 wording updated, §8 question resolved. |
 
 ---
 
@@ -1128,5 +1137,5 @@ Process
 | *(v0.3)* GitHub runner builds, unit-tests and integration-tests within containers, with a Deephaven server running, spun down after the tests | §2.2, §4, §5.11, §6 (DL-24 to DL-28), §7 |
 | *(v0.4)* Production is Kubernetes on EKS; compose only for testing | §2.1, §2.2, §2.4, §5.5–§5.8, §5.12, §5.13, DL-02, DL-29 to DL-34 |
 | *(v0.4)* Can the GitHub tests run in Kubernetes? | §5.11, DL-32 |
-| *(v0.4)* Gradle monorepo or git submodules? | §5.1, DL-01 |
+| *(v0.4)* Gradle monorepo or git submodules? *(v0.5: decided — monorepo, no submodules)* | §2.2, §2.3, §5.1, DL-01 |
 | *(v0.4)* Demo: GitHub-hosted runners, skip Vault | §2.2, §4, §5.2, §5.9, §5.11, §7, DL-11, DL-17, DL-25 |
