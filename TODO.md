@@ -1,6 +1,7 @@
 # TODO — Architecture Design Brief: Deephaven Platform & Connectors
 
-> **Status:** DRAFT v0.2 (restructured and expanded from the v0.1 question list; see §10).
+> **Status:** DRAFT v0.3 (v0.2 restructured the v0.1 question list; v0.3 adds the containerised CI
+> execution requirement with an ephemeral Deephaven server; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -36,11 +37,15 @@ repository layout, Gradle multi-project build, Docker images, docker-compose tem
 `run-compose.sh`, the configuration hierarchy, Vault integration, versioning, and GitHub Actions
 CI/CD — with **no business logic**.
 
+CI must build, unit-test and integration-test **inside containers on GitHub runners**, with a
+**Deephaven server container running** during the integration tests and **everything torn down**
+after every run, whether it passed, failed or was cancelled (§5.11).
+
 **Order of work**
 
 1. Finalise this brief: answer the §8 questions that gate decisions.
 2. Write the design documents (§3). Each document records a recommendation for its §6 rows.
-3. Review; mark §6 rows `decided` (one ADR per decision, see §5.12).
+3. Review; mark §6 rows `decided` (one ADR per decision, see §5.13).
 4. Build the demo skeleton (§4) against the decided conventions only.
 5. Verify against the acceptance criteria (§7).
 
@@ -58,7 +63,7 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 - **Hazelcast** appears in the integration-test list; its role (cache, distributed map, connector
   source/target?) needs clarifying.
 - Business flows `cash`, `deriv`, `swap` and regions `us`, `jp` suggest trading / market-data
-  flows → deployment windows and regional isolation matter (§5.11).
+  flows → deployment windows and regional isolation matter (§5.12).
 - **Deployment target: VMs running Docker or Podman with `docker compose`, not Kubernetes.**
   This single assumption shapes most answers below (config sync, CD, health checks). If Kubernetes
   is a realistic option within 12–18 months, say so now — several recommendations change.
@@ -75,6 +80,7 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 | Containers | Docker **and** Podman must work for local development and integration tests |
 | Versioning | Derived from git (tags / commits); **never** stored in a `version.txt` |
 | Environments | `dev` → `qa` → `prod`, per region (`us`, `jp`) |
+| CI execution | Build, unit tests and integration tests run on GitHub runners **inside containers**; a **Deephaven server container** is up for the integration tests; **everything is torn down** after each run, also on failure or cancel (§5.11) |
 
 ### 2.3 Repository layout (monorepo with Gradle subprojects)
 
@@ -166,10 +172,11 @@ One document per topic under `docs/`, Mermaid diagrams so they render on GitHub.
 | D3 | `docs/03-docker-images.md` | §5.3 Dockerfile standard, enterprise CA, base image, image naming |
 | D4 | `docs/04-versioning-and-image-tagging.md` | §5.4 semver automation, git-tag triggers, lockstep vs independent, tag conventions, retention; §5.5 tags in compose |
 | D5 | `docs/05-configuration-management.md` | §5.6 config hierarchy, layering & precedence, env vars vs YAML; §5.7 config repo, sync to targets |
-| D6 | `docs/06-runtime-operations.md` | §5.8 `run-compose.sh` spec; §5.12 health, logging, restart policy, resource limits |
+| D6 | `docs/06-runtime-operations.md` | §5.8 `run-compose.sh` spec; §5.13 health, logging, restart policy, resource limits |
 | D7 | `docs/07-ci-pipeline-github-actions.md` | §5.9 workflows, affected-subproject detection, caching, JFrog publish |
 | D8 | `docs/08-integration-testing.md` | §5.10 docker/podman test infrastructure, test-data repository, golden-file comparison |
-| D9 | `docs/09-cd-and-release-management.md` | §5.11 dev → qa → prod promotion, deploy to VMs, rollback, hotfix, release cycle |
+| D9 | `docs/09-cd-and-release-management.md` | §5.12 dev → qa → prod promotion, deploy to VMs, rollback, hotfix, release cycle |
+| D10 | `docs/10-containerised-ci-execution.md` | §5.11 job layout on GitHub runners, CI build image, Deephaven server lifecycle in CI, layered teardown guarantee, leak check, local parity |
 
 **Template for every document**
 
@@ -198,6 +205,7 @@ to grasp). Minimum set per document:
 | D7 | Workflow topology (triggers → jobs → artifacts) | PR checks; main build; nightly | PR → checks → merge → main build → publish |
 | D8 | Test-infra stack | Test levels (unit → component IT → system IT → smoke) | Start deps → seed → run connector → assert → teardown |
 | D9 | Environment / approval matrix | dev → qa → prod promotion with gates; hotfix path | Prod deploy incl. rollback; gitGraph for release / hotfix branching |
+| D10 | Runner → job container → Deephaven and dependency containers → job network (one per execution model A–D) | Job lifecycle: pull → start dependencies → wait healthy → build / test → collect logs → teardown → leak check | Workflow job → compose or Testcontainers → Deephaven → tests → teardown, with the failure and cancel paths drawn |
 
 Tasks
 
@@ -228,6 +236,10 @@ Tasks
   (JFrog, or GHCR as stand-in for the demo).
 - Versioning: main push produces a pre-release tag; pushing `v0.1.0` produces `0.1.0` image tags;
   release workflow opens a PR bumping `IMAGE_TAG` in the dev config.
+- CI proof (§5.11): the PR workflow builds and unit-tests inside the `ci-build` container image; an
+  integration-test job starts a Deephaven server container, waits for its readiness probe, runs one
+  IT that writes and reads a table through the Deephaven client, uploads logs on failure, tears
+  everything down, and ends with a leak-check step that proves nothing is left on the runner.
 
 **Out of scope**
 
@@ -578,6 +590,9 @@ tests, integration tests, image build and publish to JFrog.
 
 **Must answer**
 
+- **Execution model**: build, unit tests and integration tests run inside containers with an
+  ephemeral Deephaven server, torn down after every run — specified in §5.11 (DL-24, DL-27, DL-28).
+  This section owns the workflow topology, triggers, gates and publishing.
 - Workflow set: `pr.yml` (build, unit tests, lint, config-lint, affected component ITs), `main.yml`
   (full build, ITs, images with pre-release tags → JFrog dev repo, dev config bump PR), `release.yml`
   (on `v*` or `<subproject>/v*` tag: build or retag, promote, GitHub Release + changelog, qa bump
@@ -614,6 +629,8 @@ tests; how to spin up SQL Server for JDBC tests, query it, and publish to AMPS o
 
 **Must answer**
 
+- CI-side lifecycle (runner class, start-up, readiness, teardown, leak check) is specified in §5.11;
+  this section owns test levels, test content, test data and the harness.
 - Harness: Testcontainers (JUnit 5) per test class vs a `docker compose` stack per suite
   (Testcontainers `ComposeContainer`); Podman compatibility (`DOCKER_HOST` to the Podman socket,
   Ryuk considerations); runner topology if the runner itself is a container (socket mount vs DinD).
@@ -632,7 +649,7 @@ tests; how to spin up SQL Server for JDBC tests, query it, and publish to AMPS o
   target → compare with expected output (canonical JSON, ordering rules, timestamp tolerance) → tear
   down. Same shape for `source-kafka` (produce input) and `source-amps`.
 - Test levels: unit (no containers) → component IT (one dependency, Testcontainers) → system IT
-  (compose stack including our images; `main` / nightly) → post-deploy smoke test (§5.11).
+  (compose stack including our images; `main` / nightly) → post-deploy smoke test (§5.12).
 - Speed and cost: container reuse, parallelism, image pre-pull, PR budget (~15–20 min).
 - `test-infra/compose/` stacks reused for local development (`dev-up` task).
 
@@ -644,7 +661,88 @@ Tasks
 - [ ] Define expected-output comparison rules.
 - [ ] Define resource budget and which ITs run on PR vs main vs nightly.
 
-### 5.11 CD pipeline and release cycle (dev → qa → prod)
+### 5.11 Containerised CI execution — build, unit and integration tests with an ephemeral Deephaven server
+
+**Original ask (added v0.3):** the GitHub runner must **build, unit-test and integration-test the
+project within containers**, with a **Deephaven server running** during the integration tests, and
+**spin everything down after the tests**.
+
+**Must answer**
+
+- **Which container layers are required** — confirm all three or a subset (§8):
+  1. the dependencies under test run in containers (Deephaven server, SQL Server, Kafka, AMPS,
+     Vault dev);
+  2. the build and test process itself runs in a container: a pinned `ci-build` image (JDK 21,
+     enterprise CA, container CLI, `jf` CLI; Gradle via the wrapper) so a CI run and a local run are
+     the same environment;
+  3. the runner itself is a container (Actions Runner Controller, or a Podman-hosted runner), which
+     implies nested containers (socket mount or Docker-in-Docker) and their security trade-offs.
+- **Job layout** in the PR and `main` workflows: `build` (compile, unit tests, static checks, jar and
+  image artifacts) → `integration-test` (start Deephaven plus only the dependencies the subproject
+  needs, run `integrationTest`, collect logs, tear down) → `system-test` on `main` / nightly (compose
+  stack with **our** images and Deephaven). Matrix per subproject vs one job; what runs on PR vs
+  `main` vs nightly; `needs:` ordering so images built in `build` are what `system-test` runs.
+- **Deephaven server lifecycle in CI**: image and version pin (upstream `ghcr.io/deephaven/server`
+  through a JFrog remote, or our `deephaven-server` image built earlier in the same workflow), JVM
+  heap via `START_OPTS`, auth mode for tests (anonymous handler vs pre-shared key), exposed port
+  (10000), readiness probe (HTTP or gRPC health) with a start-up timeout, how tests reach it (service
+  hostname on the job network vs mapped host port), how tests assert results (Deephaven Java client
+  snapshot of the target table), and how test tables are isolated between test classes.
+- **Teardown guarantee**, layered so that a leak needs several failures at once:
+  1. a cleanup step with `if: always()` — it runs on success, failure **and** cancel — that executes
+     `compose down -v --remove-orphans` for this run's project name and prunes anything labelled with
+     this run id;
+  2. every container, volume and network the job creates carries a label
+     `com.<company>.ci.run=<run_id>` and a unique compose project name (`ci-<run_id>-<attempt>`), so
+     parallel jobs on one runner never collide and cleanup can target exactly this run;
+  3. ephemeral runners (a fresh VM or container per job) as the backstop; Testcontainers' Ryuk reaper
+     wherever Testcontainers is used.
+  A **leak-check step** after teardown lists containers, volumes and networks with the run label and
+  fails (or warns) if any remain. `timeout-minutes` on every job so a hung Deephaven cannot hold a
+  runner.
+- **Diagnostics before teardown**: `compose ps`, Deephaven and dependency logs, JUnit reports, uploaded
+  as artifacts on failure (or always) with a retention period.
+- **Networking and ports**: no published host ports in CI (tests talk over the job or compose
+  network); random host ports only where Testcontainers is used; rootless Podman constraints.
+- **Caches inside containers**: Gradle home as a mounted volume or `actions/cache`; Docker layer cache;
+  pre-pull of the Deephaven and SQL Server images to cut start-up time.
+- **Resource budget**: Deephaven heap + SQL Server + Gradle daemon must fit the runner class; measure,
+  then choose GitHub-hosted standard vs larger vs self-hosted (§5.9, DL-17).
+- **Local parity**: one command (`./gradlew integrationTest`) runs the same start → test → stop
+  lifecycle on a developer machine with Docker or Podman.
+- **Security**: mounting the container socket into a job container is root-equivalent on the runner;
+  acceptable on ephemeral runners only. Rootless Podman socket as the alternative.
+- **Enterprise egress**: `ghcr.io` and `mcr.microsoft.com` may be blocked; every test image must be
+  mirrored through JFrog remotes and pinned by digest.
+
+**Options to evaluate** (DL-24)
+
+| Model | How | Pros | Cons |
+|---|---|---|---|
+| A. Job `container:` + `services:` | GitHub starts the job container and a Deephaven service container on one network and removes both when the job ends | least YAML, teardown built in, hostnames for free | needs Docker on the runner (not Podman-only); one container per service, no compose stack; not reproducible locally as-is |
+| B. Host job + Testcontainers | Gradle runs on the runner host; tests start Deephaven via Testcontainers; Ryuk reaps | closest to the test code, random ports, works locally | build itself is not in a container; Ryuk needs socket access; Podman quirks |
+| C. Ephemeral compose stack | `compose up --wait` in a step, or a Gradle compose plugin (`composeUp` → `integrationTest` → `composeDown`), plus an `always()` down step | same path locally and in CI, Docker and Podman, whole stacks, our images testable | we own teardown, labels and project names; plugin maintenance |
+| D. Fully containerised build in compose | `compose run --rm build ./gradlew build integrationTest` against the `deephaven` service | build and tests both in containers from one file, trivially reproducible | Gradle cache plumbing; slower cold starts; nested access if tests also use Testcontainers |
+
+Leaning: **C**, with the `build` job running in the `ci-build` image (`container:`) — this covers
+layers 1 and 2. Deephaven is a compose service with a health condition. Testcontainers stays for
+single-dependency component ITs where it is already the natural fit.
+
+Tasks
+
+- [ ] Confirm which container layers are mandatory and which runner class is available (§8).
+- [ ] Choose the execution model (DL-24) and the CI build image approach (DL-28).
+- [ ] Define the Deephaven CI profile: version pin, heap, auth mode, readiness probe, start-up timeout.
+- [ ] Define labels, the project-name scheme, the `always()` teardown and the leak-check step; prove
+      them on a passing, a failing and a cancelled run.
+- [ ] Define the diagnostics bundle uploaded on failure.
+- [ ] Measure the resource budget with Deephaven + SQL Server on the target runner.
+- [ ] Decide whether ITs run against upstream Deephaven, our `deephaven-server` image, or both by test
+      level (DL-26).
+- [ ] Draw the job topology and the start → test → teardown sequence, including failure and cancel
+      paths, in D10.
+
+### 5.12 CD pipeline and release cycle (dev → qa → prod)
 
 **Original ask:** "how to manage CI/CD release cycle in dev, qa, production"; "for CD pipeline, ..."
 (left unfinished in v0.1 — this section completes it).
@@ -678,7 +776,7 @@ Tasks
 - [ ] Define rollback procedure and a rollback drill.
 - [ ] Define the hotfix procedure.
 
-### 5.12 Cross-cutting topics (not in v0.1 — proposed additions)
+### 5.13 Cross-cutting topics (not in v0.1 — proposed additions)
 
 - **Observability**: structured JSON logs and shipping (which stack?), Micrometer metrics
   (Prometheus endpoint; scraping VMs), liveness / readiness used by `HEALTHCHECK` and
@@ -729,6 +827,11 @@ Tasks
 | DL-21 | Config promotion between envs | PR per env / directory copy | PR per env with CODEOWNERS | no | open |
 | DL-22 | Gradle DSL | Kotlin / Groovy | Kotlin | no | open |
 | DL-23 | Spring Boot baseline | 3.x / 4.x | latest GA supported on Java 21; upgrade policy documented | no | open |
+| DL-24 | CI test execution model (§5.11) | job `container:` + `services:` / host job + Testcontainers / ephemeral compose stack / fully containerised compose build | ephemeral compose stack driven from Gradle, build job in the `ci-build` container | yes | open |
+| DL-25 | Runner lifecycle | persistent self-hosted / ephemeral self-hosted (ARC or `--ephemeral`) / GitHub-hosted | ephemeral | no | confirm |
+| DL-26 | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
+| DL-27 | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | all of them layered, plus a leak-check step | yes | open |
+| DL-28 | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | `ci-build` image maintained by `base-image.yml` | yes | open |
 
 ---
 
@@ -741,6 +844,8 @@ Tasks
 - [ ] Every document contains the diagrams required in §3, each captioned and explained.
 - [ ] Every convention is given as a table with concrete examples (names, paths, tags, commands).
 - [ ] §6 updated with a recommendation and rationale per row; one ADR per row.
+- [ ] D10 covers the three container layers, the job layout, the Deephaven CI profile and the
+      layered teardown guarantee; its sequence diagram shows the failure and cancel paths.
 
 **Demo skeleton**
 
@@ -755,6 +860,17 @@ Tasks
 - [ ] PR, main and release workflows are green in this repo; images are pushed with the §5.4 tags.
 - [ ] Pushing `v0.1.0` produces `0.1.0` image tags and a config-bump PR; no `version.txt` exists.
 - [ ] Every subproject has a README; `docs/00-overview.md` indexes everything.
+
+**Containerised CI execution (§5.11)**
+
+- [ ] The PR workflow's `build` job runs inside the `ci-build` container image and passes unit tests.
+- [ ] The `integration-test` job starts a Deephaven server container, waits for its readiness probe,
+      runs at least one IT that writes and reads a table through the Deephaven client, and tears down.
+- [ ] The leak-check step after teardown finds no containers, volumes or networks carrying this run's
+      label — demonstrated on a passing run, a failing run and a cancelled run.
+- [ ] Deephaven and dependency logs plus JUnit reports are uploaded as artifacts when the job fails.
+- [ ] The same start → test → stop lifecycle runs locally with one Gradle command on Docker and Podman.
+- [ ] The `integration-test` job finishes within the agreed time budget and fits the runner's memory.
 
 ---
 
@@ -772,6 +888,13 @@ Infrastructure and platform
 - [ ] Vault: edition, namespaces, enabled auth methods, Database secrets engine allowed for SQL Server?
 - [ ] Is there an existing company base image and a CA bundle distribution / rotation process?
 - [ ] Regional isolation: separate JFrog / Vault / runners per region (us, jp)? Data residency rules?
+- [ ] CI runner class (§5.11): GitHub-hosted standard or larger, or self-hosted? Docker or Podman on
+      it? Ephemeral or persistent? Can it pull `ghcr.io/deephaven/server` and the SQL Server image,
+      directly or through a JFrog remote?
+- [ ] Which container layers are mandatory in CI: dependencies only, the build / test process too, or
+      the runner itself?
+- [ ] Is mounting the container socket into a job container acceptable to security (root-equivalent
+      on the runner), or must nested access go through a rootless Podman socket?
 
 Product and domain
 
@@ -782,6 +905,8 @@ Product and domain
 - [ ] Number of instances and hosts per env; are instances pinned to hosts? (sizes the sync / CD
       design)
 - [ ] What identifies an AppInstance (numeric, upstream name, target name)?
+- [ ] Deephaven version and auth mode for CI tests (anonymous handler vs pre-shared key)? Must our
+      `deephaven-server` image be under test on every PR, or only on `main` / nightly?
 
 Process
 
@@ -813,6 +938,14 @@ Process
 | ADR | Architecture Decision Record, one per decision in §6 |
 | IT | integration test (needs containers) |
 | Xray | JFrog vulnerability scanner |
+| job container | the container a GitHub Actions job runs in (`container:` key) |
+| service container | a dependency container GitHub starts next to a job and removes afterwards (`services:` key) |
+| ci-build image | pinned image with JDK 21, the enterprise CA and the CLIs, used to run builds and tests in CI and locally |
+| Ryuk | Testcontainers' reaper sidecar that removes containers when the test JVM exits |
+| ephemeral runner | a self-hosted runner that serves exactly one job and is then destroyed |
+| ARC | Actions Runner Controller, the Kubernetes operator for self-hosted runners |
+| DinD | Docker-in-Docker: a container engine running inside a container |
+| leak check | a post-teardown step that fails if resources labelled with the run id still exist |
 
 ---
 
@@ -822,6 +955,7 @@ Process
 |---|---|---|
 | v0.1 | — | Original question list (brain-dump). |
 | v0.2 | 2026-09-26 | Restructured into a brief: context, two deliverables with scope, per-topic "must answer / options / tasks", decision log, acceptance criteria, open questions, glossary, traceability. Added missing pieces: `qa` environment, extra config layers, AppInstance naming, `run-compose.sh` command table, completed CD section, cross-cutting topics (observability, resilience, security, local dev). Fixed typos and naming inconsistencies. |
+| v0.3 | 2026-09-26 | Added the containerised CI execution requirement: build, unit and integration tests on GitHub runners inside containers, Deephaven server container alive during ITs, guaranteed teardown. New §5.11 (CD and cross-cutting renumbered to §5.12 / §5.13), new design doc D10 with diagram requirements, constraint row in §2.2, skeleton scope in §4, decision rows DL-24 to DL-28, acceptance criteria, open questions, glossary terms. |
 
 ---
 
@@ -837,7 +971,7 @@ Process
 | Gradle build, Java 21 | §5.1 |
 | Vault for secrets; Spring Vault for database password | §5.2 |
 | Enterprise CA certificate in Docker images | §5.3 |
-| CI/CD release cycle in dev, qa, production | §5.11 |
+| CI/CD release cycle in dev, qa, production | §5.12 |
 | Image tagging / versioning strategy; same version for all subprojects? | §5.4 |
 | No `version.txt`; hybrid semver automation + git-tag trigger; tag naming conventions; cleanup of old non-prod images | §5.4 |
 | Image tag in docker-compose; should CI/CD auto-change it? | §5.5 |
@@ -850,5 +984,6 @@ Process
 | Docker / Podman to spin up Hazelcast, AMPS, Deephaven for integration tests | §5.10 |
 | SSH to a test input / expected-output repo to fetch data and run tests | §5.10 |
 | Spin up SQL Server for JDBC tests, query, publish to AMPS or Deephaven | §5.10 |
-| "for CD pipeline," (unfinished) | §5.11 |
+| "for CD pipeline," (unfinished) | §5.12 |
 | Flow, structural and sequence diagrams in every `.md` | §3 |
+| *(v0.3)* GitHub runner builds, unit-tests and integration-tests within containers, with a Deephaven server running, spun down after the tests | §2.2, §4, §5.11, §6 (DL-24 to DL-28), §7 |
