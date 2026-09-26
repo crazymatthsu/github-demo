@@ -3,8 +3,9 @@
 > **Status:** DRAFT v0.5 (v0.2 restructured the v0.1 question list; v0.3 added containerised CI
 > execution with an ephemeral Deephaven server; v0.4 set **production on Kubernetes / EKS**,
 > compose for tests only, and the demo simplifications; v0.5 decides **one Gradle monorepo, no git
-> submodules**; v0.6 decides **docker compose for the demo's CI test stack, Kubernetes tier later**;
-> see §10).
+> submodules**; v0.6 decides **docker compose for the demo's CI test stack**; v0.7 decides **Helm, one
+> release per AppInstance with one replica, a two-step demo (compose, then kind), config in this repo,
+> and auto-deploy to dev on merge to `main`**; see §10).
 > **Purpose:** requirements-and-questions brief for two deliverables: (A) a set of architecture
 > design documents and (B) a demo skeleton project that proves the conventions end to end.
 > **Not in this file:** the design itself, code, or final decisions. Every row in §6 stays `open`
@@ -88,7 +89,11 @@ Do not start the skeleton before every §6 row marked **blocking = yes** has a r
 | Versioning | Derived from git (tags / commits); **never** stored in a `version.txt` |
 | Environments | `dev` → `qa` → `prod`, per region (`us`, `jp`) |
 | CI execution | Build, unit tests and integration tests run on GitHub runners **inside containers**; a **Deephaven server container** is up for the integration tests; **everything is torn down** after each run, also on failure or cancel (§5.11) |
-| Demo simplifications (v0.4, v0.6) | **GitHub-hosted runners**; **no Vault** in the demo — secrets stubbed behind the final Spring property names; GHCR as registry stand-in; **docker compose is the one and only test-stack mechanism in the demo workflows** — no kind, no Kubernetes, no Testcontainers (§4, §5.11) |
+| Demo simplifications (v0.4, v0.6, v0.7) | **GitHub-hosted runners**; **no Vault** in the demo — secrets stubbed behind the final Spring property names; GHCR as registry stand-in; docker compose is the only **integration-test** stack mechanism; the demo has **two steps**: (1) docker compose, (2) kind-based Kubernetes with the Helm chart (§4) |
+| Kubernetes packaging | **Helm chart per app** (decided v0.7, DL-29) |
+| AppInstance on Kubernetes | **One Application / Helm release per AppInstance, generated from the config tree, `replicas: 1` for now** (decided v0.7, DL-33) |
+| Config location | **In this monorepo under `config/` for now** (decided v0.7, DL-06); the layout is repo-agnostic so it can move later |
+| CD trigger | **Merge to `main` auto-deploys to the `dev` targets** — compose hosts in demo step 1, the cluster in step 2; qa and prod stay PR-gated (decided v0.7, §5.12) |
 
 ### 2.3 Repository layout (monorepo with Gradle subprojects)
 
@@ -109,7 +114,7 @@ monorepo, **no git submodules** in this project. Rationale in §5.1 (DL-01).
 │   ├── source-kafka/                 # app: Kafka → Deephaven / AMPS
 │   ├── source-amps/                  # app: AMPS → Deephaven
 │   └── source-database/              # app: JDBC (SQL Server) → AMPS / Deephaven
-├── config/                           # candidate to move to its own repository — see §5.7 / DL-06
+├── config/                           # env / flow / app / instance configuration — in this monorepo for now (DL-06)
 ├── test-infra/                       # compose stacks for dependencies (kafka, amps, sqlserver, deephaven, hazelcast, vault)
 ├── .github/
 │   ├── workflows/                    # pr, main, release, nightly, base-image
@@ -139,18 +144,21 @@ and `source-kafka`.
 │   └── docker-compose.yml             # ONE template for all env/flow/instance; LOCAL DEV + CI TEST STACKS ONLY
 ├── scripts/
 │   └── run-compose.sh                 # <env> <business-flow> <AppName> <AppInstance> <cmd>   (spec in §5.8)
-├── k8s/                               # Kubernetes packaging for THIS app: Helm chart or Kustomize base (DL-29)
-│   └── ...                            # Deployment, Service, ConfigMap mounts, probes, resources
-└── config/                            # may live in the config repo instead (§5.7)
+├── helm/<AppName>/                    # Helm chart for THIS app (decided v0.7, DL-29): Chart.yaml, values.yaml,
+│   └── templates/                     #   Deployment (replicas 1), Service, ConfigMap from application.yml, probes
+└── config/                            # in this monorepo for now (decided v0.7, DL-06)
     └── <env>/                         # us-dev | us-qa | us-prod | jp-dev | jp-qa | jp-prod
+        ├── targets.yml                # dev deploy targets: compose hosts (step 1) or cluster + namespace (step 2 / EKS)
         └── <business-flow>/           # cash | deriv | swap
             └── <AppName>/             # == subproject name, e.g. source-kafka
                 ├── app-common/        # shared by all instances of this app in this env + flow
                 │   ├── application.yml
+                │   ├── values.yaml    # shared Helm values for this app in this env + flow
                 │   └── ...            # logback.xml, client properties, ...
                 └── <AppInstance>/     # same image, different config (e.g. source-kafka-01)
                     ├── compose.env    # variables consumed by docker-compose.yml: IMAGE_TAG, ports, JVM opts, paths
                     ├── application.yml # instance overrides: endpoints, topics, subscriptions, table names
+                    ├── values.yaml    # Helm values for this instance: image.tag, replicas (1), resources, env
                     └── ...            # other instance files
 ```
 
@@ -165,10 +173,12 @@ Gaps in the v0.1 tree to resolve while writing D5:
 - **AppInstance naming** is undefined: numeric (`-01`), by upstream (`-bbg-feed`), or by target?
   The instance id will appear in Deployment and container names, logs, metrics and possibly
   Deephaven table names.
-- **Kubernetes mapping (v0.4)**: every `application.yml` layer becomes a ConfigMap entry mounted
-  under `/config/...`; `compose.env` values become container `env` and overlay values (image tag,
-  resources, ports); one Deployment per AppInstance; the config tree doubles as the GitOps
-  inventory (§5.6, §5.7, DL-33). Compose mounts the same files for tests.
+- **Kubernetes mapping (v0.4, Helm decided v0.7)**: one Helm release per AppInstance
+  (`<app>-<instance>`, `replicas: 1`), values layered `helm/<app>/values.yaml` → `app-common/values.yaml`
+  → `<instance>/values.yaml`; the `application.yml` layers are passed to the chart as file values
+  (`--set-file`) and rendered into a ConfigMap mounted under `/config/...`; `compose.env` values
+  become container `env` in the instance values. `targets.yml` per env names the deploy target of
+  each instance (§5.6, §5.7, DL-33). Compose mounts the same files for tests.
 - Typos fixed from v0.1: `DockerFile` → `Dockerfile`, `AppInstnace` → `AppInstance`,
   `comfig` → `config`.
 
@@ -190,9 +200,9 @@ One document per topic under `docs/`, Mermaid diagrams so they render on GitHub.
 | D6 | `docs/06-runtime-operations.md` | §5.8 `run-compose.sh` for local / test stacks; §5.13 Kubernetes runtime: probes, resources, logging, restart behaviour |
 | D7 | `docs/07-ci-pipeline-github-actions.md` | §5.9 workflows, affected-subproject detection, caching, JFrog publish |
 | D8 | `docs/08-integration-testing.md` | §5.10 docker/podman test infrastructure, test-data repository, golden-file comparison |
-| D9 | `docs/09-cd-and-release-management.md` | §5.12 dev → qa → prod promotion via GitOps to EKS, rollback, hotfix, release cycle |
+| D9 | `docs/09-cd-and-release-management.md` | §5.12 auto-deploy to dev on merge to `main`, dev → qa → prod promotion via GitOps to EKS, rollback, hotfix, release cycle |
 | D10 | `docs/10-containerised-ci-execution.md` | §5.11 job layout on GitHub runners, CI build image, Deephaven server lifecycle in CI, Kubernetes test tier (kind / ephemeral namespace / ARC), layered teardown guarantee, leak check, local parity |
-| D11 | `docs/11-kubernetes-packaging-and-gitops.md` | §5.5–§5.7 Helm / Kustomize packaging per app, AppInstance modelling, config-tree → manifests mapping, Argo CD / Flux delivery, secrets delivery in Kubernetes |
+| D11 | `docs/11-kubernetes-packaging-and-gitops.md` | §5.5–§5.7 Helm chart per app (decided), one release per AppInstance from the config tree, config-tree → values / ConfigMap mapping, `helm upgrade` from CI (demo) and Argo CD / Flux delivery (EKS), secrets delivery in Kubernetes |
 
 **Template for every document**
 
@@ -222,7 +232,7 @@ to grasp). Minimum set per document:
 | D8 | Test-infra stack | Test levels (unit → component IT → system IT → smoke) | Start deps → seed → run connector → assert → teardown |
 | D9 | Cluster / namespace / approval matrix per `<region>-<stage>` | dev → qa → prod promotion through the config repo with gates; hotfix path | Prod deploy via GitOps sync incl. rollback; gitGraph for release / hotfix branching |
 | D10 | Runner → job container → Deephaven and dependency containers → job network (one per execution model A–D); Kubernetes variants (kind in job, ephemeral namespace, ARC) | Job lifecycle: pull → start dependencies → wait healthy → build / test → collect logs → teardown → leak check | Workflow job → compose or Testcontainers → Deephaven → tests → teardown, with the failure and cancel paths drawn |
-| D11 | Config tree → ApplicationSet → Application per instance → Deployment + ConfigMap + Secret | Config or image change → PR → lint → merge → controller sync → rolling update | Image bump PR → merge → controller sync → rollout → readiness → smoke test |
+| D11 | Config tree → `targets.yml` / ApplicationSet → Helm release per instance → Deployment + ConfigMap + Secret | Config or image change → PR → lint → merge → `deploy-dev` (`helm upgrade`) or controller sync → rolling update | Merge to `main` → build → publish → `helm upgrade --install` per instance → readiness → smoke test → tag write-back |
 
 Tasks
 
@@ -255,17 +265,32 @@ Tasks
   runner.
 - GitHub workflows: PR, main, release (tag) — green in this repo on **GitHub-hosted runners**
   (`ubuntu-latest`); images pushed to a registry (GHCR as stand-in for JFrog).
-- Test stack in CI (decided v0.6): **docker compose, and only docker compose**. The workflow starts
-  the stack (Deephaven, SQL Server, the app image under test) with `docker compose up --wait`, runs
-  the tests, collects logs, and tears down with `docker compose down -v` in an always-run step. No
-  kind, no Kubernetes, no Testcontainers in the demo; one mechanism, same on a laptop and in CI.
+- Integration-test stack in CI (decided v0.6): **docker compose, and only docker compose**. The
+  workflow starts the stack (Deephaven, SQL Server, the app image under test) with
+  `docker compose up --wait`, runs the tests, collects logs, and tears down with
+  `docker compose down -v` in an always-run step. No Testcontainers in the demo.
+- **Demo step 2 — kind-based Kubernetes (decided v0.7)**, built after step 1 is green: a Helm chart
+  per app under `helm/<AppName>/` (start with `source-database`), one release per AppInstance
+  generated from the config tree with `replicas: 1`, values and `application.yml` layers taken from
+  `config/us-dev/cash/<AppName>/{app-common,<inst-01>,<inst-02>}`. A workflow creates a `kind`
+  cluster, loads the images built in the run, runs `helm lint` and `helm upgrade --install` for each
+  instance, waits for readiness, runs a smoke test, and deletes the cluster.
+- **CD on merge to `main` (decided v0.7)**: the `main` workflow ends with a `deploy-dev` job (GitHub
+  Environment `dev`) that deploys the images it just built to the targets in
+  `config/us-dev/targets.yml` — step 1: `run-compose.sh <env> <flow> <app> <inst> pull`, `start`,
+  `health` on the compose hosts; step 2: `helm upgrade --install` per AppInstance into the target
+  cluster — then writes the deployed tag back into the instance config with a loop guard (§5.12).
+  qa and prod are never touched by this job.
 
-**Phasing after the demo** (design now in D11, build later)
+**Demo sequence and later phases**
 
-1. Phase 1 — this demo: compose-based build, tests and CI on GitHub-hosted runners.
-2. Phase 2 — Kubernetes packaging for one app (Helm or Kustomize, DL-29) and a kind-based deploy
-   test in CI (DL-32), proving the config-tree → manifest mapping.
-3. Phase 3 — EKS clusters, GitOps controller, Vault via Kubernetes auth, ephemeral-namespace tests.
+1. Demo step 1 — compose: build, unit and integration tests, images, versioning, `run-compose.sh`,
+   config tree, CD to the dev compose hosts on merge to `main`.
+2. Demo step 2 — kind: Helm chart, one release per AppInstance with one replica, kind deploy test in
+   CI, CD `helm upgrade` into the target cluster on merge to `main` (kind inside the workflow until
+   a dev cluster exists).
+3. Phase 3 (after the demo) — EKS clusters, GitOps controller (Argo CD) replacing `helm upgrade`
+   from CI, Vault via Kubernetes auth, ephemeral-namespace tests.
 - Versioning: main push produces a pre-release tag; pushing `v0.1.0` produces `0.1.0` image tags;
   release workflow opens a PR bumping `IMAGE_TAG` in the dev config.
 - CI proof (§5.11): the PR workflow builds and unit-tests inside the `ci-build` container image; an
@@ -278,7 +303,7 @@ Tasks
 - Real connector logic, schemas, performance work.
 - Production Vault / JFrog / self-hosted runner set-up (documented, not provisioned).
 - Vault integration in code (designed in D2, deferred to the next iteration).
-- Kubernetes packaging and any kind-based test (Phase 2; designed in D11, not built in the demo).
+- A persistent dev Kubernetes cluster (kind inside the workflow run stands in until one exists).
 - Real EKS clusters, Argo CD / Flux installation, IRSA, ingress, network to on-prem sources
   (Phase 3; documented in D11, not provisioned).
 
@@ -286,7 +311,8 @@ Tasks
 
 - [ ] Confirm the in/out list above before starting.
 - [ ] Confirm GHCR as the stand-in registry and the no-Vault stub (§8).
-- [x] Kubernetes slice is **not** part of the demo; the demo test stack is docker compose (decided v0.6, DL-32).
+- [x] Demo runs in two steps: compose first, then kind + Helm (decided v0.7, DL-29, DL-32, DL-33).
+- [ ] Confirm the dev compose targets for step 1 CD: which hosts, and how the runner reaches them (DL-35).
 
 ---
 
@@ -502,10 +528,10 @@ Kubernetes manifests; compose only carries it for local and test stacks.
 
 **Must answer**
 
-- Production: the tag is a field of the instance's manifests in the config repo — Helm
-  `image.tag` in `values.yaml` or Kustomize `images[].newTag` under
-  `config/<env>/<flow>/<app>/<instance>/` — and the GitOps controller (§5.7) rolls the Deployment
-  when it changes. Same digest promoted across envs (§5.4), never rebuilt.
+- Production: the tag is `image.tag` in the instance's Helm values,
+  `config/<env>/<flow>/<app>/<instance>/values.yaml` (Helm decided v0.7, DL-29). The deployer —
+  `helm upgrade` from the `deploy-dev` job in the demo, the GitOps controller on EKS (§5.7) — rolls
+  the Deployment when it changes. Same digest promoted across envs (§5.4), never rebuilt.
 - Local and test stacks: the compose file is a template, `image: ${IMAGE_REPO}/source-kafka:${IMAGE_TAG}`
   with `IMAGE_TAG` in `compose.env`; CI sets it to the image built in the same run.
 - Who changes `IMAGE_TAG` and where the record lives: git must be the deployment record.
@@ -557,12 +583,14 @@ override YAML?
   files mounted under `/config/...` (deterministic, visible) vs Spring profiles
   (`spring.profiles.active=us-dev,cash,inst01` with `application-<profile>.yml`) (DL-07). Spring
   config-tree for file-based secrets if Vault Agent is used.
-- **Kubernetes delivery (v0.4)**: each file layer becomes a ConfigMap entry — Kustomize
-  `configMapGenerator` from the very same `application.yml` files that compose mounts for tests, or
-  Helm `.Files.Get` — mounted under `/config/<layer>/`; `compose.env` values become container `env`
-  in the overlay / values; one Deployment per AppInstance named `<app>-<instance>` (DL-33). Same
-  files, two consumers: compose for tests, Kubernetes for production; the config-lint job renders
-  both.
+- **Kubernetes delivery (v0.4, Helm decided v0.7)**: the chart renders one ConfigMap per release from
+  the `application.yml` layers. Those files live outside the chart, in the config tree, so they are
+  passed in as file values (`helm ... --set-file appConfig.common=<app-common>/application.yml
+  --set-file appConfig.instance=<instance>/application.yml`; in Argo CD, `helm.fileParameters`)
+  and mounted under `/config/<layer>/`. `compose.env` values become container `env` in the instance
+  `values.yaml`. One release and one Deployment per AppInstance named `<app>-<instance>`,
+  `replicas: 1` for now (DL-33). Same files, two consumers: compose for tests, Kubernetes for
+  production; the config-lint job renders both (`docker compose config` and `helm template`).
 - **Env vars vs YAML rule** (to formalise): env vars for knobs that are per host / per instance and
   are **also consumed by compose** (image tag, published ports, memory, volume paths, instance id,
   Vault role, log level); YAML for structured application config (lists of topics / subscriptions,
@@ -590,7 +618,8 @@ Tasks
 
 **Original ask:** should config be separated into its own repo; how to auto-sync config to target
 machines across environments, business flows, AppNames and AppInstances. **Re-scoped v0.4:** the
-targets are EKS clusters, so "auto-sync" becomes GitOps reconciliation.
+targets are EKS clusters, so "auto-sync" becomes GitOps reconciliation. **Decided v0.7:** config
+stays in this monorepo under `config/` for now; merge to `main` auto-deploys to the dev targets.
 
 **Must answer**
 
@@ -599,20 +628,26 @@ targets are EKS clusters, so "auto-sync" becomes GitOps reconciliation.
   deployed, bot bump PRs do not pollute code history. Cons: version skew between config keys and code
   (mitigate: additive keys, tolerate unknown keys, tag config with app versions), two PRs for a
   feature needing new config, discoverability.
-- Alternatives: same monorepo `config/` with CODEOWNERS and path-restricted workflows; one repo per
-  env (prod isolation, usually overkill); code repo holds `app-common` defaults + schema while the
-  env repo holds env / instance values.
-- **Inventory**: on Kubernetes the config tree *is* the inventory — an Argo CD `ApplicationSet`
-  (git directory generator × cluster generator) or Flux `Kustomization`s create one Application per
-  `config/<env>/<flow>/<app>/<instance>/` directory and target the `<region>-<stage>` cluster. No
-  separate host inventory (the VM inventory of v0.2 is dropped).
+- **Decision (v0.7): config lives in this monorepo under `config/` for now.** Guard-rails: CODEOWNERS
+  on `config/**` with prod paths reviewed by ops, path-filtered workflows (`config-lint` on config
+  changes; no image rebuild for config-only changes), bot write-backs with a loop guard (§5.12,
+  DL-36). The layout is repo-agnostic, so moving `config/` to its own repository later is a history
+  split plus a source change in the deployer, not a redesign. Revisit when access control or change
+  cadence demands it. Alternatives kept for the record: one repo per env; code repo holds
+  `app-common` defaults + schema while an env repo holds env / instance values.
+- **Inventory**: `config/<env>/targets.yml` (decided v0.7) maps each `<flow>/<app>/<instance>` to its
+  deploy target — a compose host (demo step 1) or a cluster + namespace (step 2, EKS). On EKS with a
+  GitOps controller the config tree itself becomes the inventory: an Argo CD `ApplicationSet`
+  (git directory generator × cluster generator) creates one Application per instance directory and
+  `targets.yml` retires.
 - **Delivery mechanism (v0.4)**: a controller in each cluster (or a hub) watches the config repo and
   reconciles; nothing is pushed to machines.
   - **Argo CD**: ApplicationSets, sync waves, **sync windows** (maps directly to trading-hours
     deployment windows), UI and RBAC, Image Updater; hub-and-spoke or per-cluster install.
   - **Flux**: `GitRepository` + `Kustomization` / `HelmRelease`, image automation; lighter, no UI.
-  - CI push (`kubectl apply` / `helm upgrade` from a workflow): simplest, but state and audit live in
-    the pipeline rather than the cluster; acceptable for the kind-based demo only.
+  - CI push from the `deploy-dev` job — **the demo's mechanism for both steps** (`run-compose.sh`
+    on the compose hosts, `helm upgrade --install` into the cluster): simplest, but state and audit
+    live in the pipeline rather than the cluster; replaced by the controller on EKS (DL-30).
   - Compose stacks (local / CI tests) read the checked-out config tree directly; nothing to sync.
 - Criteria: is a controller already provided on the EKS platform (DL-30)? How a ConfigMap change
   becomes a rolling restart (checksum annotation vs Reloader); drift detection and self-heal; RBAC per
@@ -621,7 +656,8 @@ targets are EKS clusters, so "auto-sync" becomes GitOps reconciliation.
 
 Tasks
 
-- [ ] Decide monorepo vs separate config repo (DL-06).
+- [x] Config stays in this monorepo for now (decided v0.7, DL-06); add CODEOWNERS and path filters.
+- [ ] Define the `targets.yml` schema and the loop guard for bot write-backs (DL-36).
 - [ ] Decide the GitOps controller (DL-30) and the ApplicationSet / Kustomization layout that mirrors
       the config tree (DL-33).
 - [ ] Define drift / self-heal policy, rollback and sync windows per env.
@@ -633,10 +669,11 @@ Tasks
 **Original ask:** `run-compose.sh <env> <business-flow> <AppName> <AppInstance> <cmd>` with
 `start, stop, down, restart, config, printenv, health, ...`.
 
-**Scope (v0.4):** `run-compose.sh` serves **local development and CI test stacks only**. Production
+**Scope (v0.4, v0.7):** `run-compose.sh` serves **local development, CI test stacks, and the dev
+compose hosts of demo step 1** (the `deploy-dev` job runs it there on merge to `main`). Production
 operations go through Kubernetes (GitOps sync, `kubectl`, the controller UI); compose is never run
-in production. The command table still applies to test stacks; the prod-safety rules reduce to
-"refuse any env other than `local` and the CI env".
+in production. The command table applies to all compose stacks; the prod-safety rules reduce to
+"refuse any env other than `local`, the CI env and `*-dev`".
 
 **Must answer**
 
@@ -788,10 +825,12 @@ project within containers**, with a **Deephaven server running** during the inte
      config or Dockerfiles) or to the dev EKS namespace (`main` / nightly), followed by a smoke test.
      This is the part compose cannot test, and with production on EKS it is required (DL-32).
   Component ITs stay on compose / Testcontainers: faster to start and identical on a laptop.
-- **Demo decision (v0.4, v0.6)**: GitHub-hosted runners (`ubuntu-latest`; Docker and compose
-  preinstalled) and **docker compose as the only test-stack mechanism** — model C below, decided for
-  the demo. No kind, no ephemeral EKS namespace, no Testcontainers in the demo. Layer 3 (runner in a
-  container) is out of scope; ARC on EKS and the Kubernetes test tier are Phase 2 / 3 (§4) (DL-17,
+- **Demo decision (v0.4, v0.6, v0.7)**: GitHub-hosted runners (`ubuntu-latest`; Docker and compose
+  preinstalled) and **docker compose as the only integration-test stack mechanism** — model C below,
+  decided for the demo; no Testcontainers. **Demo step 2 adds kind inside the workflow for the Helm
+  deployment demo** (not for integration tests): create cluster, load images, `helm upgrade
+  --install` one release per AppInstance, readiness, smoke test, delete. Layer 3 (runner in a
+  container) is out of scope; ARC on EKS and ephemeral EKS namespaces are Phase 3 (§4) (DL-17,
   DL-24, DL-25, DL-32).
 - **Job layout** in the PR and `main` workflows: `build` (compile, unit tests, static checks, jar and
   image artifacts) → `integration-test` (start Deephaven plus only the dependencies the subproject
@@ -843,8 +882,8 @@ project within containers**, with a **Deephaven server running** during the inte
 Leaning: **C**, with the `build` job running in the `ci-build` image (`container:`) — this covers
 layers 1 and 2. Deephaven is a compose service with a health condition. **Decided for the demo
 (v0.6): model C with docker compose only.** Testcontainers may join later for single-dependency
-component ITs (DL-15). For the Kubernetes tier, later: kind inside the job on PRs, an ephemeral
-namespace on dev EKS on `main` / nightly (DL-32).
+component ITs (DL-15). Kubernetes tier: demo step 2 runs kind inside the job for the Helm deploy
+test; Phase 3 adds an ephemeral namespace on dev EKS on `main` / nightly (DL-32).
 
 Tasks
 
@@ -874,6 +913,20 @@ Tasks
 - **Promotion flow**: build once → dev auto-deploy on `main` pre-release → qa on release tag (bump
   PR + approval) → prod on approved PR + change-ticket reference; same digest promoted across JFrog
   repos; no rebuild.
+- **Auto-deploy to dev on merge to `main` (decided v0.7)**: the `main` workflow is build → unit and
+  integration tests → publish images (pre-release tag) → `deploy-dev` job under GitHub Environment
+  `dev` (no reviewers). The job reads `config/us-dev/targets.yml` and, per AppInstance: demo step 1
+  runs `run-compose.sh <env> <flow> <app> <inst> pull`, `start`, `health` on the compose host
+  (DL-35: SSH with a deploy key from the runner, or a self-hosted runner on the host); demo step 2
+  runs `helm upgrade --install <app>-<inst> helm/<app> -f <app-common>/values.yaml
+  -f <inst>/values.yaml --set image.tag=<tag> --set-file ... --atomic --timeout 5m` into the target
+  cluster (kind inside the workflow until a dev cluster exists; EKS later); Phase 3 hands this to
+  Argo CD auto-sync. The job then **writes the deployed tag back** into the instance `values.yaml` /
+  `compose.env` and commits with a **loop guard** (DL-36: skip bot-authored commits in the workflow
+  `if:`, plus `[skip ci]`) so the write-back does not start another deploy. A config-only merge by a
+  human still deploys. Record: GitHub Deployment + job summary. Failure: job red, previous release
+  keeps running (`--atomic` rolls back Helm; compose keeps the old container). qa and prod are never
+  touched by this job.
 - Deploy mechanics on EKS (v0.4, consistent with §5.7): a merged bump in the config repo is
   reconciled by the GitOps controller into a rolling update of the instance Deployment; readiness
   probes gate traffic; `maxUnavailable` / `maxSurge` per instance; PodDisruptionBudgets; optional
@@ -897,7 +950,10 @@ Tasks
 Tasks
 
 - [ ] Draw the dev → qa → prod flow and the prod-deploy sequence (incl. rollback) in D9.
-- [ ] Decide the GitOps controller and promotion mechanics, consistently with DL-30.
+- [ ] Define `deploy-dev`: `targets.yml` schema, per-target adapter (compose / Helm), loop guard,
+      health gate, GitHub Environment `dev` settings, rollback (`helm rollback` / previous tag).
+- [ ] Decide how the runner reaches the compose hosts in demo step 1 (DL-35).
+- [ ] Decide the GitOps controller for EKS and the qa / prod promotion mechanics (DL-30).
 - [ ] Define the EKS cluster topology per `<region>-<stage>` and controller placement (hub vs per
       cluster).
 - [ ] Define deployment windows and the approval matrix per region / flow.
@@ -941,10 +997,10 @@ Tasks
 | DL-03 | Versioning scope | lockstep / independent / hybrid | hybrid: connector family lockstep, `deephaven-server` independent | yes | open |
 | DL-04 | Version computation | git-describe plugin / Conventional Commits + release PR / manual tag | Conventional Commits + release PR, tag-triggered release, pre-release on `main` | yes | open |
 | DL-05 | Image tag scheme | see §5.4 table | semver + `sha-` tag; no floating tags beyond dev | yes | open |
-| DL-06 | Config location | in monorepo / separate config repo | separate config repo | yes | open |
+| DL-06 | Config location | in monorepo / separate config repo | **In this monorepo under `config/` for now**, with CODEOWNERS and path filters; move later if access control or cadence demands | yes | decided (v0.7) |
 | DL-07 | Config layering mechanism | explicit `spring.config.import` list / profile chain | explicit import list, ≤ 4 file layers | yes | open |
 | DL-08 | Env vars vs YAML | rule of thumb | env vars only for compose-shared / infra knobs | no | open |
-| DL-09 | Image and config bump delivery | GitOps bot PR / deploy-time parameter | GitOps bot PR | yes | open |
+| DL-09 | Image and config bump delivery | GitOps bot PR / deploy-time parameter / deploy + write-back | **dev: deploy on merge to `main`, then tag write-back with loop guard (v0.7)**; qa / prod: bot PR with approvals | yes | decided for dev (v0.7); qa / prod open |
 | DL-10 | Config sync to target VMs | pull agent / push via SSH-Ansible / artifact | superseded by DL-30 (GitOps to clusters) after the v0.4 platform change | no | closed |
 | DL-11 | Vault authentication | AppRole / TLS cert / Vault Agent / **Kubernetes auth** | Kubernetes auth on EKS, delivery per DL-31; AppRole only for local stacks; **not in the demo** | no (demo skips Vault) | open |
 | DL-12 | DB credentials | static KV v2 / dynamic DB engine | static first, evaluate dynamic | no | open |
@@ -964,12 +1020,14 @@ Tasks
 | DL-26 | Deephaven image under test in CI | upstream `ghcr.io/deephaven/server` / our `deephaven-server` image / both by test level | upstream for component ITs, ours for system ITs | no | open |
 | DL-27 | Teardown guarantee | `always()` compose down / run-id labels + prune / Ryuk / ephemeral runner | all of them layered, plus a leak-check step | yes | open |
 | DL-28 | CI build environment | `setup-java` on the runner host / pinned `ci-build` container image | `ci-build` image maintained by `base-image.yml` | yes | open |
-| DL-29 | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm chart + Kustomize overlays for config | Kustomize overlays generated from the same `application.yml` files the compose stacks use; Helm only where templating is needed | no (Phase 2) | open |
-| DL-30 | GitOps controller | Argo CD / Flux / CI push (`kubectl`, `helm`) | Argo CD (ApplicationSets, sync windows); CI push for the kind demo only | no | open |
+| DL-29 | Kubernetes packaging | Helm chart per app / Kustomize base + overlays / Helm + Kustomize | **Helm chart per app** under `helm/<AppName>/`; config-tree files passed as values (`-f`, `--set-file`) | yes (demo step 2) | decided (v0.7) |
+| DL-30 | GitOps controller | Argo CD / Flux / CI push (`helm upgrade`) | **Demo: CI push — `helm upgrade --install` from `deploy-dev`**; EKS: Argo CD (ApplicationSets, sync windows) | no (Phase 3) | decided for demo (v0.7); EKS open |
 | DL-31 | Secrets delivery in Kubernetes | External Secrets Operator / Vault Agent Injector / Secrets Store CSI / Spring Cloud Vault in-process | ESO, app stays Vault-agnostic; demo uses plain `Secret` / env | no | open |
-| DL-32 | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | **Demo: none — docker compose only (decided v0.6).** Phase 2: kind on PRs touching packaging; Phase 3: dev EKS namespace on `main` / nightly | no (Phase 2) | decided for demo (v0.6) |
-| DL-33 | AppInstance modelling on Kubernetes | one Application per instance / one release with N Deployments / StatefulSet | one Application per instance generated from the config tree, each owning one Deployment | no (Phase 2) | open |
+| DL-32 | Kubernetes test tier | none / kind in the job / ephemeral namespace on dev EKS / both | **Demo step 2: kind inside the workflow — Helm deploy test, and the `deploy-dev` target until a dev cluster exists (v0.7)**; Phase 3: dev EKS namespace | yes (demo step 2) | decided for demo (v0.7) |
+| DL-33 | AppInstance modelling on Kubernetes | one release per instance / one release with N Deployments / StatefulSet | **One Application / Helm release per AppInstance generated from the config tree, one Deployment, `replicas: 1` for now** | yes (demo step 2) | decided (v0.7) |
 | DL-34 | Registry for EKS | JFrog direct (`imagePullSecrets`) / ECR mirror replicated from JFrog | ECR mirror if pulls must be in-region; JFrog direct otherwise | no | open |
+| DL-35 | Reaching the dev compose hosts from CI (demo step 1) | SSH with a deploy key from the GitHub-hosted runner / self-hosted runner on the host / pull agent on the host | SSH from the runner if the host is reachable; else a self-hosted runner on the host | yes (demo step 1) | open |
+| DL-36 | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | skip bot author + `[skip ci]`; config-only human merges still deploy | yes | open |
 
 ---
 
@@ -1015,7 +1073,26 @@ Tasks
 - [ ] Deephaven and dependency logs plus JUnit reports are uploaded as artifacts when the job fails.
 - [ ] The same start → test → stop lifecycle runs locally with one Gradle command on Docker and Podman.
 - [ ] The `integration-test` job finishes within the agreed time budget and fits the runner's memory.
-- [ ] Every demo workflow runs on GitHub-hosted runners; no self-hosted runner is required.
+- [ ] Every demo workflow runs on GitHub-hosted runners; no self-hosted runner is required (a
+      self-hosted runner on a compose host is the one allowed exception, DL-35).
+
+**Demo step 2 — kind and Helm (§4)**
+
+- [ ] `helm lint` and `helm template` pass for every AppInstance in the config tree (config-lint job).
+- [ ] A CI job creates a kind cluster, loads the images built in the run, installs one Helm release
+      per AppInstance for `us-dev/cash/source-database/{inst-01,inst-02}` with `replicas: 1`, waits
+      for readiness, runs a smoke test proving the two instances differ in config, and deletes the
+      cluster.
+
+**CD on merge to `main` (§5.12)**
+
+- [ ] Merging a PR to `main` runs build → tests → publish → `deploy-dev` with no manual step: step 1
+      deploys to the compose hosts in `config/us-dev/targets.yml`; step 2 runs
+      `helm upgrade --install` into the target cluster.
+- [ ] The deployed tag is written back to the instance config by the bot, and that commit does not
+      trigger another deploy (loop guard verified).
+- [ ] qa and prod are untouched by the `main` workflow; a failed deploy leaves the previous release
+      running and the job red.
 
 ---
 
@@ -1033,6 +1110,10 @@ Infrastructure and platform
       architecture (amd64 only, or Graviton arm64)?
 - [ ] Pod security standards, IRSA, service mesh or ingress requirements imposed by the platform team?
 - [ ] Can CI create ephemeral namespaces on a dev EKS cluster (GitHub OIDC → IAM role → EKS RBAC)?
+- [ ] Dev compose targets for demo step 1: which hosts, and can a GitHub-hosted runner reach them
+      over SSH, or must a self-hosted runner sit on the host (DL-35)?
+- [ ] Is a persistent dev Kubernetes cluster available before EKS, or does kind inside the workflow
+      stand in until then?
 - [ ] GitHub Enterprise Cloud or Server? Self-hosted runners available? Egress policy (Docker Hub
       blocked → JFrog remotes)?
 - [ ] JFrog: Artifactory edition, Xray, OIDC support, existing repository naming conventions,
@@ -1100,14 +1181,18 @@ Process
 | DinD | Docker-in-Docker: a container engine running inside a container |
 | leak check | a post-teardown step that fails if resources labelled with the run id still exist |
 | EKS | Amazon Elastic Kubernetes Service, the production platform |
-| Helm / Kustomize | Kubernetes packaging: templated charts with values, or plain manifests with base + overlays |
-| overlay | a Kustomize directory that patches a base for one env / flow / instance |
+| Helm chart | Kubernetes packaging as templated manifests driven by layered values; one chart per app (decided v0.7). Kustomize was the alternative, not used |
+| values layer | one `values.yaml` in the chain chart defaults → `app-common` → `<AppInstance>`, mirroring the config tree |
 | GitOps controller | Argo CD or Flux: reconciles the config repo into the cluster and reports drift |
 | ApplicationSet | Argo CD object that generates one Application per directory, cluster or list entry |
 | sync window | Argo CD schedule that allows or denies syncs, used for deployment windows |
 | ESO | External Secrets Operator: copies secrets from Vault into Kubernetes `Secret`s |
 | IRSA | IAM Roles for Service Accounts: AWS identity for a pod without static keys |
 | kind | Kubernetes in Docker: a throw-away cluster inside a CI job or on a laptop |
+| Helm release | one installed instance of a chart; here one per AppInstance |
+| targets.yml | per-env file mapping each instance to its deploy target: compose host, or cluster + namespace |
+| write-back | the CD job committing the deployed image tag into the config tree |
+| loop guard | the rule that a bot write-back commit does not trigger the deploy workflow again |
 
 ---
 
@@ -1121,6 +1206,7 @@ Process
 | v0.4 | 2026-09-26 | Platform correction: production is Kubernetes on Amazon EKS; compose is for local dev and CI test stacks only. Re-scoped §5.5 (tags in manifests), §5.7 (GitOps delivery replaces VM sync), §5.8 (test stacks only), §5.12 (rolling updates via controller, sync windows), §5.13 (Kubernetes runtime). Added Kubernetes mapping of the config tree, `k8s/` per app, design doc D11, decisions DL-29 to DL-34, EKS open questions and glossary. Answered v0.4 questions: Kubernetes as CI test substrate (§5.11), monorepo vs submodules (§5.1). Demo decisions: GitHub-hosted runners, no Vault (DL-02, DL-11, DL-17, DL-25 updated). |
 | v0.5 | 2026-09-26 | Decided: one Gradle monorepo, git submodules not used anywhere in the project (code, config, test data). DL-01 closed, DL-16 options narrowed, §2.2 rule added, §2.3 / §5.1 / §5.10 wording updated, §8 question resolved. |
 | v0.6 | 2026-09-26 | Decided for the demo: docker compose is the only test-stack mechanism in the GitHub workflows (model C); no kind, no Kubernetes, no Testcontainers. Kubernetes packaging and the Kubernetes test tier move to Phase 2 / 3 (phasing added to §4). DL-15, DL-24, DL-32 decided for the demo; DL-29 and DL-33 no longer block the skeleton. |
+| v0.7 | 2026-09-26 | Decided: Helm chart per app (DL-29); one Application / Helm release per AppInstance from the config tree with `replicas: 1` for now (DL-33); the demo runs in two steps, compose first then kind-based Kubernetes (DL-32, §4 re-sequenced); config stays in this monorepo for now (DL-06); merge to `main` auto-deploys to the dev targets via a `deploy-dev` job with tag write-back and loop guard (§5.12, DL-09, new DL-35 / DL-36). Added `helm/<AppName>/`, `values.yaml` layers and `targets.yml` to the trees; Helm `--set-file` mapping in §5.6; acceptance criteria for step 2 and CD; glossary. |
 
 ---
 
@@ -1157,3 +1243,4 @@ Process
 | *(v0.4)* Gradle monorepo or git submodules? *(v0.5: decided — monorepo, no submodules)* | §2.2, §2.3, §5.1, DL-01 |
 | *(v0.4)* Demo: GitHub-hosted runners, skip Vault | §2.2, §4, §5.2, §5.9, §5.11, §7, DL-11, DL-17, DL-25 |
 | *(v0.6)* Demo: use docker compose in the GitHub workflow for now, for simplicity | §2.2, §4 (phasing), §5.10, §5.11, §7, §8, DL-15, DL-24, DL-32 |
+| *(v0.7)* Helm chart; one Application per AppInstance from the config tree, one replica; demo compose first then kind; config in the same repo for now; CD auto-deploy to target hosts on merge to `main` | §2.2, §2.4, §4, §5.5–§5.8, §5.11, §5.12, §7, §8, DL-06, DL-09, DL-29, DL-30, DL-32, DL-33, DL-35, DL-36 |
