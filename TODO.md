@@ -1,4 +1,29 @@
-Give me a design plan in .md files for the below architecture design topics and also build a demo project with working skeleton hello world implementation , assume in this git repo, there are many git subprojects under this repo, for example deephaven-server, deephaven-connectors, under deephaven-connectors, there are source-Kafka, source-amps, source-database, connectors-framework; using gradle build, java 21, need to use vault for secrets, use spring vault for database password retrieval, ? The docker images needs CA certificate from enterprise company; Config structure will be : environments (us-dev, us-prod, jp-dev, jp-prod …) / business flows/AppNames(subproject name)/AppInstance ; how to manage CI/CD release cycle in dev, qa, production ; 
+Give me a design plan in .md files for the below architecture design topics and also build a demo project with working skeleton hello world implementation , 
+assume in this git repo, there are many git subprojects under this repo, 
+for example 
+- deephaven-server
+- deephaven-connectors ( parent subproject) 
+  - source-Kafka
+  - source-amps
+  - source-database
+  - connectors-framework
+
+Under each gradle subproject, the directory structure should have : 
+ - docker
+   - DockerFile 
+   - docker-compose.yml
+ - scripts
+   - run-compose.sh
+ - src/main/java
+ - config
+  - <env: us-dev, us-prod, jp-dev, jp-prod> 
+    - <business-flow: cash, deriv, swap> 
+      - <AppName(subproject name)> 
+        - <AppInstance> (same image, different config files ) 
+
+
+
+using gradle build, java 21, need to use vault for secrets, use spring vault for database password retrieval, ? The docker images needs CA certificate from enterprise company; Config structure will be : environments (us-dev, us-prod, jp-dev, jp-prod …) / business flows/AppNames(subproject name)/AppInstance ; how to manage CI/CD release cycle in dev, qa, production ; 
 
 how to build docker images for all subprojects with correct image tagging versioning strategy in an enterprise environment , should all subprojects be built with the same versions? 
 
@@ -26,8 +51,7 @@ Can I ssh to a test input/expected output messages repo to get these data and st
 
 How to spin up SQL server for my JDBC tests query database and then publish to AMPS or deephaven ? 
 
-Under each gradle subproject, the directory structure should have : docker, scripts, src, config. 
 
-
+for CD pipeline , 
 
 When writing .md, provide flow diagrams and structural diagram, sequence diagrams , easier to understand the concept 
