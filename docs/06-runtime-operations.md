@@ -92,7 +92,7 @@ registry failure changes nothing on the host.
 | Command | Renders | Mechanism | Masking |
 |---|---|---|---|
 | `config` | the merged **compose** configuration (`docker compose config`) after `--env-file` substitution | compose itself | values whose variable name matches `*PASSWORD*`, `*SECRET*`, `*TOKEN*`, `*KEY*` are replaced by `***` before printing |
-| `app-config` | the **effective Spring configuration** of the app | default: `GET /actuator/configprops` and `/actuator/env` on the running container; `--offline`: `compose run --rm --no-deps app --print-config` (the framework prints the effective configuration, secrets masked, and exits — the same summary every app logs at start-up, §4) | Spring Boot's sanitisation plus the same name-pattern filter |
+| `app-config` | the **effective Spring configuration** of the app | default: `GET /actuator/connectorconfig` on the running container (the framework's masked summary endpoint, the same content as the start-up log; `/actuator/env` and `configprops` stay unexposed); `--offline`: `compose run --rm --no-deps app --print-config` (the framework prints the effective configuration, secrets masked, and exits — the same summary every app logs at start-up, §4) | Spring Boot's sanitisation plus the same name-pattern filter |
 
 `--offline` is deliberately not called `--dry-run`: the global `--dry-run` (§6.5) means "show the
 command, do nothing".
@@ -191,7 +191,9 @@ consumed by `application.yml` placeholders; these are the proposal.
 ```
 
 `<engine>` is `docker` or `podman` (§6.6). Only `compose.env` is passed with `--env-file`; the
-identity variables come from the script's environment, so an instance cannot redefine them. The
+identity variables come from the script's environment, so an instance cannot redefine them. An exported
+`IMAGE_TAG` / `IMAGE_REPO` overrides the values in `compose.env` in every allowed env and is recorded in
+the audit line as `override=…`; this is how `deploy-dev` injects the freshly built tag (D9 §6.4). The
 template references `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` (§5.5) and mounts §6.7.
 
 ### 6.4 Command table (CLI specification)
@@ -203,14 +205,14 @@ template references `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` (§5.5) and mounts 
 | `down [--volumes]` | `down --remove-orphans`; `--volumes` adds `-v` | 0 / 1; 3 refused | **never `-v` by default**; `--volumes` allowed in `local` (including CI stacks), requires `--force` on `*-dev` hosts |
 | `restart` | `stop` then `start` | as `start` | recreates the container when `compose.env`, image or mounts changed |
 | `config` | `config` | 0 / 1 | secrets masked (§4.3) |
-| `app-config [--offline]` | actuator query, or `run --rm --no-deps app --print-config` | 0 / 1 | secrets masked; `--offline` needs no running stack |
+| `app-config [--offline]` | `GET /actuator/connectorconfig`, or `run --rm --no-deps <AppName> --print-config` | 0 / 1 | secrets masked; `--offline` needs no running stack |
 | `printenv` | prints the resolved environment (`compose.env` + identity + engine) | 0 | secrets masked |
 | `health` | `ps --format json` + `GET /actuator/health` (readiness) | 0 healthy; 1 unhealthy or not running | non-interactive; used by monitoring and by `deploy-dev` |
 | `status` / `ps` | `ps` + desired `IMAGE_TAG` vs running image digest (`inspect`) | 0 no drift; 1 drift or not running | drift detection for test stacks (§5.5) |
 | `logs [-f] [--since]` | `logs` | 0 / 1 | passes through `-f`, `--since`, `--tail` |
 | `pull` | `pull` | 0 / 1 | pre-pull for deploy windows; the only command that contacts the registry |
 | `validate` | none (offline) | 0 ok; 4 missing files / bad names; 1 compose lint error | required files, `config --quiet` lint, every `${VAR}` in the template defined in `compose.env` or the identity set |
-| `exec <svc> <cmd…>` / `shell` | `exec` (`shell` = `exec app sh`) | exit code of the command | audit-logged (§6.5) |
+| `exec <svc> <cmd…>` / `shell` | `exec` (`shell` = `exec <AppName> sh`; the compose service is named after the AppName) | exit code of the command | audit-logged (§6.5) |
 | `version` | `inspect` of the running image: tag, digest, OCI labels `version`, `revision`, `source`, `created`, `com.<company>.build-url` | 0; 1 not running | labels defined in D3 |
 
 Global options accepted before or after the command: `--dry-run`, `--force`, `--engine docker|podman`,
@@ -225,7 +227,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 | `--dry-run` | prints the resolved paths, the identity, the engine and the exact compose command line, then exits 0 without invoking the engine. Valid for every command |
 | Exit codes | 0 success or check passed · 1 operation failed or check negative (unhealthy, drift, lint) · 2 usage · 3 refused by a safety rule · 4 config tree error · 5 engine not found or daemon not running · 124 timeout |
 | Audit line | one line per invocation to syslog (`logger -t run-compose`, if present) and stderr: `ts=<iso8601> who=<SUDO_USER or USER> host=<hostname> env=<env> flow=<flow> app=<app> instance=<inst> cmd=<cmd> opts=<…> result=<exit>`; when `GITHUB_RUN_ID` is set the line adds `run=<GITHUB_SERVER_URL>/<repo>/actions/runs/<id> actor=<GITHUB_ACTOR>` |
-| CI project name | when `GITHUB_RUN_ID` is set (CI test stacks run under env `local`), `PROJECT` becomes `ci-<run_id>-<attempt>-<app>-<instance>`: the prefix matches the run-scoped `COMPOSE_PROJECT_NAME` that D10 defines for its `test-infra` stacks, so a name-prefix filter finds it, and every resource also carries the label `com.<company>.ci.run=<run_id>` (§5.11) that D10's `always()` teardown and leak check use. There is no separate `ci` env token in the config tree (D5 §6.2) |
+| CI project name | when `GITHUB_RUN_ID` is set **and the env is `local`** (a `*-dev` host keeps its stable project name so a redeploy replaces the stack instead of starting a second one), `PROJECT` becomes `ci-<run_id>-<attempt>-<app>-<instance>`: the prefix matches the run-scoped `COMPOSE_PROJECT_NAME` that D10 defines for its `test-infra` stacks, so a name-prefix filter finds it, and every resource also carries the label `com.<company>.ci.run=<run_id>` (§5.11) that D10's `always()` teardown and leak check use. There is no separate `ci` env token in the config tree (D5 §6.2) |
 
 ### 6.6 Engine detection, rootless Podman, SELinux
 
@@ -245,8 +247,8 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 |---|---|---|---|
 | `COMMON_DIR` | `/config/common/` | read-only | bind (compose) / key `common.application.yml` of the ConfigMap `<app>-<instance>-config` (Kubernetes, D11 §6.3) |
 | `CONFIG_DIR` | `/config/instance/` | read-only | bind / key `instance.application.yml` of the same ConfigMap |
-| optional extra layers (DL-07 open: `_common` levels) | `/config/platform/`, `/config/env/` | read-only | same mechanism; the Spring import list in D5 marks them `optional:` |
-| logs | `/logs` | named volume `<PROJECT>_logs` (compose only, for optional file appenders) | primary log channel is stdout (§6.9) |
+| optional extra layers (`_common` levels, DL-07 decided) | `/config/platform/`, `/config/env/` | read-only | same mechanism; a missing layer is mounted from an empty named volume `empty-layer` (a relative path would break once the template is merged into the test-infra stack); the Spring import list in D5 marks them `optional:` |
+| logs | `/app/logs` (the writable directory the base image provides, D3 §6.4) | named volume `<PROJECT>_logs` (compose only, for optional file appenders) | primary log channel is stdout (§6.9) |
 | truststore override | `/etc/ssl/<company>/truststore.p12` | read-only, **optional** (`TRUSTSTORE_FILE` in `compose.env`) | default is the truststore baked into the image (D3); the override exists for CA rotation tests |
 | `/tmp` | `/tmp` | `tmpfs` (compose) / `emptyDir` (Kubernetes) | required by the read-only root filesystem |
 | `TZ` | env | `TZ` from `compose.env`, default `UTC` (policy open, §8) | logs carry UTC timestamps regardless |

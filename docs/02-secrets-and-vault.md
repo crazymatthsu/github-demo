@@ -426,8 +426,8 @@ Illustrative — `docker/docker-compose.yml` fragment (Demo step 1):
 
 ```yaml
 services:
-  app:
-    image: ${IMAGE_REPO}/source-database:${IMAGE_TAG}
+  source-database:                                   # the service is named after the AppName (D6)
+    image: ${APP_IMAGE:-${IMAGE_REPO}/source-database:${IMAGE_TAG}}
     env_file: [ "${CONFIG_DIR}/compose.env" ]     # non-secret knobs only
     environment:
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set in the shell, never in git}

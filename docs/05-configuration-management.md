@@ -280,7 +280,8 @@ Every file in a layer directory is shipped to the same mount path, so a referenc
 
 Required files per instance (`config/<env>/<flow>/<AppName>/<AppInstance>/`): `compose.env`,
 `application.yml`, `values.yaml` (from Demo step 2). Required per `app-common/`: `application.yml`,
-`values.yaml`. Required per env: `targets.yml` (until ApplicationSets). Optional: `_common` layers,
+`values.yaml`. Required per `*-dev` env: `targets.yml` (only dev envs are auto-deployed; retired by
+ApplicationSets). Optional: `_common` layers,
 `logback.xml`, client properties. Forbidden: anything matching a secret pattern; `.env` files other
 than `compose.env`.
 
@@ -314,6 +315,7 @@ targets:
   - instance: cash/source-database/trades-db-to-amps
     kind: compose               # Demo step 1
     host: dev-compose-01.<company>.com
+    user: deploy                # optional: SSH user for the compose adapter (validated by config-lint)
   - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
 ```
 

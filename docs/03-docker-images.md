@@ -292,7 +292,7 @@ and are confirmed in §8; the `<group>/<AppName>` part is fixed by D1 §6.1.
 ARG BASE_IMAGE=artifactory.<company>.com/docker-base-local/<company>/jre21:20260926-1
 FROM ${BASE_IMAGE} AS layers
 WORKDIR /build
-COPY build/libs/source-database-*.jar app.jar
+COPY build/libs/source-database.jar app.jar          # version-less boot jar name (D1) keeps the COPY deterministic
 RUN java -Djarmode=tools -jar app.jar extract --layers --destination extracted   # Boot 4.1 syntax: verify
 
 FROM ${BASE_IMAGE} AS runtime

@@ -18,8 +18,8 @@ endpoints.
 Decided v0.8: `AppName` is the code base (Gradle subproject and image, e.g. `source-database`);
 `AppInstance` is the business-logic name of one pipeline — usually the data source, optionally with its
 target (`bbg-equity-ticks`, `trades-db-to-amps`), never a bare number. Lower-case kebab-case, DNS-label
-safe, unique within `<env>/<flow>/<AppName>`; AppName ≤ 20 and AppInstance ≤ 40 characters so
-`<AppName>-<AppInstance>` ≤ 63. The identity tuple `<env>/<flow>/<AppName>/<AppInstance>` is propagated
+safe, unique within `<env>/<flow>/<AppName>`; AppName ≤ 20 and AppInstance ≤ 32 characters so
+`<AppName>-<AppInstance>` ≤ 53 (Helm release-name limit; budget corrected in brief v0.9). The identity tuple `<env>/<flow>/<AppName>/<AppInstance>` is propagated
 to the compose project `<env>-<flow>-<app>-<instance>`, the Helm release `<app>-<instance>`, labels and
 log fields, metrics tags and the Deephaven table-name prefix.
 

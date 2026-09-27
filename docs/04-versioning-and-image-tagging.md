@@ -200,7 +200,7 @@ Both are paired with `sha-<sha7>` on the same digest, so the exact commit is alw
 |---|---|---|
 | Release tag (family) | `v<major>.<minor>.<patch>` annotated, on `main` or a `hotfix/*` branch | `v1.4.2` |
 | Release tag (server) | `deephaven-server/v<major>.<minor>.<patch>` | `deephaven-server/v0.3.0` |
-| Bump size | commits since the last tag of that line: `feat!:` or `BREAKING CHANGE:` → major; `feat:` → minor; `fix:`, `perf:`, `deps:` → patch; `chore:`, `docs:`, `ci:` → no release | `feat(source-kafka): …` after `v1.4.2` → next `1.5.0` |
+| Bump size | commits since the last tag of that line: `feat!:` or `BREAKING CHANGE:` → major; `feat:` → minor; `fix:`, `perf:`, `deps:` → patch; `chore:`, `docs:`, `ci:` → no release (the skeleton's git-version plugin currently bumps the patch for any other type — align when the release tool is wired) | `feat(source-kafka): …` after `v1.4.2` → next `1.5.0` |
 | Pre-release on `main` | `<next>-rc.<n>`, `<n>` = commits since the last tag of the line | `1.5.0-rc.7` |
 | PR build | `<next>-pr.<number>.<sha7>` — never published to Maven, image tag is `pr-<number>-<sha7>` | `1.5.0-pr.123.1a2b3c4` |
 | Local build | `<next>-local.<n>.<sha7>[.dirty]` | `1.5.0-local.7.1a2b3c4.dirty` |
