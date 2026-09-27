@@ -1,39 +1,43 @@
-# CI/CD — GitHub Actions (demo step 1: compose)
+# CI/CD — GitHub Actions (demo step 1: compose; demo step 2: kind + Helm)
 
-Implements D7 (workflow topology), D10 (containerised execution, teardown), D9 (deploy-dev, release)
-and D4 (versions, tags, retention). Registry: GHCR (`ghcr.io/crazymatthsu/...`) with `GITHUB_TOKEN`
+Implements D7 (workflow topology), D10 (containerised execution, teardown, kind), D9 (deploy-dev,
+release), D11 (Helm deploy path) and D4 (versions, tags, retention). Registry: GHCR (`ghcr.io/crazymatthsu/...`) with `GITHUB_TOKEN`
 as the stand-in for JFrog. Every job runs on GitHub-hosted `ubuntu-latest`.
 
 ## Workflows
 
 | File | Trigger | What it does |
 |---|---|---|
-| `workflows/pr.yml` | push to any branch except `main` / `hotfix/**`; `pull_request`; `merge_group` | `detect affected` → `lint` (hadolint, ShellCheck, actionlint) + `build` + `config-lint`; on PRs and the merge queue also images `pr-<n>-<sha7>` and the component IT matrix; `pr-gate` fans in |
-| `workflows/main.yml` | push to `main` (and `hotfix/**`, without deploy) | build all → component ITs → system test (our images incl. `deephaven-server`) → publish → `deploy-dev` → tag write-back |
+| `workflows/pr.yml` | push to any branch except `main` / `hotfix/**`; `pull_request`; `merge_group` | `detect affected` → `lint` (hadolint, ShellCheck, actionlint) + `build` + `config-lint`; on PRs and the merge queue also images `pr-<n>-<sha7>`, the component IT matrix and, when `deploy-test` is set and the `source-database` image was pushed, `kind-deploy`; `pr-gate` fans in |
+| `workflows/main.yml` | push to `main` (and `hotfix/**`, without deploy) | build all → component ITs → system test (our images incl. `deephaven-server`) → publish → `kind-deploy` → `deploy-dev` → tag write-back |
 | `workflows/release.yml` | tag `v*` / `deephaven-server/v*`; dispatched by release-please | assert `printVersion` == tag → wait for the tested `main.yml` run → retag its digests → SBOMs → GitHub Release → `us-qa` bump PR |
 | `workflows/release-please.yml` | push to `main` | keeps the release PR per line; on merge tags and dispatches `release.yml` |
 | `workflows/nightly.yml` | daily 03:17 UTC; `workflow_dispatch` | GHCR retention (dry run by default) and the teardown drill (failing and cancelled run) |
 | `workflows/base-image.yml` | weekly; push to `main` touching `docker/base/**` or `test-infra/ca/**`; `workflow_dispatch` | builds, verifies and pushes `base/jre21` and `base/ci-build` as `<yyyymmdd>-<run>` and `latest` |
-| `workflows/config-lint.yml` | `workflow_call`; PRs touching `config/**`, `**/helm/**`, `**/docker/docker-compose.yml` | `./gradlew configLint` |
+| `workflows/config-lint.yml` | `workflow_call`; PRs touching `config/**`, `**/helm/**`, `**/docker/docker-compose.yml` | `setup-kube-tools` (helm, kubeconform) → `./gradlew configLint` (checks 1–6, 9–12: compose render, `helm lint` / `helm template` per instance, kubeconform on the rendered releases) |
 | `workflows/_gradle-build.yml` | reusable | probe `base/ci-build` → build in that container (host + Temurin 21 until it exists) → images → push → digests |
 | `workflows/_integration-test.yml` | reusable | `stack.sh up` → `docker compose run --rm it-runner ./gradlew <project>:integrationTest -Pcompose.managed=false` → diagnostics → `down` + `leak-check` in `always()` |
 | `workflows/_docker-publish.yml` | reusable | points tag sets at tested digests (`imagetools create`, verified; version tags immutable) |
-| `workflows/_deploy-dev.yml` | reusable | Environment `dev`: targets from `config/us-dev/targets.yml`, compose placeholder (`run-compose.sh … start --dry-run` + the SSH command, `TODO(DL-35)`), helm skipped (step 2), write-back, GitHub Deployment |
+| `workflows/_kind-deploy.yml` | reusable | `kind up` (`ci-<run_id>-<attempt>`) → load this run's image by digest as `<repo>:<tag>` → one Helm release per instance directory of `config/<env>/*/<app>/` (namespace with the restricted PSS labels, Secret, `helm lint`, `upgrade --install --rollback-on-failure --wait`, rollout status, `helm test`) → smoke diff across the releases → diagnostics on failure → `kind down` + `leak-check` in `always()` |
+| `workflows/_deploy-dev.yml` | reusable | Environment `dev`: targets from `config/us-dev/targets.yml`; compose placeholder (`run-compose.sh … start --dry-run` + the SSH command, `TODO(DL-35)`); helm targets of cluster `kind-ci` deployed into a kind cluster created in the job (`deploy-<run_id>-<attempt>`, deleted and leak-checked in `always()`), any other cluster fails with `TODO(Phase 3)`; write-back of `IMAGE_TAG` and `image.tag` for every deployed instance; GitHub Deployment |
 
 Composite actions: `setup-build-env` (JDK when not in ci-build, Gradle cache, base images: GHCR digest
 or local bootstrap build), `registry-login` (GHCR token; `oidc` mode stubbed, DL-18),
 `compose-stack` (wraps `test-infra/compose/stack.sh`), `affected-matrix` (runs `scripts/ci/affected.py`
-over `affected-map.yml`). Scripts: `scripts/ci/` (affected detection, digest resolution, retagging,
-tag write-back, retention, JUnit summary).
+over `affected-map.yml`; also reports `deploy-test`), `setup-kube-tools` (kind, kubectl, helm, kubeconform
+pinned in `test-infra/kind/versions.env`, checksummed), `kind-cluster` (wraps `test-infra/kind/kind.sh`),
+`helm-deploy-instance` (wraps `scripts/helm-deploy-instance.sh` for one instance or a JSON list of targets).
+Scripts: `scripts/ci/` (affected detection, digest resolution, retagging, tag write-back, retention, JUnit
+summary); `scripts/helm-deploy-instance.sh` and `scripts/helm-smoke-diff.sh` (D11 §8.3).
 
 ## Which tests run when (D7 §5.3)
 
 | Event | Runs |
 |---|---|
 | push to a branch | affected build + unit tests, lint, config-lint — no images, no containers; its gate is reported as `push-gate` |
-| pull request | the same + images `pr-<n>-<sha7>` + component ITs of the affected projects; everything when shared inputs changed (`affected-map.yml` → `shared`) or with label **`ci:full`**; docs-only changes skip all of it |
+| pull request | the same + images `pr-<n>-<sha7>` + component ITs of the affected projects; everything when shared inputs changed (`affected-map.yml` → `shared`) or with label **`ci:full`**; the kind deploy test when `deploy-test` matches (`**/helm/**`, `config/**`, `test-infra/kind/**`, `source-database`, the kind actions) and this run pushed the `source-database` image — a config-only PR builds no image, so there `config-lint`'s `helm lint` / `helm template` is the check and `main` runs the kind deploy; docs-only changes skip all of it |
 | merge queue | everything (the actual merge result is proven) |
-| `main` | everything, the system test, publish, deploy-dev |
+| `main` | everything, the system test, publish, the kind deploy test, deploy-dev (compose placeholder + Helm into `kind-ci`) |
 
 See what CI will pick for your branch: `python3 scripts/ci/affected.py --base origin/main`.
 
@@ -49,7 +53,9 @@ See what CI will pick for your branch: `python3 scripts/ci/affected.py --base or
   `github-actions[bot]` in `main.yml`'s loop guard.
 - **Actions → General**: allow GitHub Actions to create pull requests (release-please, the qa bump PR).
 - **Environment `dev`**: deployment branches `main`; no reviewers (D9 §6.2). The SSH deploy key of
-  DL-35 will live here as `DEV_DEPLOY_SSH_KEY`.
+  DL-35 will live here as `DEV_DEPLOY_SSH_KEY`; the kubeconfig of a persistent dev cluster (Phase 3)
+  as `DEV_KUBECONFIG_<CLUSTER>` — until then `targets.yml` names cluster `kind-ci`, a kind cluster inside
+  the job.
 - **Packages**: images are created by the workflows and linked to this repository through the
   `org.opencontainers.image.source` label. If a package does not grant this repository access
   (Package settings → Manage Actions access), pushes and retention deletes fail with 403.
@@ -99,7 +105,9 @@ pushes. A human config-only merge still runs the full pipeline and deploys.
 ## Teardown guarantee (DL-27)
 
 Every IT job: labelled compose project `ci-<run_id>-<attempt>`, `always()` `stack.sh down` and
-`stack.sh leak-check`, `timeout-minutes` on every job, ephemeral runner. `nightly.yml` proves it on a
+`stack.sh leak-check`, `timeout-minutes` on every job, ephemeral runner. Every kind job: cluster
+`ci-<run_id>-<attempt>` (`deploy-<run_id>-<attempt>` in deploy-dev), `always()` `kind.sh down` and
+`kind.sh leak-check` (no cluster, node container or `kind` network left). `nightly.yml` proves it on a
 failing run (`teardown-drill-fail`) and on a cancelled run (`teardown-drill-cancel` dispatches a run
 that cancels itself with its stack up, then checks that run's teardown and leak-check steps).
 
@@ -111,4 +119,6 @@ package permissions for push, retag and delete with `GITHUB_TOKEN`; `imagetools 
 --prefer-index=false` preserving digests (every write is verified, so a mismatch fails loudly);
 release-please's tags, release and output names; the write-back push under the chosen branch
 protection; `always()` steps after a cancel (the nightly drill checks it); runner memory for
-Deephaven + SQL Server + it-runner; merge queue availability on the plan.
+Deephaven + SQL Server + it-runner; merge queue availability on the plan; kind creating its cluster
+within `--wait 120s` and pulling `kindest/node`, `kind load` into containerd, rollout, `helm test`
+and the smoke diff, kubeconform's schema download, the pinned tool downloads with their checksums.

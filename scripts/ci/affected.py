@@ -17,6 +17,8 @@ Outputs (stdout as JSON; `key=value` lines appended to --github-output, a table 
   docs-only       true when nothing build-relevant changed (docs, repository metadata, or no change)
   config-changed  true when config/** changed (config-lint must run)
   base-changed    true when a company base image changed (build it locally, do not pull it)
+  deploy-test     true when the kind deployment test must run: full, or a path of the map's `deploy-test`
+                  section changed (charts, config, test-infra/kind, the Helm scripts and actions)
   reason          one line explaining the decision
 
 Exit codes: 0 success, 2 usage or map error, 3 git error.
@@ -32,6 +34,9 @@ import subprocess
 import sys
 
 DEFAULT_MAP = ".github/affected-map.yml"
+# Sections that are plain glob lists. docs → config → shared classify a path (first match wins);
+# base-images and deploy-test are flags raised by any matching path, whatever its class.
+GLOB_SECTIONS = ("docs", "config", "shared", "base-images", "deploy-test")
 
 
 def fail(message: str, code: int) -> None:
@@ -96,6 +101,10 @@ def validate_map(cfg: dict) -> None:
         unknown = [p for p in rule.get("projects", []) if p not in projects]
         if unknown or "glob" not in rule:
             fail(f"bad `paths` rule {rule!r} (unknown projects: {unknown})", 2)
+    for section in GLOB_SECTIONS:
+        globs = cfg.get(section, [])
+        if not isinstance(globs, list) or not all(isinstance(g, str) and g for g in globs):
+            fail(f"`{section}` must be a list of glob strings", 2)
 
 
 def git(*args: str) -> str:
@@ -132,7 +141,7 @@ def changed_files(base: str | None, head: str, default_branch: str) -> tuple[lis
 def classify(files: list[str], cfg: dict) -> dict:
     compiled = {
         section: [(g, glob_to_regex(g)) for g in cfg.get(section, [])]
-        for section in ("docs", "config", "shared", "base-images")
+        for section in GLOB_SECTIONS
     }
     path_rules = [(r["glob"], glob_to_regex(r["glob"]), r["projects"]) for r in cfg.get("paths", [])]
 
@@ -140,11 +149,13 @@ def classify(files: list[str], cfg: dict) -> dict:
         return next((g for g, rx in compiled[section] if rx.match(path)), None)
 
     rows, projects = [], set()
-    full = config_changed = base_changed = False
+    full = config_changed = base_changed = deploy_test = False
     unmapped: list[str] = []
     for path in files:
         if first("base-images", path):
             base_changed = True
+        if first("deploy-test", path):
+            deploy_test = True
         if (g := first("docs", path)) is not None:
             rows.append((path, "docs", g))
         elif (g := first("config", path)) is not None:
@@ -168,6 +179,7 @@ def classify(files: list[str], cfg: dict) -> dict:
         "full": full,
         "config_changed": config_changed,
         "base_changed": base_changed,
+        "deploy_test": deploy_test,
         "unmapped": unmapped,
     }
 
@@ -176,7 +188,7 @@ def decide(files: list[str] | None, cfg: dict, force_full: bool, full_reason: st
     all_projects = list(cfg["projects"].keys())
     if files is None:
         result = {"rows": [], "projects": set(all_projects), "full": True, "config_changed": True,
-                  "base_changed": False, "unmapped": []}
+                  "base_changed": False, "deploy_test": True, "unmapped": []}
         reason = f"full: {diff_note}"
     else:
         result = classify(files, cfg)
@@ -204,6 +216,7 @@ def decide(files: list[str] | None, cfg: dict, force_full: bool, full_reason: st
         "docs-only": not full and not selected and not result["config_changed"],
         "config-changed": result["config_changed"],
         "base-changed": result["base_changed"],
+        "deploy-test": full or result["deploy_test"],
         "reason": reason,
         "rows": result["rows"],
         "diff": diff_note,
@@ -211,7 +224,8 @@ def decide(files: list[str] | None, cfg: dict, force_full: bool, full_reason: st
 
 
 def write_outputs(decision: dict, github_output: str | None, summary: str | None) -> None:
-    keys = ("projects", "image-projects", "matrix", "full", "docs-only", "config-changed", "base-changed", "reason")
+    keys = ("projects", "image-projects", "matrix", "full", "docs-only", "config-changed", "base-changed",
+            "deploy-test", "reason")
     if github_output:
         with open(github_output, "a", encoding="utf-8") as handle:
             for key in keys:
@@ -225,10 +239,11 @@ def write_outputs(decision: dict, github_output: str | None, summary: str | None
             "",
             f"**{decision['reason']}** — diff {decision['diff']}",
             "",
-            f"| full | docs-only | config-changed | base-changed | IT matrix |",
-            "|---|---|---|---|---|",
+            "| full | docs-only | config-changed | base-changed | deploy-test | IT matrix |",
+            "|---|---|---|---|---|---|",
             f"| {str(decision['full']).lower()} | {str(decision['docs-only']).lower()} | "
             f"{str(decision['config-changed']).lower()} | {str(decision['base-changed']).lower()} | "
+            f"{str(decision['deploy-test']).lower()} | "
             f"{', '.join(f'`{p}`' for p in decision['matrix']) or '—'} |",
             "",
         ]

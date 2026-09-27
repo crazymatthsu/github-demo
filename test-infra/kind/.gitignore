@@ -1,0 +1,2 @@
+# Written by kind.sh up: one kubeconfig per cluster (client credentials of a throwaway cluster).
+.state/

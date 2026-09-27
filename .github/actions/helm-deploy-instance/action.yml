@@ -1,0 +1,268 @@
+name: helm-deploy-instance
+description: >-
+  Deploys AppInstances with scripts/helm-deploy-instance.sh, the one implementation of the Helm flag list
+  (D11 §6.4, §8.3): namespace with the Pod Security labels, the <release>-secrets Secret, helm lint, helm
+  upgrade --install --rollback-on-failure --wait, rollout status, helm test. One instance (flow / app /
+  instance) or several in order (targets). Every instance is attempted; then the step fails if any failed,
+  unless fail-on-error is 'false' (deploy-dev writes back the successful ones first). Writes a job-summary
+  table: instance, release, namespace, revision, ready, helm test, result.
+  Images in kind: kind-cluster `load` puts the tested digest on the nodes as <repo>:<tag>, and the release
+  is deployed with the same `tag`, so the chart's <image.repository>:<image.tag> names exactly that image
+  and the node never pulls. With `loaded-images` set, each release is rendered first and fails before
+  deploying when any container would run an image that was not loaded.
+inputs:
+  env:
+    description: Config env — local or a *-dev env (the script refuses qa and prod).
+    required: true
+  flow:
+    description: One instance — its flow (with app and instance). Leave empty when targets is used.
+    required: false
+    default: ''
+  app:
+    description: One instance — its AppName.
+    required: false
+    default: ''
+  instance:
+    description: One instance — its AppInstance.
+    required: false
+    default: ''
+  targets:
+    description: >-
+      Several instances instead of flow / app / instance: a JSON list of "<flow>/<AppName>/<AppInstance>"
+      strings or {"instance": "<flow>/<AppName>/<AppInstance>", "namespace": "<ns>"} objects.
+    required: false
+    default: ''
+  tag:
+    description: Image tag (--tag → image.tag); in kind, the tag the image was loaded with.
+    required: true
+  namespace:
+    description: Namespace; empty or "{flow}" means the instance's flow (DL-38). A target's own namespace wins.
+    required: false
+    default: ''
+  kubeconfig:
+    description: Kubeconfig file; empty uses $KUBECONFIG (exported by kind-cluster `up`).
+    required: false
+    default: ''
+  timeout:
+    description: Helm and rollout timeout.
+    required: false
+    default: 5m
+  secret-user:
+    description: spring.datasource.username in the <release>-secrets Secret (demo stub, D2).
+    required: false
+    default: sa
+  secret-password:
+    description: spring.datasource.password in the Secret; empty generates one for this run (masked).
+    required: false
+    default: ''
+  mode:
+    description: deploy | lint | template (scripts/helm-deploy-instance.sh --mode).
+    required: false
+    default: deploy
+  dry-run:
+    description: "'true' prints the commands instead of running them (--dry-run)."
+    required: false
+    default: 'false'
+  loaded-images:
+    description: >-
+      Images on the cluster's nodes, space-separated (kind-cluster's `loaded` output). When set, every
+      container image of the rendered release must be one of them.
+    required: false
+    default: ''
+  fail-on-error:
+    description: "'true' fails the step when an instance failed; 'false' only reports it in `failed`."
+    required: false
+    default: 'true'
+outputs:
+  deployed:
+    description: Space-separated <flow>/<AppName>/<AppInstance> deployed successfully (mode deploy, not a dry run).
+    value: ${{ steps.deploy.outputs.deployed }}
+  failed:
+    description: Space-separated <flow>/<AppName>/<AppInstance> that failed (empty when none).
+    value: ${{ steps.deploy.outputs.failed }}
+  results:
+    description: JSON list, one object per instance — instance, release, namespace, revision, ready, test, result, exit.
+    value: ${{ steps.deploy.outputs.results }}
+runs:
+  using: composite
+  steps:
+    - id: deploy
+      shell: bash
+      env:
+        HDI_ENV: ${{ inputs.env }}
+        HDI_FLOW: ${{ inputs.flow }}
+        HDI_APP: ${{ inputs.app }}
+        HDI_INSTANCE: ${{ inputs.instance }}
+        HDI_TARGETS: ${{ inputs.targets }}
+        HDI_TAG: ${{ inputs.tag }}
+        HDI_NAMESPACE: ${{ inputs.namespace }}
+        HDI_KUBECONFIG: ${{ inputs.kubeconfig }}
+        HDI_TIMEOUT: ${{ inputs.timeout }}
+        HDI_SECRET_USER: ${{ inputs.secret-user }}
+        HDI_SECRET_PASSWORD: ${{ inputs.secret-password }}
+        HDI_MODE: ${{ inputs.mode }}
+        HDI_DRY_RUN: ${{ inputs.dry-run }}
+        HDI_LOADED: ${{ inputs.loaded-images }}
+        HDI_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: |
+        set -euo pipefail
+        err() { echo "::error title=helm-deploy-instance::$*"; }
+        script="${GITHUB_WORKSPACE}/scripts/helm-deploy-instance.sh"
+        [[ -f $script ]] || { err "scripts/helm-deploy-instance.sh is missing"; exit 1; }
+        [[ $HDI_ENV =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]] || { err "invalid env '$HDI_ENV'"; exit 2; }
+        [[ $HDI_TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { err "invalid tag '$HDI_TAG'"; exit 2; }
+        [[ $HDI_TIMEOUT =~ ^([0-9]+(ms|s|m|h))+$ ]] || { err "invalid timeout '$HDI_TIMEOUT'"; exit 2; }
+        case "$HDI_MODE" in
+          deploy | lint | template) ;;
+          *) err "mode must be deploy, lint or template (got '$HDI_MODE')"; exit 2 ;;
+        esac
+
+        # The instances as a JSON list of {instance, namespace}.
+        if [[ -n $HDI_TARGETS ]]; then
+          [[ -z "$HDI_FLOW$HDI_APP$HDI_INSTANCE" ]] || { err "give either targets or flow / app / instance, not both"; exit 2; }
+          list=$(jq -c --arg ns "$HDI_NAMESPACE" '
+            if type != "array" then error("not a list") else . end
+            | map(if type == "string" then {instance: ., namespace: $ns}
+                  else {instance: (.instance // ""), namespace: (.namespace // $ns)} end)' <<<"$HDI_TARGETS") ||
+            { err "targets must be a JSON list of \"<flow>/<AppName>/<AppInstance>\" or {instance, namespace}"; exit 2; }
+        else
+          [[ -n $HDI_FLOW && -n $HDI_APP && -n $HDI_INSTANCE ]] || { err "flow, app and instance are required (or targets)"; exit 2; }
+          list=$(jq -cn --arg i "$HDI_FLOW/$HDI_APP/$HDI_INSTANCE" --arg ns "$HDI_NAMESPACE" '[{instance: $i, namespace: $ns}]')
+        fi
+        [[ $(jq 'length' <<<"$list") -gt 0 ]] || { err "no instance to deploy"; exit 2; }
+
+        password=$HDI_SECRET_PASSWORD
+        if [[ $HDI_MODE == deploy && -z $password ]]; then
+          password=$(openssl rand -hex 16)
+        fi
+        if [[ -n $password ]]; then echo "::add-mask::$password"; fi
+        kube=()
+        if [[ -n $HDI_KUBECONFIG ]]; then kube=(--kubeconfig "$HDI_KUBECONFIG"); fi
+        live=false
+        if [[ $HDI_MODE == deploy && $HDI_DRY_RUN != true ]]; then live=true; fi
+
+        how="mode $HDI_MODE"
+        if [[ $HDI_DRY_RUN == true ]]; then how+=", dry run"; fi
+        {
+          echo "### Helm releases — $HDI_ENV, tag \`$HDI_TAG\` ($how)"
+          echo ""
+          echo "| instance | release | namespace | revision | ready | helm test | result |"
+          echo "|---|---|---|---|---|---|---|"
+        } >> "$GITHUB_STEP_SUMMARY"
+        results='[]'
+        deployed=()
+        failed=()
+        record() { # record <instance> <release> <namespace> <exit> <result> <revision> <ready> <test>
+          results=$(jq -c --arg i "$1" --arg r "$2" --arg n "$3" --argjson e "$4" --arg res "$5" \
+            --arg rev "$6" --arg ready "$7" --arg test "$8" \
+            '. + [{instance: $i, release: $r, namespace: $n, exit: $e, result: $res, revision: $rev, ready: $ready, test: $test}]' <<<"$results")
+          echo "| \`$1\` | \`$2\` | ${3:-—} | $6 | $7 | $8 | $5 |" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $4 -eq 0 ]]; then
+            if $live; then deployed+=("$1"); fi
+          else
+            failed+=("$1")
+          fi
+        }
+
+        while IFS=$'\t' read -r instance ns; do
+          if [[ ! $instance =~ ^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$ ]]; then
+            err "'$instance' is not <flow>/<AppName>/<AppInstance>"
+            record "$instance" — "" 2 "invalid instance" — — —
+            continue
+          fi
+          IFS=/ read -r flow app inst <<<"$instance"
+          release="$app-$inst"
+          ns=${ns:-"{flow}"}
+          ns=${ns//"{flow}"/$flow}
+          if [[ ! $ns =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+            err "$instance: namespace '$ns' is not a DNS label"
+            record "$instance" "$release" "$ns" 2 "invalid namespace" — — —
+            continue
+          fi
+          base=("$HDI_ENV" "$flow" "$app" "$inst" --tag "$HDI_TAG" --namespace "$ns")
+
+          # The node cannot pull: every container image of the release must be one that was loaded.
+          if [[ -n $HDI_LOADED && $HDI_MODE == deploy ]]; then
+            render="$RUNNER_TEMP/helm-render-$release.yaml"
+            status=0
+            bash "$script" "${base[@]}" --mode template --render-out "$render" </dev/null >"$render.log" 2>&1 || status=$?
+            if [[ $status -ne 0 ]]; then
+              cat "$render.log"
+              err "$instance: rendering the release failed (exit $status)"
+              record "$instance" "$release" "$ns" "$status" "render failed (exit $status)" — — —
+              continue
+            fi
+            # (yq: `,` binds looser than `|`, hence the outer parentheses.)
+            if ! images=$(yq -N '(
+                  (select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet" or .kind == "Job") | .spec.template.spec),
+                  (select(.kind == "Pod") | .spec)
+                ) | ((.initContainers // []) + (.containers // []))[] | .image' "$render"); then
+              err "$instance: cannot read the rendered release $render"
+              record "$instance" "$release" "$ns" 1 "render unreadable" — — —
+              continue
+            fi
+            missing=()
+            while IFS= read -r image; do
+              if [[ -n $image && $image != null && " $HDI_LOADED " != *" $image "* ]]; then missing+=("$image"); fi
+            done < <(sort -u <<<"$images")
+            if [[ -z ${images//[[:space:]]/} ]]; then
+              err "$instance: the rendered release has no container image"
+              record "$instance" "$release" "$ns" 1 "no image rendered" — — —
+              continue
+            fi
+            if [[ ${#missing[@]} -gt 0 ]]; then
+              err "$instance: the release would run ${missing[*]}, which is not on the nodes (loaded: $HDI_LOADED). Deploy with the tag the image was loaded with, and keep image.repository equal to the built image's repository."
+              record "$instance" "$release" "$ns" 1 "image not loaded" — — —
+              continue
+            fi
+          fi
+
+          args=("${base[@]}" --timeout "$HDI_TIMEOUT" --mode "$HDI_MODE" ${kube[@]+"${kube[@]}"})
+          if [[ $HDI_MODE == deploy ]]; then args+=(--secret-user "$HDI_SECRET_USER" --secret-password "$password"); fi
+          if [[ $HDI_DRY_RUN == true ]]; then args+=(--dry-run); fi
+          shown="${args[*]}"
+          if [[ -n $password ]]; then shown=${shown//"$password"/***}; fi
+          echo "::group::helm-deploy-instance.sh $shown"
+          status=0
+          bash "$script" "${args[@]}" </dev/null || status=$?
+          echo "::endgroup::"
+
+          revision=— ready=— test=—
+          if $live && command -v helm >/dev/null 2>&1 && command -v kubectl >/dev/null 2>&1; then
+            if state=$(helm status "$release" -n "$ns" ${kube[@]+"${kube[@]}"} -o json 2>/dev/null); then
+              revision=$(jq -r '.version // "—"' <<<"$state")
+              test=$(jq -r '[.hooks[]? | select((.events // []) | index("test")) | (.last_run.phase // "Unknown")]
+                | if length == 0 then "—" else (unique | join(", ")) end' <<<"$state")
+            fi
+            if replicas=$(kubectl -n "$ns" ${kube[@]+"${kube[@]}"} get deployment "$release" \
+                -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null); then
+              ready=$replicas
+              if [[ $ready == /* ]]; then ready="0$ready"; fi
+            fi
+          fi
+          case $status in
+            0)
+              if [[ $HDI_DRY_RUN == true ]]; then result="ok (dry run)"
+              else case $HDI_MODE in deploy) result=deployed ;; lint) result=linted ;; template) result=rendered ;; esac
+              fi
+              ;;
+            1) result="failed: helm / kubectl" ;;
+            2) result="failed: usage" ;;
+            3) result="refused: env $HDI_ENV is not deployable" ;;
+            4) result="failed: chart, values or application.yml missing" ;;
+            5) result="failed: tool missing or not Helm 4" ;;
+            *) result="failed: exit $status" ;;
+          esac
+          if [[ $status -ne 0 ]]; then err "$instance: $result (exit $status)"; fi
+          record "$instance" "$release" "$ns" "$status" "$result" "$revision" "$ready" "$test"
+        done < <(jq -r '.[] | [.instance, .namespace] | @tsv' <<<"$list")
+
+        {
+          echo "deployed=${deployed[*]}"
+          echo "failed=${failed[*]}"
+          echo "results=$results"
+        } >> "$GITHUB_OUTPUT"
+        if [[ ${#failed[@]} -gt 0 ]]; then
+          err "${#failed[@]} of $(jq 'length' <<<"$list") instance(s) failed: ${failed[*]}"
+          if [[ $HDI_FAIL_ON_ERROR == true ]]; then exit 1; fi
+        fi

@@ -1,15 +1,19 @@
-# Deploy-dev inventory of us-dev (D5 §6.6, D9): one target per instance directory, checked by configLint
-# (check 11). Demo step 1: compose hosts, reached by the deploy-dev placeholder only as a dry run
-# (TODO(DL-35): SSH to the host as the `deploy` user, forced command run-compose.sh). Demo step 2 switches
-# the defaults to kind: helm with cluster and namespace.
+# Deploy-dev inventory of us-dev (D5 §6.6, D9 §6.4–§6.5): one target per instance directory, checked by
+# configLint (check 11). kind, cluster and namespace come from the target, else from defaults.
+#   compose  demo step 1: run-compose.sh on `host` as `user` — in the demo a dry run on the runner only
+#            (TODO(DL-35): SSH as the `deploy` user, forced command run-compose.sh).
+#   helm     demo step 2: helm upgrade --install into `cluster`, namespace `namespace` ("{flow}" = the
+#            instance's flow, DL-38). cluster kind-ci = a throwaway kind cluster inside the deploy-dev job
+#            until a dev cluster exists (DL-32); any other cluster needs its kubeconfig from the Environment
+#            dev secrets (Phase 3) and fails the deploy until then.
 env: us-dev
 defaults:
-  kind: compose
-  user: deploy                  # DL-35: SSH user whose forced command is run-compose.sh
+  kind: helm
+  cluster: kind-ci
+  namespace: "{flow}"
 targets:
   - instance: cash/source-database/trades-db-to-amps
     kind: compose
     host: dev-compose-01.us-dev.example.com
-  - instance: cash/source-database/positions-db-to-deephaven
-    kind: compose
-    host: dev-compose-01.us-dev.example.com
+    user: deploy                  # DL-35: SSH user whose forced command is run-compose.sh
+  - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults

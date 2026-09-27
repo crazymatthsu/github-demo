@@ -2,8 +2,8 @@ name: affected-matrix
 description: >-
   Affected-subproject detection (D7 §5.4, §6.2): diffs the change against its base, maps the changed
   paths onto Gradle projects with .github/affected-map.yml (scripts/ci/affected.py) and returns the
-  build list, the integration-test matrix and the full / docs-only flags. Needs a checkout with
-  history (fetch-depth: 0).
+  build list, the integration-test matrix, the full / docs-only flags and the deploy-test flag. Needs a
+  checkout with history (fetch-depth: 0).
 inputs:
   base-ref:
     description: >-
@@ -53,6 +53,11 @@ outputs:
   base-changed:
     description: "'true' when docker/base/** changed; the build rebuilds the base images locally."
     value: ${{ steps.detect.outputs.base-changed }}
+  deploy-test:
+    description: >-
+      'true' when the kind deployment test must run: full, or a path of the map's deploy-test section
+      changed (charts, config, test-infra/kind, the Helm deploy scripts and actions, source-database).
+    value: ${{ steps.detect.outputs.deploy-test }}
   reason:
     description: One-line explanation of the decision.
     value: ${{ steps.detect.outputs.reason }}

@@ -1,0 +1,220 @@
+# Reusable: Helm deployment test in a throwaway kind cluster (D10 §5.9, D11 §6.4, §7.3; DL-27, DL-32, DL-33).
+#
+#   kind up (ci-<run_id>-<attempt>) → load the app image built in this run → one Helm release per
+#   AppInstance directory of config/<env>/*/<app>/ (namespace with the restricted PSS labels, Secret,
+#   helm lint, upgrade --install --wait (--rollback-on-failure once a revision exists; a failed first install
+#   stays for the diagnostics), rollout status, helm test) → smoke diff
+#   across the releases → diagnostics on failure → kind down and leak check on success, failure AND
+#   cancel (always(), DL-27).
+# A deployment test of the chart and the config tree, not an integration test: the apps become ready
+# without a reachable database or Deephaven (readiness = readinessState + the connector indicator).
+#
+# Image: `images` pins the app image by digest (<repo>:<tag>@sha256:...). kind-cluster `load` pulls
+# that digest, tags it <repo>:<tag> and loads it into the node (kind load docker-image); every release is
+# deployed with --tag <tag>, so the chart's <image.repository>:<image.tag> names exactly the tested image
+# and the node never pulls (pullPolicy IfNotPresent). helm-deploy-instance renders each release first and
+# fails before deploying if it would run any image that was not loaded.
+name: _kind-deploy
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: Config env whose instances are deployed (local or a *-dev env).
+        type: string
+        default: us-dev
+      app:
+        description: AppName; every instance directory of config/<env>/*/<app>/ becomes one release.
+        type: string
+        default: source-database
+      images:
+        description: JSON object Gradle project → digest-pinned image (the _gradle-build `images` output).
+        type: string
+        required: true
+      tag:
+        description: Tag the image is loaded and deployed with; empty takes the tag of the image reference.
+        type: string
+        default: ''
+      retention-days:
+        description: Retention of the diagnostics artefact (D10 §6.1 — 7 on PRs, 14 on main).
+        type: number
+        default: 7
+    outputs:
+      releases:
+        description: JSON list of the release results (instance, release, namespace, revision, ready, test, result).
+        value: ${{ jobs.kind-deploy.outputs.releases }}
+
+permissions:
+  contents: read
+
+jobs:
+  kind-deploy:
+    name: kind deploy (${{ inputs.env }}/${{ inputs.app }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read # pull this run's image by digest
+    env:
+      # One cluster per job and runner VM; kind-cluster's down and leak-check find it by this name even
+      # when `up` never finished (DL-27).
+      KIND_CLUSTER_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      DEPLOY_ENV: ${{ inputs.env }}
+      DEPLOY_APP: ${{ inputs.app }}
+    outputs:
+      releases: ${{ steps.deploy.outputs.results }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check inputs, list the instances
+        id: check
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ $DEPLOY_ENV =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]] || { echo "::error::invalid env '$DEPLOY_ENV'"; exit 2; }
+          [[ $DEPLOY_APP =~ ^[a-z][a-z0-9-]*$ ]] || { echo "::error::invalid app '$DEPLOY_APP'"; exit 2; }
+          project=":deephaven-connectors:$DEPLOY_APP"
+          ref=$(jq -r --arg p "$project" '.[$p] // empty' <<<"$IMAGES") ||
+            { echo "::error::the images input is not a JSON object"; exit 2; }
+          if [[ ! $ref =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no digest-pinned image for $project in the images input (got '$ref')"
+            exit 2
+          fi
+          name=${ref%%@*}
+          last=${name##*/}
+          ref_tag=''
+          if [[ $last == *:* ]]; then ref_tag=${last##*:}; fi
+          tag=${TAG_INPUT:-$ref_tag}
+          if [[ ! $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::no valid tag: input '$TAG_INPUT', image reference '$ref_tag'"
+            exit 2
+          fi
+          # Every instance directory of config/<env>/<flow>/<app>/ except the app-common layer (and helpers).
+          targets='[]'
+          for dir in config/"$DEPLOY_ENV"/*/"$DEPLOY_APP"/*/; do
+            [[ -d $dir ]] || continue
+            instance=$(basename "$dir")
+            flow=$(basename "$(dirname "$(dirname "$dir")")")
+            case $instance in app-common | _* | .*) continue ;; esac
+            case $flow in _* | .*) continue ;; esac
+            targets=$(jq -c --arg i "$flow/$DEPLOY_APP/$instance" --arg ns "$flow" '. + [{instance: $i, namespace: $ns}]' <<<"$targets")
+          done
+          count=$(jq 'length' <<<"$targets")
+          if [[ $count -eq 0 ]]; then
+            echo "::error::no instance directory under config/$DEPLOY_ENV/*/$DEPLOY_APP/"
+            exit 2
+          fi
+          # Smoke pairs: the first release of each namespace against every other release there.
+          pairs=$(jq -c '[group_by(.namespace)[] | select(length > 1) | .[0] as $first | .[1:][]
+            | [$first.namespace, ($first.instance | split("/") | .[1] + "-" + .[2]), (.instance | split("/") | .[1] + "-" + .[2])]]' <<<"$targets")
+          {
+            echo "image=$ref"
+            echo "tag=$tag"
+            echo "targets=$targets"
+            echo "pairs=$pairs"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### kind deploy: $DEPLOY_ENV / $DEPLOY_APP"
+            echo ""
+            echo "$count release(s) in cluster \`$KIND_CLUSTER_NAME\`; image \`$ref\`, loaded and deployed as tag \`$tag\`."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Kubernetes tools (test-infra/kind/versions.env)
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: kind,kubectl,helm
+
+      - name: kind cluster up
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: up
+
+      - name: Load the image built in this run
+        id: load
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: load
+          images: ${{ steps.check.outputs.image }}
+          tag: ${{ steps.check.outputs.tag }}
+
+      - name: One Helm release per instance (lint, upgrade --install, rollout, helm test)
+        id: deploy
+        uses: ./.github/actions/helm-deploy-instance
+        with:
+          env: ${{ inputs.env }}
+          targets: ${{ steps.check.outputs.targets }}
+          tag: ${{ steps.check.outputs.tag }}
+          loaded-images: ${{ steps.load.outputs.loaded }}
+
+      - name: Smoke diff (the instances differ in identity and effective configuration)
+        env:
+          PAIRS: ${{ steps.check.outputs.pairs }}
+        run: |
+          set -euo pipefail
+          script=scripts/helm-smoke-diff.sh
+          [[ -f $script ]] || { echo "::error::$script is missing"; exit 1; }
+          if [[ $(jq 'length' <<<"$PAIRS") -eq 0 ]]; then
+            echo "::warning title=smoke diff::fewer than two releases share a namespace; nothing to compare"
+            echo "- smoke diff: skipped (fewer than two releases in one namespace)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          { echo "### Smoke diff"; echo ""; } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          while IFS=$'\t' read -r ns a b; do
+            report="$RUNNER_TEMP/smoke-$a-$b.txt"
+            echo "::group::helm-smoke-diff.sh -n $ns $a $b"
+            status=0
+            bash "$script" -n "$ns" "$a" "$b" </dev/null >"$report" 2>&1 || status=$?
+            cat "$report"
+            echo "::endgroup::"
+            if [[ $status -eq 0 ]]; then
+              verdict="they differ in identity and configuration"
+            else
+              verdict="FAILED, exit $status (1: same or unreachable, 2: usage)"
+              echo "::error title=smoke diff::$a vs $b in $ns: exit $status"
+              fail=1
+            fi
+            {
+              echo "\`$a\` vs \`$b\` in \`$ns\`: **$verdict**"
+              echo ""
+              echo '```'
+              cat "$report"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[] | @tsv' <<<"$PAIRS")
+          exit "$fail"
+
+      - name: Diagnostics before teardown
+        if: failure()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: diagnostics
+          diagnostics-dir: build/kind-logs
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.env }}-${{ inputs.app }}
+          path: build/kind-logs/**
+          if-no-files-found: warn
+          retention-days: ${{ inputs.retention-days }}
+
+      - name: Teardown (success, failure and cancel)
+        if: always()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: down
+
+      - name: Leak check
+        if: always()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: leak-check

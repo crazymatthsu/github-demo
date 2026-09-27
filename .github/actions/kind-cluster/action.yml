@@ -1,0 +1,93 @@
+name: kind-cluster
+description: >-
+  Thin wrapper around test-infra/kind/kind.sh (D10 §5.9), the kind counterpart of compose-stack, so
+  workflows and laptops run the same commands. The cluster is KIND_CLUSTER_NAME, which the calling job
+  sets (kind-deploy: ci-<run_id>-<attempt>; deploy-dev: deploy-<run_id>-<attempt>), or the cluster-name
+  input. `up` exports KUBECONFIG and KIND_CLUSTER_NAME to GITHUB_ENV for later steps; `load` returns the
+  names it put on the nodes (<repo>:<tag>) as the `loaded` output. Needs the tools of setup-kube-tools
+  (`down` and `leak-check` fall back to the container engine when kind is missing). Use `if: always()` on
+  `down` and `leak-check` so they run on success, failure and cancel (DL-27).
+inputs:
+  command:
+    description: up | load | diagnostics | down | leak-check
+    required: true
+  cluster-name:
+    description: Cluster name; empty uses KIND_CLUSTER_NAME from the job environment.
+    required: false
+    default: ''
+  images:
+    description: >-
+      `load`: image references separated by spaces or newlines — <repo>:<tag>, <repo>@sha256:<digest> or
+      <repo>:<tag>@sha256:<digest> (the build's `images` form). A digest is pulled and tagged <repo>:<tag>.
+    required: false
+    default: ''
+  tag:
+    description: "`load`: the tag the images get on the nodes (--tag); deploy the releases with the same tag."
+    required: false
+    default: ''
+  diagnostics-dir:
+    description: Directory `diagnostics` writes into.
+    required: false
+    default: build/kind-logs
+  warn-only:
+    description: "'true' makes leak-check report without failing."
+    required: false
+    default: 'false'
+outputs:
+  loaded:
+    description: "`load`: the space-separated names on the nodes (<repo>:<tag>) — the helm-deploy-instance `loaded-images` input."
+    value: ${{ steps.run.outputs.loaded }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        KIND_COMMAND: ${{ inputs.command }}
+        KIND_NAME_INPUT: ${{ inputs.cluster-name }}
+        KIND_IMAGES: ${{ inputs.images }}
+        KIND_TAG: ${{ inputs.tag }}
+        KIND_DIAG_DIR: ${{ inputs.diagnostics-dir }}
+        KIND_WARN_ONLY: ${{ inputs.warn-only }}
+      run: |
+        set -euo pipefail
+        script="${GITHUB_WORKSPACE}/test-infra/kind/kind.sh"
+        [[ -f $script ]] || { echo "::error title=kind-cluster::$script is missing"; exit 1; }
+        if [[ -n $KIND_NAME_INPUT ]]; then export KIND_CLUSTER_NAME=$KIND_NAME_INPUT; fi
+        # Named by the job, not by `up`: down and leak-check must find the cluster even when up never finished.
+        : "${KIND_CLUSTER_NAME:?the calling job must set KIND_CLUSTER_NAME (ci-<run_id>-<attempt>) or pass cluster-name}"
+        args=()
+        case "$KIND_COMMAND" in
+          up)
+            args=(up)
+            ;;
+          load)
+            read -r -a refs <<<"$(tr '\n' ' ' <<<"$KIND_IMAGES")"
+            [[ ${#refs[@]} -gt 0 ]] || { echo "::error title=kind-cluster::'load' needs the images input"; exit 2; }
+            args=(load)
+            if [[ -n $KIND_TAG ]]; then args+=(--tag "$KIND_TAG"); fi
+            args+=("${refs[@]}")
+            ;;
+          diagnostics)
+            args=(diagnostics "$KIND_DIAG_DIR")
+            ;;
+          down)
+            args=(down)
+            ;;
+          leak-check)
+            args=(leak-check)
+            if [[ $KIND_WARN_ONLY == true ]]; then args+=(--warn-only); fi
+            ;;
+          *)
+            echo "::error title=kind-cluster::unknown command '$KIND_COMMAND' (up | load | diagnostics | down | leak-check)"
+            exit 2
+            ;;
+        esac
+        echo "::group::kind.sh ${args[*]} (cluster ${KIND_CLUSTER_NAME})"
+        status=0
+        bash "$script" "${args[@]}" || status=$?
+        echo "::endgroup::"
+        if [[ $status -ne 0 ]]; then
+          echo "::error title=kind-cluster::kind.sh ${args[*]} exited with $status"
+        fi
+        exit "$status"

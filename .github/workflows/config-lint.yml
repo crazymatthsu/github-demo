@@ -2,7 +2,8 @@
 # compose rendering, merged-config validation, parity and tag policy — all in `./gradlew configLint`
 # (buildlogic.config-lint), so a laptop runs the same check. Called by pr.yml and main.yml, and runs
 # on its own for pull requests that touch the config tree (config lives in this repo, DL-06).
-# Demo step 2 adds `helm lint` / `helm template` per instance to the same task.
+# Demo step 2: the same task runs `helm lint` / `helm template` per instance (check 12) and keeps the
+# rendered releases as an artefact; kubeconform validates them against the Kubernetes 1.37 schemas.
 name: config-lint
 
 on:
@@ -29,6 +30,14 @@ jobs:
       - uses: ./.github/actions/setup-build-env
         with:
           java: 'true'
+
+      # Check 12 (demo step 2): helm lint / helm template per instance and kubeconform on the rendered
+      # releases, with the tools pinned in test-infra/kind/versions.env. CI=true makes a missing Helm 4 an
+      # error; kubeconform is optional for the task (a warning when absent), which is why this step installs it.
+      - name: Kubernetes tools (helm, kubeconform)
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: helm,kubeconform
 
       - name: ./gradlew configLint
         run: ./gradlew configLint --continue

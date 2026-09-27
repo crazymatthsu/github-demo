@@ -1,14 +1,23 @@
-# Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-35, DL-36).
+# Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-32, DL-35, DL-36).
 #
-# Reads config/<env>/targets.yml (D5 §6.6): targets[].instance is <flow>/<AppName>/<AppInstance>,
-# kind is compose | helm (target value, else defaults.kind, else compose).
+# Reads config/<env>/targets.yml (D5 §6.6): targets[].instance is <flow>/<AppName>/<AppInstance>; kind is
+# compose | helm; cluster and namespace belong to helm targets. Each comes from the target, else from
+# defaults (kind else compose, namespace else "{flow}" = the instance's flow, DL-38).
 #   compose (demo step 1)  PLACEHOLDER (brief v1.1): `run-compose.sh ... start --dry-run` on the runner
 #                          validates the target and prints the compose command; the job prints the
 #                          SSH command it would run on the host — see TODO(DL-35) below.
-#   helm    (demo step 2)  skipped with a notice until the chart exists.
+#   helm    (demo step 2)  cluster kind-ci: a kind cluster created in this job (deploy-<run_id>-<attempt>;
+#                          kind stands in until a dev cluster exists, DL-32) gets this run's images by
+#                          digest, loaded as <repo>:<tag>; every target is deployed with
+#                          scripts/helm-deploy-instance.sh (namespace, Secret, helm lint, upgrade --install
+#                          --rollback-on-failure --wait, rollout status, helm test); the cluster is deleted
+#                          and leak-checked in always() steps (DL-27). Any other cluster fails its targets —
+#                          TODO(Phase 3) below.
 # Then the deployed tag is written back to the config tree by the bot with `[skip ci]` (loop guard,
-# DL-36) and the run is recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
-# touched: the job refuses any env that is not *-dev, and so do run-compose.sh and write-back-tag.sh.
+# DL-36) — IMAGE_TAG in compose.env and image.tag in values.yaml of every deployed instance, never of a
+# failed one — and the run is recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
+# touched: the job refuses any env that is not *-dev, and so do run-compose.sh, helm-deploy-instance.sh
+# and write-back-tag.sh.
 name: _deploy-dev
 
 on:
@@ -23,7 +32,7 @@ on:
         type: string
         required: true
       images:
-        description: JSON object Gradle project → digest-pinned image, recorded in the deployment payload.
+        description: JSON object Gradle project → digest-pinned image; recorded in the deployment payload and loaded into kind for helm targets.
         type: string
         default: '{}'
     outputs:
@@ -51,13 +60,17 @@ jobs:
     permissions:
       contents: write # the write-back commit
       deployments: write # the GitHub Deployment record
+      packages: read # helm targets: this run's images are pulled into the kind cluster
     env:
       DEPLOY_ENV: ${{ inputs.env }}
       DEPLOY_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # The kind cluster of the helm targets (cluster kind-ci). Named here, not by `up`, so teardown and
+      # leak check find it even when `up` never finished (DL-27).
+      KIND_CLUSTER_NAME: deploy-${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
-      deployed: ${{ steps.compose.outputs.deployed }}
+      deployed: ${{ steps.deployed.outputs.json }}
     steps:
       - uses: actions/checkout@v7
 
@@ -70,23 +83,6 @@ jobs:
           fi
           [[ $DEPLOY_TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "::error::invalid tag '$DEPLOY_TAG'"; exit 1; }
 
-      - name: Record the deployment (in progress)
-        id: deployment
-        env:
-          IMAGES: ${{ inputs.images }}
-        run: |
-          set -euo pipefail
-          payload=$(jq -cn --arg env "$DEPLOY_ENV" --arg tag "$DEPLOY_TAG" --argjson images "$IMAGES" \
-            '{env: $env, tag: $tag, images: $images}')
-          id=$(jq -n --arg ref "$GITHUB_SHA" --arg tag "$DEPLOY_TAG" --arg env "$DEPLOY_ENV" --argjson payload "$payload" '{
-                ref: $ref, environment: "dev", description: ("deploy-dev " + $env + " " + $tag),
-                auto_merge: false, required_contexts: [], payload: $payload,
-                transient_environment: false, production_environment: false
-              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
-          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
-            -f state=in_progress -f log_url="$RUN_URL" -f description="deploying $DEPLOY_TAG" >/dev/null
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-
       - name: Resolve the targets
         id: targets
         run: |
@@ -95,6 +91,7 @@ jobs:
           if [[ ! -f $file ]]; then
             echo "::warning::$file not found — nothing to deploy"
             echo '[]' > "$RUNNER_TEMP/targets.json"
+            { echo "compose=0"; echo "helm=0"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           declared=$(yq '.env // ""' "$file")
@@ -107,13 +104,41 @@ jobs:
               "instance": .instance,
               "kind": (.kind // $d.kind // "compose"),
               "host": (.host // $d.host // ""),
-              "user": (.user // $d.user // "deploy")
-            }]' "$file" > "$RUNNER_TEMP/targets.json"
-          jq -e 'all(.[]; (.instance | test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$")) and (.kind == "compose" or .kind == "helm"))' \
-            "$RUNNER_TEMP/targets.json" >/dev/null ||
+              "user": (.user // $d.user // "deploy"),
+              "cluster": (.cluster // $d.cluster // ""),
+              "namespace": (.namespace // $d.namespace // "{flow}")
+            }]' "$file" > "$RUNNER_TEMP/targets.raw.json"
+          jq -e 'all(.[]; (.instance | type == "string" and test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$")) and (.kind == "compose" or .kind == "helm"))' \
+            "$RUNNER_TEMP/targets.raw.json" >/dev/null ||
             { echo "::error::$file: every target needs instance <flow>/<AppName>/<AppInstance> and kind compose | helm"; exit 1; }
+          # compose targets keep host and user; helm targets keep cluster and namespace, "{flow}" → the flow.
+          jq -c 'map((.instance | split("/")[0]) as $flow
+              | if .kind == "helm" then del(.host, .user) | .namespace |= gsub("\\{flow\\}"; $flow)
+                else del(.cluster, .namespace) end)' "$RUNNER_TEMP/targets.raw.json" > "$RUNNER_TEMP/targets.json"
+          jq -e 'all(.[] | select(.kind == "helm");
+              (.cluster | type == "string" and test("^[a-z0-9][a-z0-9.-]*$"))
+              and (.namespace | type == "string" and test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")))' \
+            "$RUNNER_TEMP/targets.json" >/dev/null ||
+            { echo "::error::$file: every helm target needs a cluster and a namespace that is a DNS label once {flow} is substituted"; exit 1; }
           echo "compose=$(jq '[.[] | select(.kind == "compose")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
           echo "helm=$(jq '[.[] | select(.kind == "helm")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Record the deployment (in progress)
+        id: deployment
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -cn --arg env "$DEPLOY_ENV" --arg tag "$DEPLOY_TAG" --argjson images "$IMAGES" \
+            --slurpfile targets "$RUNNER_TEMP/targets.json" '{env: $env, tag: $tag, images: $images, targets: $targets[0]}')
+          id=$(jq -n --arg ref "$GITHUB_SHA" --arg tag "$DEPLOY_TAG" --arg env "$DEPLOY_ENV" --argjson payload "$payload" '{
+                ref: $ref, environment: "dev", description: ("deploy-dev " + $env + " " + $tag),
+                auto_merge: false, required_contexts: [], payload: $payload,
+                transient_environment: false, production_environment: false
+              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+            -f state=in_progress -f log_url="$RUN_URL" -f description="deploying $DEPLOY_TAG" >/dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
       - name: Deploy compose targets (demo step 1 — placeholder)
         id: compose
@@ -189,27 +214,150 @@ jobs:
             echo "failed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Helm targets (demo step 2)
+      - name: Plan the helm targets (demo step 2)
+        id: helm-plan
         if: steps.targets.outputs.helm != '0'
+        env:
+          IMAGES: ${{ inputs.images }}
         run: |
           set -euo pipefail
-          while read -r instance; do
-            echo "::notice title=deploy-dev::$instance is kind: helm — demo step 2 (kind + Helm); skipped in step 1"
-          done < <(jq -r '.[] | select(.kind == "helm") | .instance' "$RUNNER_TEMP/targets.json")
+          # TODO(Phase 3): a helm target whose cluster is not kind-ci needs that cluster's kubeconfig from
+          #   the Environment `dev` secrets — DEV_KUBECONFIG_<CLUSTER> for a persistent dev cluster, or
+          #   GitHub OIDC → IAM role → EKS RBAC once dev runs on EKS (D9 §6.7, DL-32) — written to
+          #   $RUNNER_TEMP with mode 600 and passed to helm-deploy-instance as `kubeconfig`, with no kind
+          #   cluster and no image load (that cluster pulls from the registry). Until then such a target
+          #   fails here and gets no write-back.
+          targets='[]' refs=() failed=()
+          { echo "### deploy-dev: helm targets"; echo ""; } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r instance cluster namespace; do
+            IFS=/ read -r _ app _ <<<"$instance"
+            if [[ $cluster != kind-ci ]]; then
+              echo "::error::$instance: cluster '$cluster' — TODO(Phase 3): kubeconfig for $cluster from the Environment dev secrets"
+              echo "- \`$instance\`: **failed**, cluster \`$cluster\` has no kubeconfig yet (TODO(Phase 3); the demo deploys \`kind-ci\` only)" >> "$GITHUB_STEP_SUMMARY"
+              failed+=("$instance")
+              continue
+            fi
+            ref=$(jq -r --arg p ":deephaven-connectors:$app" '.[$p] // empty' <<<"$IMAGES")
+            if [[ ! $ref =~ @sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::$instance: no digest-pinned image for :deephaven-connectors:$app in the images input"
+              echo "- \`$instance\`: **failed**, no image of \`$app\` from this run" >> "$GITHUB_STEP_SUMMARY"
+              failed+=("$instance")
+              continue
+            fi
+            targets=$(jq -c --arg i "$instance" --arg ns "$namespace" '. + [{instance: $i, namespace: $ns}]' <<<"$targets")
+            if [[ " ${refs[*]} " != *" $ref "* ]]; then refs+=("$ref"); fi
+          done < <(jq -r '.[] | select(.kind == "helm") | [.instance, .cluster, .namespace] | @tsv' "$RUNNER_TEMP/targets.json")
+          count=$(jq 'length' <<<"$targets")
+          kind=false
+          if [[ $count -gt 0 ]]; then
+            kind=true
+            echo "- $count target(s) of cluster \`kind-ci\` into the kind cluster \`$KIND_CLUSTER_NAME\`, tag \`$DEPLOY_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo "kind=$kind"
+            echo "targets=$targets"
+            echo "images=${refs[*]}"
+            echo "failed=${failed[*]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Kubernetes tools (test-infra/kind/versions.env)
+        if: steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: kind,kubectl,helm
+
+      - name: Registry login (this run's images)
+        if: steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/registry-login
+
+      - name: kind cluster up (cluster kind-ci)
+        if: steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: up
+
+      - name: Load this run's images into kind
+        id: load
+        if: steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: load
+          images: ${{ steps.helm-plan.outputs.images }}
+          tag: ${{ inputs.tag }}
+
+      - name: Deploy helm targets (demo step 2)
+        id: helm
+        if: steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/helm-deploy-instance
+        with:
+          env: ${{ inputs.env }}
+          targets: ${{ steps.helm-plan.outputs.targets }}
+          tag: ${{ inputs.tag }}
+          loaded-images: ${{ steps.load.outputs.loaded }}
+          # Every target is attempted; failed ones get no write-back and fail the job after it.
+          fail-on-error: 'false'
+
+      - name: Diagnostics before teardown (kind)
+        if: ${{ !cancelled() && steps.helm-plan.outputs.kind == 'true' && (failure() || steps.helm.outputs.failed != '') }}
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: diagnostics
+          diagnostics-dir: build/kind-logs
+
+      - name: Upload diagnostics
+        if: ${{ !cancelled() && steps.helm-plan.outputs.kind == 'true' && (failure() || steps.helm.outputs.failed != '') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-dev-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/kind-logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Teardown the kind cluster (success, failure and cancel)
+        if: always() && steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: down
+
+      - name: Leak check (kind)
+        if: always() && steps.helm-plan.outputs.kind == 'true'
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: leak-check
+
+      - name: Collect the deployed instances
+        id: deployed
+        if: ${{ !cancelled() }}
+        env:
+          COMPOSE_DEPLOYED: ${{ steps.compose.outputs.list }}
+          HELM_DEPLOYED: ${{ steps.helm.outputs.deployed }}
+        run: |
+          set -euo pipefail
+          read -r -a instances <<<"$COMPOSE_DEPLOYED $HELM_DEPLOYED"
+          echo "list=${instances[*]}" >> "$GITHUB_OUTPUT"
+          echo "json=$(printf '%s\n' "${instances[@]}" | jq -R . | jq -cs 'map(select(length > 0))')" >> "$GITHUB_OUTPUT"
 
       - name: Write back the deployed tag
         id: writeback
-        if: steps.compose.outputs.list != ''
+        # Also after a failed target or teardown step: what did deploy is recorded (failed targets are
+        # not in the list); never after a cancel.
+        if: ${{ !cancelled() && steps.deployed.outputs.list != '' }}
         env:
-          DEPLOYED: ${{ steps.compose.outputs.list }}
+          DEPLOYED: ${{ steps.deployed.outputs.list }}
         run: |
           set -euo pipefail
           read -r -a instances <<<"$DEPLOYED"
           scripts/ci/write-back-tag.sh "$DEPLOY_ENV" "$DEPLOY_TAG" "${instances[@]}"
 
       - name: Fail when a target failed
-        if: steps.compose.outputs.failed == 'true'
-        run: exit 1
+        if: ${{ !cancelled() && (steps.compose.outputs.failed == 'true' || steps.helm-plan.outputs.failed != '' || steps.helm.outputs.failed != '') }}
+        env:
+          HELM_PLAN_FAILED: ${{ steps.helm-plan.outputs.failed }}
+          HELM_FAILED: ${{ steps.helm.outputs.failed }}
+        run: |
+          read -r -a names <<<"$HELM_PLAN_FAILED $HELM_FAILED"
+          echo "::error::deploy-dev: target(s) failed and got no write-back — compose: see its table; helm: ${names[*]:-none}"
+          exit 1
 
       - name: Record the deployment result
         if: always() && steps.deployment.outputs.id != ''
