@@ -171,7 +171,8 @@ class GitReader(private val providers: ProviderFactory, private val rootDir: Fil
 
     val sha7: String get() = sha.take(7)
 
-    val dirty: Boolean by lazy { available && !git("status", "--porcelain", "--untracked-files=normal").isNullOrEmpty() }
+    /** Tracked files only: a stray untracked file must not turn a release-tag checkout into `.dirty`. */
+    val dirty: Boolean by lazy { available && !git("status", "--porcelain", "--untracked-files=no").isNullOrEmpty() }
 
     val shallow: Boolean by lazy { available && git("rev-parse", "--is-shallow-repository") == "true" }
 

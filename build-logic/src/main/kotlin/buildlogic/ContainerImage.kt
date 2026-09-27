@@ -206,7 +206,7 @@ abstract class BuildImageTask : ContainerEngineTask() {
 
     @TaskAction
     fun build() {
-        val engine = engineOrSkip("image build") ?: return
+        val engine = engineOrSkip("build of ${imageRefs.get().joinToString()}") ?: return
         val context = contextDir.get().asFile
         val created = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString()
         val args = buildArgs.get().toMutableMap()
@@ -253,7 +253,7 @@ abstract class PushImageTask : ContainerEngineTask() {
                     "published (D4 §6.2). CI computes pr-/rc-/release tags; override with -Pimage.allowLocalPush=true.",
             )
         }
-        val engine = engineOrSkip("image push") ?: return
+        val engine = engineOrSkip("push of ${imageRefs.get().joinToString()}") ?: return
         val refs = imageRefs.get()
         refs.forEach { runLoud(listOf(engine.executable, "push", it), "Image push") }
         val repository = refs.first().substringBeforeLast(':')

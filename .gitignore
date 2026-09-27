@@ -18,9 +18,10 @@ out/
 .settings/
 .factorypath
 
-# OS
+# OS, Python tooling (linters installed with pip)
 .DS_Store
 Thumbs.db
+__pycache__/
 
 # Local env files: never committed (secrets pass through the shell, D2 §8.1)
 *.local.env
