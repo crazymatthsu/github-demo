@@ -100,7 +100,7 @@ object ConfigRules {
     /** The Kubernetes version the rendered manifests are validated against (kubeconform, check 12). */
     const val KUBERNETES_VERSION = "1.37.0"
 
-    /** Check 11: a compose host, also every box of a host pool (DL-39) — a lower-case DNS name or an IPv4 address. */
+    /** Check 11: a compose host, also every box of a flow's pool (DL-39) — a lower-case DNS name or an IPv4 address. */
     val HOST_NAME = Regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
     /** Check 11: the SSH user of a compose host or pool (DL-35: `deploy`, whose forced command is run-compose.sh). */
     val LOGIN = Regex("^[a-z_][a-z0-9_-]{0,31}$")
@@ -111,6 +111,8 @@ object ConfigRules {
     val POOL_ROOT = Regex("^(/[A-Za-z0-9._-]+)+/?$")
     const val POOL_USER = "deploy"
     const val POOL_ROOT_DEFAULT = "/opt/platform"
+    /** A helm target's namespace once "{flow}" is substituted: a DNS label (DL-38; the flow name by default). */
+    val NAMESPACE = Regex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
     /** `config/<env>/known_hosts`: `[@marker] <host patterns> <key type> <base64 key> [comment]` (ssh-keyscan format). */
     val SSH_KEY_TYPE = Regex("^(ssh|ecdsa|sk)-[A-Za-z0-9@._-]+$")
     val BASE64 = Regex("^[A-Za-z0-9+/]+={0,3}$")
@@ -212,18 +214,18 @@ class ConfigLinter(
             error(1, envDir, "env '$env' must be local or <region>-<stage> with region us|jp and stage dev|qa|prod")
             return
         }
-        val targetsFile = File(envDir, "targets.yml")
-        val instances = mutableListOf<Triple<String, String, String>>()
         val appsSeen = mutableSetOf<String>()
+        val pools = mutableListOf<FlowPool>()
         for (child in envDir.listFiles().orEmpty().sortedBy { it.name }) {
             when {
-                child.isFile && child.name == "targets.yml" -> Unit
+                child.isFile && child.name == "targets.yml" -> error(11, child, "moved to config/$env/<flow>/targets.yml: one " +
+                    "deploy inventory per flow (env, flow, pool, defaults, targets; D5 §6.6, DL-39)")
                 child.isFile && child.name == "README.md" -> Unit
                 child.isFile && child.name == "known_hosts" -> lintKnownHosts(child)
                 child.isDirectory && child.name == ConfigRules.COMMON -> lintLayerFiles(child, allowComposeEnv = false)
-                child.isDirectory && child.name in ConfigRules.FLOWS -> lintFlow(child, env, instances, appsSeen)
+                child.isDirectory && child.name in ConfigRules.FLOWS -> lintFlow(child, env, appsSeen)?.let { pools += it }
                 child.isDirectory -> error(1, child, "flow '${child.name}' must be one of ${ConfigRules.FLOWS.sorted()}")
-                else -> error(1, child, "unexpected file in config/$env/ (expected targets.yml, known_hosts, _common/, <flow>/)")
+                else -> error(1, child, "unexpected file in config/$env/ (expected known_hosts, _common/, <flow>/)")
             }
         }
         if (env in completeEnvs) {
@@ -231,19 +233,15 @@ class ConfigLinter(
                 if (app !in appsSeen) error(2, envDir, "deployable app '$app' has no configuration in env '$env' (every app must)")
             }
         }
-        if (env.endsWith("-dev")) {
-            if (!targetsFile.isFile) error(3, targetsFile, "required for a *-dev env (deploy-dev inventory, D5 §6.6)")
-            else lintTargets(targetsFile, env, instances)
-        } else if (targetsFile.isFile) {
-            warn(11, targetsFile, "only *-dev envs are deployed from targets.yml; this file is ignored")
-            lintTargets(targetsFile, env, instances)
-        }
+        checkSharedBoxes(pools)
     }
 
-    private fun lintFlow(flowDir: File, env: String, instances: MutableList<Triple<String, String, String>>, appsSeen: MutableSet<String>) {
+    /** Returns the flow's pool (check 11) when its targets.yml declares one. */
+    private fun lintFlow(flowDir: File, env: String, appsSeen: MutableSet<String>): FlowPool? {
+        val instances = mutableListOf<String>()
         for (appDir in flowDir.listFiles().orEmpty().sortedBy { it.name }) {
             if (!appDir.isDirectory) {
-                error(1, appDir, "unexpected file in a flow directory (expected <AppName>/)")
+                if (appDir.name != "targets.yml") error(1, appDir, "unexpected file in a flow directory (expected targets.yml and <AppName>/)")
                 continue
             }
             val app = appDir.name
@@ -273,9 +271,22 @@ class ConfigLinter(
                     error(1, instDir, "unexpected file in an app directory (expected app-common/ and <AppInstance>/)")
                     continue
                 }
-                instances += Triple(flowDir.name, app, instDir.name)
+                instances += "$app/${instDir.name}"
                 lintInstance(instDir, env, flowDir.name, app, commonEnv, commonComplete)
             }
+        }
+        val targetsFile = File(flowDir, "targets.yml")
+        return when {
+            env.endsWith("-dev") && !targetsFile.isFile -> {
+                error(3, targetsFile, "required in every flow of a *-dev env (the flow's deploy-dev inventory, D5 §6.6)")
+                null
+            }
+            env.endsWith("-dev") -> lintTargets(targetsFile, env, flowDir.name, instances)
+            targetsFile.isFile -> {
+                warn(11, targetsFile, "only *-dev envs are deployed from targets.yml; this file is ignored")
+                lintTargets(targetsFile, env, flowDir.name, instances)
+            }
+            else -> null
         }
     }
 
@@ -675,43 +686,46 @@ class ConfigLinter(
         }
     }
 
-    // --- check 11: targets.yml (D5 §6.6) and the host pools of DL-39 ----------------------------------
+    // --- check 11: config/<env>/<flow>/targets.yml (D5 §6.6) and the host pool of DL-39 --------------------
 
-    /** One `pools.<flow>` entry: the boxes of `<env>/<flow>`, reached as [user], the bundle under [root]. */
+    /** The `pool` of one flow: the boxes of `<env>/<flow>`, reached as [user], the bundle under [root]. */
     private data class Pool(val hosts: List<String>, val user: String, val root: String)
+    private data class FlowPool(val file: File, val flow: String, val pool: Pool)
 
-    private fun lintTargets(file: File, env: String, instances: List<Triple<String, String, String>>) {
+    /** Lints one flow's inventory; returns its pool, if it declares one. [instances] are `<AppName>/<AppInstance>`. */
+    private fun lintTargets(file: File, env: String, flow: String, instances: List<String>): FlowPool? {
         val doc = try {
             yaml.load<Any?>(file.readText())
         } catch (e: Exception) {
             error(11, file, "YAML does not parse: ${e.message?.lineSequence()?.firstOrNull()}")
-            return
+            return null
         }
         if (doc !is Map<*, *>) {
-            error(11, file, "must be a mapping with env, pools, defaults, targets")
-            return
+            error(11, file, "must be a mapping with env, flow, pool, defaults, targets")
+            return null
         }
-        (doc.keys.map { it.toString() } - setOf("env", "pools", "defaults", "targets")).forEach {
-            error(11, file, "unknown top-level key '$it' (allowed: env, pools, defaults, targets)")
+        (doc.keys.map { it.toString() } - setOf("env", "flow", "pool", "defaults", "targets")).forEach {
+            error(11, file, "unknown top-level key '$it' (allowed: env, flow, pool, defaults, targets)")
         }
-        if (doc["env"]?.toString() != env) error(11, file, "env: must be '$env' (was '${doc["env"]}')")
-        val pools = lintPools(file, doc["pools"])
+        if (doc["env"]?.toString() != env) error(11, file, "env: must be '$env', the env of its path (was '${doc["env"]}')")
+        if (doc["flow"]?.toString() != flow) error(11, file, "flow: must be '$flow', the flow of its path (was '${doc["flow"]}')")
+        val pool = if (doc.containsKey("pool")) lintPool(file, doc["pool"]) else null
+        val flowPool = pool?.let { FlowPool(file, flow, it) }
         // `user`: the SSH user of a compose host (DL-35: `deploy`, the default of the deploy-dev job).
         val entryKeys = setOf("kind", "host", "user", "cluster", "namespace")
         val defaults = doc["defaults"] ?: emptyMap<String, Any>()
         if (defaults !is Map<*, *>) {
             error(11, file, "defaults: must be a mapping")
-            return
+            return flowPool
         }
         (defaults.keys.map { it.toString() } - entryKeys).forEach { error(11, file, "defaults: unknown key '$it'") }
         val targets = doc["targets"]
         if (targets !is List<*>) {
             error(11, file, "targets: must be a list")
-            return
+            return flowPool
         }
-        val known = instances.map { (f, a, i) -> "$f/$a/$i" }.toSet()
         val listed = mutableSetOf<String>()
-        val composeFlows = mutableSetOf<String>()
+        var composeTargets = 0
         targets.forEachIndexed { index, entry ->
             val where = "targets[$index]"
             if (entry !is Map<*, *>) {
@@ -720,107 +734,103 @@ class ConfigLinter(
             }
             (entry.keys.map { it.toString() } - (entryKeys + "instance")).forEach { error(11, file, "$where: unknown key '$it'") }
             val instance = entry["instance"]?.toString()
-            if (instance == null || !Regex("^[a-z]+/[a-z0-9-]+/[a-z0-9-]+$").matches(instance)) {
-                error(11, file, "$where: instance must be <flow>/<AppName>/<AppInstance>")
+            if (instance == null || !Regex("^[a-z0-9-]+/[a-z0-9-]+$").matches(instance)) {
+                error(11, file, "$where: instance must be <AppName>/<AppInstance>, relative to the flow (was '$instance')")
                 return@forEachIndexed
             }
             if (!listed.add(instance)) error(11, file, "$where: $instance listed twice")
-            if (instance !in known) error(11, file, "$where: $instance has no directory config/$env/$instance/")
+            if (instance !in instances) error(11, file, "$where: $instance has no directory config/$env/$flow/$instance/")
             val effective = defaults.entries.associate { it.key.toString() to it.value } + entry.entries.associate { it.key.toString() to it.value }
             effective["user"]?.toString()?.let { user ->
                 if (!ConfigRules.LOGIN.matches(user)) error(11, file, "$where: user '$user' is not a valid login name")
             }
             when (val kind = effective["kind"]?.toString()) {
                 "compose" -> {
-                    val flow = instance.substringBefore('/')
-                    composeFlows += flow
-                    lintComposePlacement(file, where, flow, effective["host"]?.toString()?.takeIf { it.isNotBlank() },
-                        entry["user"]?.toString(), pools[flow])
+                    composeTargets++
+                    lintComposePlacement(file, where, effective["host"]?.toString()?.takeIf { it.isNotBlank() },
+                        entry["user"]?.toString(), pool)
                 }
-                "helm" -> listOf("cluster", "namespace").forEach {
-                    if (effective[it]?.toString().isNullOrBlank()) error(11, file, "$where: kind helm needs $it")
+                "helm" -> {
+                    if (effective["cluster"]?.toString().isNullOrBlank()) error(11, file, "$where: kind helm needs cluster")
+                    // namespace: the flow name by default (DL-38); the literal "{flow}" stands for it.
+                    val namespace = (effective["namespace"]?.toString() ?: flow).replace("{flow}", flow)
+                    if (!ConfigRules.NAMESPACE.matches(namespace)) {
+                        error(11, file, "$where: namespace '$namespace' is not a DNS label (RFC 1123, at most 63 characters)")
+                    }
                 }
                 else -> error(11, file, "$where: kind must be compose or helm (was '$kind')")
             }
         }
-        (known - listed).sorted().forEach { error(11, file, "instance $it has no target (inventory drift)") }
-        (pools.keys - composeFlows).sorted().forEach {
-            warn(11, file, "pools.$it: flow '$it' has no compose target, so nothing is deployed to this pool")
+        (instances - listed).sorted().forEach { error(11, file, "instance $it has no target (inventory drift)") }
+        if (pool != null && composeTargets == 0) {
+            warn(11, file, "pool: flow '$flow' has no compose target, so nothing is deployed to its boxes")
         }
+        return flowPool
     }
 
     /**
-     * A compose target runs on its own `host` (or `defaults.host`), or on a box of its flow's pool (DL-39): there
+     * A compose target runs on its own `host` (or `defaults.host`), or on a box of the flow's `pool` (DL-39): there
      * `host` is the recorded placement — optional, and when present one of the pool's boxes.
      */
-    private fun lintComposePlacement(file: File, where: String, flow: String, host: String?, ownUser: String?, pool: Pool?) {
+    private fun lintComposePlacement(file: File, where: String, host: String?, ownUser: String?, pool: Pool?) {
         when {
-            host == null && pool == null ->
-                error(11, file, "$where: kind compose needs host, or a pool for its flow (pools.$flow)")
+            host == null && pool == null -> error(11, file, "$where: kind compose needs host, or a pool in this file")
             host != null && !ConfigRules.HOST_NAME.matches(host) ->
                 error(11, file, "$where: host '$host' is not a lower-case DNS name or IPv4 address")
             host != null && pool != null && pool.hosts.isNotEmpty() && host !in pool.hosts ->
-                error(11, file, "$where: host '$host' is not a box of pools.$flow (${pool.hosts.joinToString()}); " +
+                error(11, file, "$where: host '$host' is not a box of the pool (${pool.hosts.joinToString()}); " +
                     "a pooled instance runs on one of its flow's boxes")
         }
         if (pool != null && ownUser != null && ownUser != pool.user) {
-            warn(11, file, "$where: user '$ownUser' is ignored: every box of pools.$flow is reached as '${pool.user}'")
+            warn(11, file, "$where: user '$ownUser' is ignored: every box of the pool is reached as '${pool.user}'")
         }
     }
 
-    /** `pools`: flow -> {hosts, user?, root?} (DL-39). Returns every declared pool of a known flow, by flow. */
-    private fun lintPools(file: File, node: Any?): Map<String, Pool> {
-        if (node == null) return emptyMap()
+    /** `pool`: {hosts, user?, root?} (DL-39); null after reporting when it is not a mapping. */
+    private fun lintPool(file: File, node: Any?): Pool? {
         if (node !is Map<*, *>) {
-            error(11, file, "pools: must be a mapping <flow>: {hosts, user, root}")
-            return emptyMap()
+            error(11, file, "pool: must be a mapping with hosts, user, root")
+            return null
         }
-        val pools = linkedMapOf<String, Pool>()
-        val poolOf = mutableMapOf<String, String>()
-        for ((key, value) in node) {
-            val flow = key.toString()
-            val where = "pools.$flow"
-            if (flow !in ConfigRules.FLOWS) {
-                error(11, file, "$where: flow '$flow' must be one of ${ConfigRules.FLOWS.sorted()}")
-                continue
-            }
-            if (value !is Map<*, *>) {
-                error(11, file, "$where must be a mapping with hosts, user, root")
-                continue
-            }
-            (value.keys.map { it.toString() } - setOf("hosts", "user", "root")).forEach {
-                error(11, file, "$where: unknown key '$it' (allowed: hosts, user, root)")
-            }
-            val hosts = mutableListOf<String>()
-            val list = value["hosts"]
-            if (list !is List<*> || list.isEmpty()) {
-                error(11, file, "$where.hosts must be a non-empty list of host names (the boxes of $flow)")
-            } else {
-                list.forEachIndexed { i, item ->
-                    val name = item?.toString().orEmpty()
-                    when {
-                        item !is String || !ConfigRules.HOST_NAME.matches(name) ->
-                            error(11, file, "$where.hosts[$i]: '$name' is not a lower-case DNS name or IPv4 address")
-                        name in hosts -> error(11, file, "$where.hosts[$i]: $name is listed twice")
-                        name in poolOf -> error(11, file, "$where.hosts[$i]: $name is already a box of pools.${poolOf[name]} " +
-                            "(a box belongs to one pool)")
-                        else -> {
-                            hosts += name
-                            poolOf[name] = flow
-                        }
-                    }
+        (node.keys.map { it.toString() } - setOf("hosts", "user", "root")).forEach {
+            error(11, file, "pool: unknown key '$it' (allowed: hosts, user, root)")
+        }
+        val hosts = mutableListOf<String>()
+        val list = node["hosts"]
+        if (list !is List<*> || list.isEmpty()) {
+            error(11, file, "pool.hosts must be a non-empty list of host names (the boxes of the flow)")
+        } else {
+            list.forEachIndexed { i, item ->
+                val name = item?.toString().orEmpty()
+                when {
+                    item !is String || !ConfigRules.HOST_NAME.matches(name) ->
+                        error(11, file, "pool.hosts[$i]: '$name' is not a lower-case DNS name or IPv4 address")
+                    name in hosts -> error(11, file, "pool.hosts[$i]: $name is listed twice")
+                    else -> hosts += name
                 }
             }
-            val user = value["user"]?.toString() ?: ConfigRules.POOL_USER
-            if (!ConfigRules.LOGIN.matches(user)) error(11, file, "$where.user '$user' is not a valid login name")
-            val root = value["root"]?.toString() ?: ConfigRules.POOL_ROOT_DEFAULT
-            if (!ConfigRules.POOL_ROOT.matches(root) || root.split('/').any { it == "." || it == ".." }) {
-                error(11, file, "$where.root '$root' must be an absolute path of plain segments ([A-Za-z0-9._-], " +
-                    "no '.' or '..')")
-            }
-            pools[flow] = Pool(hosts, user, root)
         }
-        return pools
+        val user = node["user"]?.toString() ?: ConfigRules.POOL_USER
+        if (!ConfigRules.LOGIN.matches(user)) error(11, file, "pool.user '$user' is not a valid login name")
+        val root = node["root"]?.toString() ?: ConfigRules.POOL_ROOT_DEFAULT
+        if (!ConfigRules.POOL_ROOT.matches(root) || root.split('/').any { it == "." || it == ".." }) {
+            error(11, file, "pool.root '$root' must be an absolute path of plain segments ([A-Za-z0-9._-], no '.' or '..')")
+        }
+        return Pool(hosts, user, root.trimEnd('/'))
+    }
+
+    /** One box may serve two flows of an env only under different roots: two bundles in one root would collide. */
+    private fun checkSharedBoxes(pools: List<FlowPool>) {
+        val owner = mutableMapOf<Pair<String, String>, String>()
+        for ((file, flow, pool) in pools) {
+            for (host in pool.hosts) {
+                val other = owner.putIfAbsent(host to pool.root, flow)
+                if (other != null) {
+                    error(11, file, "pool.hosts: $host is also a box of flow '$other' with the same root ${pool.root}: " +
+                        "their bundles would collide on it (give one of the pools another root)")
+                }
+            }
+        }
     }
 
     /** `config/<env>/known_hosts` (DL-35, DL-39): the pinned host keys of the SSH transport — public keys only. */

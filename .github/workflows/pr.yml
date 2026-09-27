@@ -83,6 +83,17 @@ jobs:
           if [[ ${#files[@]} -eq 0 ]]; then echo "no shell scripts"; exit 0; fi
           shellcheck --severity=warning "${files[@]}"
 
+      # Plain-bash tests of the scripts (stub ssh / rsync / docker; no host, registry or engine is reached):
+      # scripts/test/pool-deploy-test.sh covers the host pools of DL-39.
+      - name: Script tests
+        run: |
+          set -euo pipefail
+          for test in scripts/test/*-test.sh; do
+            echo "::group::$test"
+            bash "$test"
+            echo "::endgroup::"
+          done
+
       - name: actionlint (workflows, with ShellCheck on run blocks)
         run: actionlint -no-color
 

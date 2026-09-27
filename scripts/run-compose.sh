@@ -64,13 +64,14 @@ secrets such as SPRING_DATASOURCE_PASSWORD are passed through from this shell, n
 Root: the nearest ancestor of this script holding a .platform-bundle marker (a host bundle synced by
 scripts/pool-deploy.sh, DL-39), else the git checkout, else the script's parent directory.
 Pool guard (DL-39): on a box whose .platform-bundle lists more than one pool host (POOL_HOSTS), start and
-restart of an instance of that bundle's env and flow (never local) first run
-  $POOL_SSH $POOL_SSH_OPTS <POOL_USER>@<peer> -- <POOL_ROOT>/<app dir>/scripts/run-compose.sh <env> <flow> <AppName> <AppInstance> status --json
-on every other box of the pool and refuse (3) when the instance runs there; a box that does not answer is
-only a warning (a dead box must not block a failover). --force skips it, --dry-run prints the peer commands.
-  POOL_PEER_CHECK=off   disable the guard          POOL_SELF_HOST  this box's name in POOL_HOSTS (default hostname -f)
-  POOL_SSH              ssh binary (default ssh)   POOL_SSH_OPTS   default -o BatchMode=yes -o ConnectTimeout=10
-                        -o StrictHostKeyChecking=yes, plus -o UserKnownHostsFile=<CONFIG_ROOT>/<env>/known_hosts when present
+restart of an instance of that bundle's env and flow (never local) first ask every other box of the pool
+  $POOL_SSH $POOL_SSH_OPTS <POOL_USER>@<box> -- <POOL_ROOT>/<app dir>/scripts/run-compose.sh
+      <env> <flow> <AppName> <AppInstance> status --json
+and refuse (3) when the instance runs there; a box that does not answer is only a warning (a dead box must
+not block a failover). --force skips the guard, --dry-run prints its commands, POOL_PEER_CHECK=off disables
+it; POOL_SELF_HOST names this box in POOL_HOSTS (default: hostname -f). POOL_SSH is the ssh binary (default
+ssh); POOL_SSH_OPTS defaults to -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes, plus
+-o UserKnownHostsFile=<CONFIG_ROOT>/<env>/known_hosts when that file exists (an unknown key is never trusted).
 EOF
 }
 
