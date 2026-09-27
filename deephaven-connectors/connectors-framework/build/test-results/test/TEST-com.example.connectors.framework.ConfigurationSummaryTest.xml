@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.example.connectors.framework.ConfigurationSummaryTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:46:55.890Z" hostname="vm" time="3.891">
-  <properties/>
-  <testcase name="showsTheEffectiveConnectorConfigurationWithSecretsMasked()" classname="com.example.connectors.framework.ConfigurationSummaryTest" time="3.759"/>
-  <testcase name="anIncompleteIdentityIsFlagged()" classname="com.example.connectors.framework.ConfigurationSummaryTest" time="0.026"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

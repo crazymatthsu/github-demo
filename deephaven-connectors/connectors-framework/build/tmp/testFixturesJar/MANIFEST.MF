@@ -1,4 +1,0 @@
-Manifest-Version: 1.0
-Implementation-Title: connectors-framework
-Implementation-Version: 0.1.0-local.22.5fd0f74.dirty
-

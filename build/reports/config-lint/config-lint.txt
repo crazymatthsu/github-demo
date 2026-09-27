@@ -1,5 +1,0 @@
-config-lint: 4 finding(s): 2 error(s), 0 warning(s); render with docker compose
-ERROR check  5  config/local/cash/source-kafka/bbg-equity-ticks/compose.env: line 16: IMAGE_TAG defined twice
-ERROR check  5  config/local/cash/source-kafka/bbg-equity-ticks/compose.env: SPRING_PROFILES_ACTIVE is forbidden in compose.env (SPRING_/LOGGING_/MANAGEMENT_/CONNECTOR_ belong in YAML; secrets are passed through from the shell, D5 §6.3)
-TODO  check  7  config: merged-configuration validation against spring-configuration-metadata.json is not implemented yet (D5 §6.5 check 7)
-TODO  check  8  config: parity report across us-dev / us-qa / us-prod is not implemented yet (D5 §6.5 check 8)

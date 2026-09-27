@@ -22,3 +22,15 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Gradle (added for the skeleton)
+.gradle/
+**/build/
+!**/src/**/build/
+build-logic/.gradle/
+# IDE
+.idea/
+*.iml
+.vscode/
+# local secrets and env files
+*.local.env
