@@ -86,7 +86,7 @@ public record TestCase(
         Map<String, Object> expected = manifest.map("expected");
         Map<String, Object> compare = manifest.map("compare");
         List<Path> seeds = new ArrayList<>();
-        for (Object seed : manifest.list(input, "seed")) {
+        for (Object seed : manifest.list(input, "input.seed")) {
             seeds.add(manifest.file(directory, "input.seed", seed));
         }
         return new TestCase(
@@ -95,14 +95,14 @@ public record TestCase(
                 manifest.text(manifest.root(), "connector"),
                 manifest.text(manifest.root(), "instance"),
                 manifest.text(manifest.root(), "datasetVersion"),
-                manifest.text(input, "database"),
+                manifest.text(input, "input.database"),
                 manifest.file(directory, "input.schema", input.get("schema")),
                 seeds,
-                manifest.text(expected, "target"),
-                manifest.text(expected, "table"),
+                manifest.text(expected, "expected.target"),
+                manifest.text(expected, "expected.table"),
                 manifest.file(directory, "expected.file", expected.get("file")),
                 CompareRules.fromManifest(compare),
-                manifest.duration(compare, "timeout", DEFAULT_TIMEOUT));
+                manifest.duration(compare, "compare.timeout", DEFAULT_TIMEOUT));
     }
 
     /** The golden rows, as parsed from {@link #expectedFile()}. */
@@ -115,10 +115,11 @@ public record TestCase(
     }
 
     /**
-     * Compares {@code actual} with the expected rows and writes {@code build/reports/integrationTest/<report>-diff.json}
-     * plus {@code <report>-actual.jsonl} (the actual rows in canonical form, ignored columns dropped, ordered by
-     * key: what the expected file would hold). {@code <report>} is the case name, suffixed with {@code stage} when
-     * one is given. Throws an {@link AssertionError} with the first ten differences on a mismatch.
+     * Compares {@code actual} with the expected rows and writes
+     * {@code build/reports/integrationTest/<report>-diff.json} plus {@code <report>-actual.jsonl} (the actual rows in
+     * canonical form, ignored columns dropped, ordered by key: what the expected file would hold). {@code <report>} is
+     * the case name, suffixed with {@code stage} when one is given. Throws an {@link AssertionError} with the first
+     * ten differences on a mismatch.
      *
      * @param stage report-name suffix for a check other than the case's final one (e.g. {@code source}); may be null
      * @param description what {@code actual} is, for the message (e.g. {@code Deephaven table it_abc_positions})
@@ -181,8 +182,15 @@ public record TestCase(
         }
     }
 
-    /** Typed access to the manifest with messages that name the file and the key. */
+    /**
+     * Typed access to the manifest with messages that name the file and the key. Keys are dotted paths
+     * ({@code input.database}); the value is looked up by the last segment in the given parent mapping.
+     */
     private record Manifest(Path file, Map<String, Object> root) {
+
+        private static Object get(Map<String, ?> parent, String key) {
+            return parent.get(key.substring(key.lastIndexOf('.') + 1));
+        }
 
         @SuppressWarnings("unchecked")
         Map<String, Object> map(String key) {
@@ -194,7 +202,7 @@ public record TestCase(
         }
 
         List<?> list(Map<String, ?> parent, String key) {
-            Object value = parent.get(key);
+            Object value = get(parent, key);
             if (value == null) {
                 return List.of();
             }
@@ -202,7 +210,7 @@ public record TestCase(
         }
 
         String text(Map<String, ?> parent, String key) {
-            Object value = parent.get(key);
+            Object value = get(parent, key);
             if (value == null || String.valueOf(value).isBlank()) {
                 throw invalid(key, "a value");
             }
@@ -221,7 +229,7 @@ public record TestCase(
         }
 
         Duration duration(Map<String, ?> parent, String key, Duration fallback) {
-            Object value = parent.get(key);
+            Object value = get(parent, key);
             if (value == null) {
                 return fallback;
             }
@@ -229,7 +237,7 @@ public record TestCase(
                 return Duration.parse(String.valueOf(value));
             }
             catch (DateTimeParseException ex) {
-                throw invalid("compare." + key, "an ISO-8601 duration such as PT60S");
+                throw invalid(key, "an ISO-8601 duration such as PT60S");
             }
         }
 

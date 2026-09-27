@@ -284,6 +284,8 @@ manifest_instance() {
 # run-compose.sh exports (D6 §6.2): identity, config directories, compose.env, the image under test.
 prepare_app() {
   local app=$1 base config_root=${CONFIG_ROOT:-$REPO_ROOT/config} compose_env=''
+  # Absolute, or compose would read a relative layer path such as config/_common/<app> as a volume name.
+  if [[ -d $config_root ]]; then config_root=$(cd "$config_root" && pwd -P); fi
   export APP_NAME=${APP_NAME:-$app} APP_ENV=${APP_ENV:-local} APP_FLOW=${APP_FLOW:-cash}
   APP_INSTANCE=${APP_INSTANCE:-$(manifest_instance "$app")}
   if [[ -n $APP_INSTANCE ]]; then
@@ -306,7 +308,8 @@ prepare_app() {
   if [[ -d $config_root/$APP_ENV/_common ]]; then export ENV_COMMON_DIR=$config_root/$APP_ENV/_common; fi
   # The template publishes 127.0.0.1:${ACTUATOR_HOST_PORT:?...}, which compose interpolates even when the CI
   # override drops the port. Default it only when compose.env does not set it: the shell beats --env-file.
-  if [[ -z ${ACTUATOR_HOST_PORT:-} ]] && ! { [[ -n $compose_env ]] && grep -Eq '^[[:space:]]*ACTUATOR_HOST_PORT=' "$compose_env"; }; then
+  if [[ -z ${ACTUATOR_HOST_PORT:-} ]] \
+    && ! { [[ -n $compose_env ]] && grep -Eq '^[[:space:]]*ACTUATOR_HOST_PORT=' "$compose_env"; }; then
     export ACTUATOR_HOST_PORT=18080
   fi
   export PROJECT=$COMPOSE_PROJECT_NAME
@@ -355,8 +358,8 @@ write_app_no_ports() {
   local out=$1 service=$2
   (
     umask 077
-    printf '# Written by stack.sh up in CI: the app under test publishes no port (D10 §5.6).\nservices:\n  %s:\n    ports: !reset []\n' \
-      "$service" >"$out"
+    printf '# Written by stack.sh up in CI: the app under test publishes no port (D10 §5.6).\n' >"$out"
+    printf 'services:\n  %s:\n    ports: !reset []\n' "$service" >>"$out"
   )
 }
 

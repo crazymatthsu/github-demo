@@ -166,9 +166,9 @@ system test runs exactly the images `build` produced.
 - **Assertions**: the test opens a session with the Deephaven Java client and takes a snapshot of the
   target table; D8 §6.6 owns the comparison rules.
 - **Isolation**: one Deephaven per compose project, so matrix jobs never share a server; within a
-  suite every class writes under its own prefix `it_<sha7>_<class>_` (passed to the connector as
-  `IT_TABLE_PREFIX`), releases its tables in `@AfterAll`, and classes run sequentially against the
-  shared server.
+  suite the classes write under the build's prefix `it_<sha7>_` (passed to the connector as
+  `IT_TABLE_PREFIX`; a per-class part is a later refinement), release their tables in `@AfterAll`, and run
+  sequentially against the shared server.
 
 ### 5.4 Layered teardown guarantee
 

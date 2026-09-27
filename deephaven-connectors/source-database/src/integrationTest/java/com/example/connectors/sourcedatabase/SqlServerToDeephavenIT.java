@@ -22,14 +22,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * The reference case of source-database (D8 §5.2, §6.5), {@code test-infra/testdata/source-database/positions-basic},
- * against the compose stack (sqlserver + deephaven, and the app image when APP_IMAGE is set).
+ * The reference case of source-database (D8 §5.2, §6.5), test-infra/testdata/source-database/positions-basic,
+ * against the compose stack: sqlserver and deephaven, plus the app image when APP_IMAGE is set.
  *
  * <p>The app is still a hello world that does not publish to Deephaven, so this test plays the connector's part:
- * it seeds SQL Server, reads the rows back over JDBC, uploads them to Deephaven as {@code ${IT_TABLE_PREFIX}positions}
- * (the name the instance config gives the connector's target table), then polls and snapshots that table through the
- * Deephaven Java client and compares it with the expected rows under the manifest's rules. Once the connector
- * publishes the table itself, only the upload step goes. The app under test is checked through its actuator.
+ * it seeds SQL Server, reads the rows back over JDBC and uploads them to Deephaven as
+ * {@code ${IT_TABLE_PREFIX}positions} (the name the instance config gives the connector's target table), then polls
+ * and snapshots that table through the Deephaven Java client and compares it with the expected rows under the
+ * manifest's rules. Once the connector publishes the table itself, only the upload step goes. The app under test is
+ * checked through its actuator.
  */
 @Tag("component")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -39,10 +40,10 @@ class SqlServerToDeephavenIT {
     private static final String CASE = "positions-basic";
     /** The table input/schema.sql creates: connector.source.table of the instance config. */
     private static final String SOURCE_TABLE = "dbo.positions";
-    private static final String STACK_HINT = "Start the stack first: ./gradlew :deephaven-connectors:source-database:"
-            + "integrationTest does (composeUp) unless -Pcompose.managed=false is given; otherwise run "
-            + "test-infra/compose/stack.sh up --project :deephaven-connectors:source-database --local, or point "
-            + "IT_SQLSERVER_HOST/PORT and IT_DEEPHAVEN_HOST/PORT at a running stack.";
+    private static final String STACK_HINT = "Start the stack first. Without -Pcompose.managed=false, "
+            + "./gradlew :deephaven-connectors:source-database:integrationTest brings it up itself (composeUp); "
+            + "with it, run test-infra/compose/stack.sh up --project :deephaven-connectors:source-database --local "
+            + "or point IT_SQLSERVER_HOST/PORT and IT_DEEPHAVEN_HOST/PORT at a running stack.";
 
     private TestCase testCase;
     private String targetTable;
@@ -65,17 +66,19 @@ class SqlServerToDeephavenIT {
                         + "use the stack's sa password, which stack.sh up records in test-infra/compose/.state/"));
         // Step 2 of D8 §5.2, idempotent on the shared stack: the generic helpers create the database if the seed
         // has not, schema.sql drops and recreates the table, then the seed files fill it.
+        Path seedHelpers = ItEnvironment.repositoryRoot().resolve("test-infra/seed/sqlserver");
         try (Connection master = SqlServerSource.connect(sqlServer, "master", user, password, budget)) {
-            for (Path helper : SqlServerSource.scripts(ItEnvironment.repositoryRoot().resolve("test-infra/seed/sqlserver"))) {
+            for (Path helper : SqlServerSource.scripts(seedHelpers)) {
                 SqlServerSource.apply(master, helper);
             }
         }
-        try (Connection database = SqlServerSource.connect(sqlServer, testCase.inputDatabase(), user, password, budget)) {
-            SqlServerSource.apply(database, testCase.schema());
+        String database = testCase.inputDatabase();
+        try (Connection connection = SqlServerSource.connect(sqlServer, database, user, password, budget)) {
+            SqlServerSource.apply(connection, testCase.schema());
             for (Path seed : testCase.seeds()) {
-                SqlServerSource.apply(database, seed);
+                SqlServerSource.apply(connection, seed);
             }
-            sourceRows = SqlServerSource.query(database, "SELECT * FROM " + SOURCE_TABLE + " ORDER BY "
+            sourceRows = SqlServerSource.query(connection, "SELECT * FROM " + SOURCE_TABLE + " ORDER BY "
                     + String.join(", ", testCase.rules().keyColumns()));
         }
         deephaven = DeephavenTables.connect(deephavenServer, budget);
@@ -110,7 +113,8 @@ class SqlServerToDeephavenIT {
     @Test
     void appUnderTestIsReadyWithTheInstanceIdentity() throws Exception {
         Optional<String> image = ItEnvironment.optional("APP_IMAGE");
-        assumeTrue(image.isPresent(), "APP_IMAGE is not set: the stack runs without the app under test");
+        assumeTrue(image.isPresent(), "APP_IMAGE is not set in the test environment, so there is no app under test "
+                + "to check");
         Optional<Endpoint> app = ItEnvironment.appUnderTest();
         assumeTrue(app.isPresent(), () -> "APP_IMAGE=" + image.get() + " is set, but IT_APP_HOST is not: nothing "
                 + "tells this JVM where the app's actuator is (compose service " + CONNECTOR + ":8080 inside the stack "
@@ -119,8 +123,8 @@ class SqlServerToDeephavenIT {
         ActuatorClient actuator = new ActuatorClient(app.get());
         assertThat(actuator.awaitReadiness(testCase.timeout())).containsEntry("status", "UP");
 
-        String tuple = String.join("/", ItEnvironment.value("APP_ENV", "local"), ItEnvironment.value("APP_FLOW", "cash"),
-                CONNECTOR, testCase.instance());
+        String tuple = String.join("/", ItEnvironment.value("APP_ENV", "local"),
+                ItEnvironment.value("APP_FLOW", "cash"), CONNECTOR, testCase.instance());
         Map<String, Object> info = actuator.info();
         assertThat(info).as("/actuator/info of %s", app.get())
                 .extractingByKey("connector", InstanceOfAssertFactories.map(String.class, Object.class))

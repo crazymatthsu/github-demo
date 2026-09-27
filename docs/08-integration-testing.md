@@ -125,7 +125,7 @@ namespace (D10 §5.9).
 | Unit | one class or module; mocks, no I/O | none | `src/test/java`, `test` (part of `check`) | every push | under 5 min in total |
 | Component IT | one connector (the **image** for apps; classes for `connectors-framework`) against **one** dependency plus Deephaven | compose: `deephaven` + the one dependency + the app image | `src/integrationTest/java`, `integrationTest` (JUnit tag `component`) | PR: affected subprojects; `main`: all | at most 8 min per suite |
 | System IT | the reference scenario end to end with **our** images and a real instance from the config tree | compose: full stack for the scenario | same source set, JUnit tag `system`, task `systemTest` | `main`, nightly | at most 20 min |
-| Post-deploy smoke | a deployed instance answers: health, target table exists, expected row count | none started by the test | `scripts/smoke.sh` per app, called by `run-compose.sh health` (D6) and by `deploy-dev` (D9) | `deploy-dev`, release (dev, qa) | at most 3 min |
+| Post-deploy smoke | a deployed instance answers: readiness `UP` and the instance identity in `/actuator/info` (target table exists and expected row count are per-app additions still to come) | none started by the test | `scripts/smoke.sh` (one implementation, thin wrapper per app), called by `run-compose.sh health` (D6) and by `deploy-dev` (D9) | `deploy-dev`, release (dev, qa) | at most 3 min |
 
 `check` never runs ITs (D1): `integrationTest` and `systemTest` are separate tasks that depend on
 `composeUp` and are finalised by `composeDown`. Component ITs test the app *image* because the
@@ -225,7 +225,7 @@ Docker or Podman.
 | Unit | `<subproject>/src/test/java` | none | `test` | — |
 | Component IT | `<subproject>/src/integrationTest/java` | `@Tag("component")` | `integrationTest` | `composeUp` / `composeDown` |
 | System IT | same source set | `@Tag("system")` | `systemTest` | `composeUp -Pcompose.stack=system` / `composeDown` |
-| Smoke | `<subproject>/scripts/smoke.sh` | — | `run-compose.sh health`, `deploy-dev` | — |
+| Smoke | `<subproject>/scripts/smoke.sh`, a thin wrapper of `scripts/smoke.sh` | — | `run-compose.sh health`, `deploy-dev` | — |
 | Local stack | — | — | `devUp`, `devDown` | — |
 
 Class names end in `IT` (`SqlServerToDeephavenIT`); the reference case is
@@ -327,7 +327,7 @@ compare:
 | Timestamps | equal within the tolerance | `compare.timestampTolerance` |
 | Numerics | absolute tolerance, default `0` | `compare.numericTolerance` |
 | Polling | poll until the expected row count is present, then compare once | `compare.timeout` |
-| Table prefix | `it_<sha7>_<class>_` prepended to the target table name via `${IT_TABLE_PREFIX}` in the instance config; released in `@AfterAll` (mechanics in D10 §6.3) | — |
+| Table prefix | `it_<sha7>_` (one prefix per build; a `<class>` part is a later refinement once a suite has several classes) prepended to the target table name via `${IT_TABLE_PREFIX}` in the instance config; released in `@AfterAll` (mechanics in D10 §6.3) | — |
 | Failure output | `build/reports/integrationTest/<case>-diff.json` plus the JUnit message with the first ten differences | — |
 | Golden update | `-Pit.updateExpected=true`, local only | — |
 
@@ -443,7 +443,7 @@ comparison passed or failed; D10 adds the CI-only labels, prune and leak check.
 | Comparison library | `deephaven-connectors/connectors-framework/src/testFixtures/java/...` (`java-test-fixtures`) | Demo step 1 (compose) |
 | Test instance config | `config/local/cash/source-database/{app-common,positions-db-to-deephaven,trades-db-to-amps}/` | Demo step 1 (compose) |
 | Stub sink for the AMPS-target instance | `connectors-framework` test fixtures | Demo step 1 (compose); real AMPS in nightly once licensed |
-| Smoke test | `deephaven-connectors/source-database/scripts/smoke.sh`, called by `run-compose.sh health` (D6) and `deploy-dev` (D9) | Demo step 1 (compose); against the kind release in Demo step 2 (kind + Helm) |
+| Smoke test | `deephaven-connectors/source-database/scripts/smoke.sh` (wrapper of `scripts/smoke.sh`), called by `run-compose.sh health` (D6) and `deploy-dev` (D9) | Demo step 1 (compose); against the kind release in Demo step 2 (kind + Helm) |
 | Workflow wiring | `.github/workflows/_integration-test.yml` (D7), `.github/actions/compose-stack` (D10) | Demo step 1 (compose) |
 
 ## 9. Open items

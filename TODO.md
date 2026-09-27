@@ -1155,6 +1155,7 @@ Tasks
 Infrastructure and platform
 
 - [x] "Git subprojects" = Gradle subprojects in one git repository; no git submodules (decided v0.5).
+- [ ] *(Demo step 1 follow-up)* gRPC/Netty alignment: the Spring Boot 4.1.1 BOM raises gRPC to 1.83.1 (Netty 4.2, protobuf 4.35) while the Deephaven 42.5 Java client was built against gRPC 1.76.2; Arrow Flight's zero-copy read path breaks on the newer gRPC, so the reference IT sets `arrow.flight.enable_zero_copy_read=false`. Keep that switch, or pin gRPC/Netty to the client's versions in the version catalog for the test suites?
 - [ ] *(Phase 3 — not needed for the demo skeleton)* EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per
       stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
 - [ ] *(Phase 3 — not needed for the demo skeleton)* Is a GitOps controller (Argo CD / Flux) already provided on the EKS platform, and who runs it?

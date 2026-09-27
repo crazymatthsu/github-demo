@@ -2,6 +2,7 @@ package com.example.connectors.sourcedatabase;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -51,6 +52,13 @@ import com.example.connectors.framework.testing.ItEnvironment.Endpoint;
  */
 final class DeephavenTables implements AutoCloseable {
 
+    /** Bound on every single call, so that a stuck server fails the test instead of hanging it. */
+    private static final Duration CALL_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration RETRY_INTERVAL = Duration.ofSeconds(2);
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    /** Script types of the server images: python (ghcr.io/deephaven/server, ours) or groovy (server-slim). */
+    private static final List<String> CONSOLE_TYPES = List.of("python", "groovy");
+
     static {
         // Arrow Flight 18.3 reads DoGet data zero-copy through io.grpc.internal.ReadableBuffer.readBytes(ByteBuffer),
         // which gRPC 1.83 (managed by the Spring Boot 4.1 BOM; the client is built against 1.76) no longer has:
@@ -60,13 +68,6 @@ final class DeephavenTables implements AutoCloseable {
             System.setProperty("arrow.flight.enable_zero_copy_read", "false");
         }
     }
-
-    /** Bound on every single call, so that a stuck server fails the test instead of hanging it. */
-    private static final Duration CALL_TIMEOUT = Duration.ofSeconds(30);
-    private static final Duration RETRY_INTERVAL = Duration.ofSeconds(2);
-    private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    /** Script types of the server images: python (ghcr.io/deephaven/server, ours) or groovy (server-slim). */
-    private static final List<String> CONSOLE_TYPES = List.of("python", "groovy");
 
     /** What a poll ended with: the last snapshot and how it was obtained. */
     record Snapshot(List<Map<String, Object>> rows, String note) {
@@ -122,14 +123,15 @@ final class DeephavenTables implements AutoCloseable {
      */
     void publish(String table, Map<String, Class<?>> columns, List<Map<String, Object>> rows) throws Exception {
         if (!SourceVersion.isName(table)) {
-            throw new IllegalArgumentException("'" + table + "' is not a valid Deephaven variable name (check IT_TABLE_PREFIX)");
+            throw new IllegalArgumentException(
+                    "'" + table + "' is not a valid Deephaven variable name (check IT_TABLE_PREFIX)");
         }
         List<Column<?>> data = new ArrayList<>();
         columns.forEach((name, type) -> data.add(column(name, type, rows)));
         TableHandle handle = flight.putExport(NewTable.of(data), allocator);
         uploads.add(handle);
+        published.add(table); // before the call: a publish that lands after a client-side timeout is released too
         flight.session().publish(table, handle).get(CALL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-        published.add(table);
     }
 
     /**
@@ -201,6 +203,7 @@ final class DeephavenTables implements AutoCloseable {
     public void close() {
         uploads.forEach(TableHandle::close);
         uploads.clear();
+        flight.session().close(); // waits, within the session's close timeout, for the server to end the session
         closeQuietly(flight);
         shutdown(channel, allocator, scheduler);
     }
@@ -248,8 +251,8 @@ final class DeephavenTables implements AutoCloseable {
                 failure = ex.getCause();
                 Status.Code code = Status.fromThrowable(failure).getCode();
                 if (code == Status.Code.UNAUTHENTICATED || code == Status.Code.PERMISSION_DENIED) {
-                    throw new AssertionError("Deephaven " + endpoint + " refuses anonymous sessions (" + code
-                            + "): the CI profile needs the anonymous handler (test-infra/compose/deephaven.yml)", failure);
+                    throw new AssertionError("Deephaven " + endpoint + " refuses anonymous sessions (" + code + "): "
+                            + "the CI profile needs the anonymous handler (test-infra/compose/deephaven.yml)", failure);
                 }
             }
             catch (TimeoutException ex) {
@@ -277,13 +280,14 @@ final class DeephavenTables implements AutoCloseable {
         if (vector.isNull(row)) {
             return null;
         }
-        if (vector instanceof TimeStampVector timestamps && vector.getField().getType() instanceof ArrowType.Timestamp type) {
+        if (vector instanceof TimeStampVector timestamps
+                && vector.getField().getType() instanceof ArrowType.Timestamp type) {
             long raw = timestamps.get(row);
             return switch (type.getUnit()) {
                 case SECOND -> Instant.ofEpochSecond(raw);
                 case MILLISECOND -> Instant.ofEpochMilli(raw);
-                case MICROSECOND -> Instant.ofEpochSecond(Math.floorDiv(raw, 1_000_000L), Math.floorMod(raw, 1_000_000L) * 1_000L);
-                case NANOSECOND -> Instant.ofEpochSecond(Math.floorDiv(raw, 1_000_000_000L), Math.floorMod(raw, 1_000_000_000L));
+                case MICROSECOND -> Instant.EPOCH.plus(raw, ChronoUnit.MICROS);
+                case NANOSECOND -> Instant.EPOCH.plusNanos(raw);
             };
         }
         Object value = vector.getObject(row);
@@ -303,12 +307,17 @@ final class DeephavenTables implements AutoCloseable {
         }
     }
 
-    private static void shutdown(ManagedChannel channel, BufferAllocator allocator, ScheduledExecutorService scheduler) {
-        channel.shutdownNow();
+    private static void shutdown(ManagedChannel channel, BufferAllocator allocator,
+            ScheduledExecutorService scheduler) {
+        // Graceful first, so that release calls still in flight complete; forced after five seconds.
+        channel.shutdown();
         try {
-            channel.awaitTermination(5, TimeUnit.SECONDS);
+            if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {
+                channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+            }
         }
         catch (InterruptedException ex) {
+            channel.shutdownNow();
             Thread.currentThread().interrupt();
         }
         try {

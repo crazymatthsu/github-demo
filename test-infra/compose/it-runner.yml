@@ -26,6 +26,11 @@ services:
       IT_SQLSERVER_HOST: sqlserver
       IT_SQLSERVER_PORT: "1433"
       IT_TABLE_PREFIX: ${IT_TABLE_PREFIX:-}
+      # The app under test when the stack includes it (D8 §5.1): stack.sh up exports APP_IMAGE and APP_NAME,
+      # the compose service name. Both stay empty for a stack without an app, and the actuator check skips.
+      APP_IMAGE: ${APP_IMAGE:-}
+      IT_APP_HOST: ${APP_NAME:-}
+      IT_APP_PORT: "8080"
       # The SQL Server login the tests use: the same Spring property names the app binds (D2 §6.4).
       SPRING_DATASOURCE_USERNAME: sa
       SPRING_DATASOURCE_PASSWORD: ${IT_SA_PASSWORD:?IT_SA_PASSWORD is not set - run test-infra/compose/stack.sh up first}

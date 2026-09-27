@@ -65,7 +65,8 @@ final class SqlServerSource {
             DriverManager.getDriver(url);
         }
         catch (SQLException ex) {
-            throw new IllegalStateException("no JDBC driver for " + url + ": mssql-jdbc is not on the test runtime classpath", ex);
+            throw new IllegalStateException(
+                    "no JDBC driver for " + url + ": mssql-jdbc is not on the test runtime classpath", ex);
         }
         long deadline = System.nanoTime() + budget.toNanos();
         while (true) {
@@ -108,7 +109,8 @@ final class SqlServerSource {
             }
         }
         catch (SQLException ex) {
-            throw new AssertionError("applying " + script + " to [" + catalog(connection) + "] failed: " + ex.getMessage(), ex);
+            throw new AssertionError(
+                    "applying " + script + " to [" + catalog(connection) + "] failed: " + ex.getMessage(), ex);
         }
     }
 

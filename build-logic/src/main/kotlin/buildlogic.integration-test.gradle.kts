@@ -120,21 +120,41 @@ if (managed) {
         usesService(itSecrets)
         val secrets = itSecrets
         val prefix = tablePrefixDefault
+        // What composeUp recorded (stack.sh write_state): the app image under test and the actuator port that
+        // local-ports publishes for it. The project name follows stack.sh: COMPOSE_PROJECT_NAME, else local-<app>.
+        val stateFile = rootDir.resolve(
+            "test-infra/compose/.state/" +
+                (System.getenv("COMPOSE_PROJECT_NAME")?.takeIf { it.isNotBlank() } ?: "local-$appName") + ".env",
+        )
         doFirst {
             // The tests run on this JVM, so they reach the stack on the ports local-ports.yml publishes.
             val password = secrets.get().saPassword
-            (this as Test).environment(
-                mapOf(
-                    "IT_DEEPHAVEN_HOST" to "localhost",
-                    "IT_DEEPHAVEN_PORT" to (System.getenv("DEEPHAVEN_HOST_PORT") ?: "10000"),
-                    "IT_SQLSERVER_HOST" to "localhost",
-                    "IT_SQLSERVER_PORT" to (System.getenv("SQLSERVER_HOST_PORT") ?: "1433"),
-                    "IT_SA_PASSWORD" to password,
-                    "SPRING_DATASOURCE_USERNAME" to "sa",
-                    "SPRING_DATASOURCE_PASSWORD" to password,
-                    "IT_TABLE_PREFIX" to (System.getenv("IT_TABLE_PREFIX") ?: prefix),
-                ),
+            val state = if (stateFile.isFile) {
+                stateFile.readLines()
+                    .filter { it.isNotBlank() && !it.startsWith("#") && it.contains('=') }
+                    .associate { it.substringBefore('=') to it.substringAfter('=').trim('\'', '"') }
+            } else {
+                emptyMap()
+            }
+            val env = mutableMapOf(
+                "IT_DEEPHAVEN_HOST" to "localhost",
+                "IT_DEEPHAVEN_PORT" to (System.getenv("DEEPHAVEN_HOST_PORT") ?: "10000"),
+                "IT_SQLSERVER_HOST" to "localhost",
+                "IT_SQLSERVER_PORT" to (System.getenv("SQLSERVER_HOST_PORT") ?: "1433"),
+                "IT_SA_PASSWORD" to password,
+                "SPRING_DATASOURCE_USERNAME" to "sa",
+                "SPRING_DATASOURCE_PASSWORD" to password,
+                "IT_TABLE_PREFIX" to (System.getenv("IT_TABLE_PREFIX") ?: prefix),
             )
+            // The app under test (D8 §5.1), when the stack includes it: its actuator on the published port.
+            val appImage = System.getenv("APP_IMAGE")?.takeIf { it.isNotBlank() } ?: state["APP_IMAGE"]
+            if (appImage != null) {
+                env["APP_IMAGE"] = appImage
+                env["IT_APP_HOST"] = "localhost"
+                env["IT_APP_PORT"] = System.getenv("ACTUATOR_HOST_PORT")?.takeIf { it.isNotBlank() }
+                    ?: state["ACTUATOR_HOST_PORT"] ?: "18080"
+            }
+            (this as Test).environment(env)
         }
     }
     composeDown.configure { mustRunAfter(tasks.named("integrationTest")) }

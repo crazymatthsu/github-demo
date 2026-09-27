@@ -19,7 +19,7 @@ import java.util.Optional;
  */
 public final class ItEnvironment {
 
-    /** Default {@code IT_TABLE_PREFIX} outside Gradle and CI (an IDE run); stack.sh and Gradle pass it_&lt;sha7&gt;_. */
+    /** {@code IT_TABLE_PREFIX} outside Gradle and CI (an IDE run); stack.sh and Gradle pass {@code it_<sha7>_}. */
     public static final String LOCAL_TABLE_PREFIX = "it_local_";
 
     /** Client-level readiness budget per dependency (D10 §5.3), overridden by {@code IT_CONNECT_TIMEOUT}. */
@@ -63,8 +63,8 @@ public final class ItEnvironment {
      * started the stack says where it is: the compose service {@code <AppName>} in CI, a published port locally.
      */
     public static Optional<Endpoint> appUnderTest() {
-        return optional("IT_APP_HOST")
-                .map(host -> new Endpoint("app under test", host, port("IT_APP_PORT", 8080), "IT_APP_HOST", "IT_APP_PORT"));
+        return optional("IT_APP_HOST").map(host ->
+                new Endpoint("app under test", host, port("IT_APP_PORT", 8080), "IT_APP_HOST", "IT_APP_PORT"));
     }
 
     /** {@code IT_TABLE_PREFIX}: the run's prefix for Deephaven table names (D8 §6.6). */
@@ -80,7 +80,8 @@ public final class ItEnvironment {
                         : Duration.parse(value);
             }
             catch (DateTimeParseException ex) {
-                throw new IllegalStateException("IT_CONNECT_TIMEOUT='" + value + "' is neither seconds nor an ISO-8601 duration", ex);
+                throw new IllegalStateException(
+                        "IT_CONNECT_TIMEOUT='" + value + "' is neither seconds nor an ISO-8601 duration", ex);
             }
         }).orElse(DEFAULT_CONNECT_TIMEOUT);
     }
