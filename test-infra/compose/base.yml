@@ -1,0 +1,18 @@
+# test-infra/compose/base.yml: the first file of every test-infra stack (D10 §5.4, §6.3; D8 §6.2).
+#
+# Being first makes test-infra/compose/ the compose project directory, so relative paths in every
+# stack file resolve against this directory. stack.sh sets the project name: ci-<run_id>-<attempt>
+# in CI, local-<AppName> (or $COMPOSE_PROJECT_NAME) on a laptop.
+#
+# Teardown layer 2 (D10 §5.4): every service, named volume and network carries the run labels, so
+# `stack.sh down` can prune by label and `stack.sh leak-check` can prove nothing is left. YAML anchors
+# do not cross files, so each stack file repeats this anchor. Keep the copies identical.
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+networks:
+  default:
+    # <project>_default. Nothing publishes ports in CI: tests, the connector and the dependencies
+    # talk over this network by service name (D10 §5.6).
+    labels: *ci-labels

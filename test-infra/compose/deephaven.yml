@@ -1,0 +1,47 @@
+# test-infra/compose/deephaven.yml: the Deephaven CI profile (D10 §5.3, §6.3; D8 §6.4).
+#
+# Image: upstream ghcr.io/deephaven/server for component ITs, pinned in versions.env. System ITs set
+# DEEPHAVEN_IMAGE to our deephaven-server image from the same run (DL-26).
+# Port 10000 is never published here; only local-ports.yml publishes it, on localhost.
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+services:
+  deephaven:
+    image: ${DEEPHAVEN_IMAGE:?DEEPHAVEN_IMAGE is not set - see test-infra/compose/versions.env}
+    environment:
+      # Heap sized from the runner budget (D10 §6.8). The anonymous handler switches authentication off,
+      # which is acceptable only because this stack publishes no port in CI (D10 §4.4). Property name
+      # verified against the Deephaven 42.5 documentation (how-to-guides/authentication/auth-anon).
+      # DEEPHAVEN_AUTH_OPTS replaces it, e.g. with -Dauthentication.psk=<key> for a pre-shared key.
+      START_OPTS: "-Xmx${DEEPHAVEN_HEAP:-1536m} ${DEEPHAVEN_AUTH_OPTS:--DAuthHandlers=io.deephaven.auth.AnonymousAuthenticationHandler}"
+    mem_limit: ${DEEPHAVEN_MEM_LIMIT:-2g}
+    volumes:
+      # The image declares VOLUME /data and /cache. Named, labelled volumes replace the anonymous ones,
+      # so the leak check can see them and `down -v` removes them.
+      - deephaven-data:/data
+      - deephaven-cache:/cache
+    healthcheck:
+      # Readiness on port 10000, with no curl assumed. The upstream image ships grpc_health_probe (its own
+      # HEALTHCHECK uses it, docker/server-jetty in deephaven-core), which checks that the server reports
+      # SERVING. Images without it fall back to a plain TCP connect through bash /dev/tcp.
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -x /opt/grpc_health_probe/grpc_health_probe ];
+          then /opt/grpc_health_probe/grpc_health_probe -addr=localhost:10000 -connect-timeout=3s -rpc-timeout=3s;
+          else bash -c 'exec 3<>/dev/tcp/127.0.0.1/10000';
+          fi
+      # Up to 30 s + 24 x 5 s = 150 s before "unhealthy", inside `up --wait --wait-timeout 180`.
+      start_period: 30s
+      interval: 5s
+      timeout: 10s
+      retries: 24
+    labels: *ci-labels
+
+volumes:
+  deephaven-data:
+    labels: *ci-labels
+  deephaven-cache:
+    labels: *ci-labels

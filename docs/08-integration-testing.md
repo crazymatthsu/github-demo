@@ -299,8 +299,9 @@ Illustrative `manifest.yml`:
 case: positions-basic
 connector: source-database
 instance: positions-db-to-deephaven        # config/local/cash/source-database/<AppInstance>
-datasetVersion: 1.0.0                      # major == connector family major
+datasetVersion: 0.1.0                      # major == connector family major (0.x while the family is 0.x)
 input:
+  database: positions                      # created by test-infra/seed/sqlserver before the connector starts
   schema: input/schema.sql
   seed: [input/positions.sql]
 expected:

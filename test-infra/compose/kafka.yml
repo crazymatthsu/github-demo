@@ -1,0 +1,50 @@
+# test-infra/compose/kafka.yml: single-node Apache Kafka in KRaft mode (D8 §5.3, §6.4).
+#
+# Two client listeners, following the apache/kafka image's own single-node example:
+#   PLAINTEXT      kafka:9092      for containers on the stack network (connector, it-runner)
+#   PLAINTEXT_HOST localhost:9092  for a host JVM, via local-ports.yml (127.0.0.1:9092 -> 19092)
+# With environment configuration the image uses no default server.properties, so every required
+# property is set here (docker/examples/README.md in apache/kafka).
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+services:
+  kafka:
+    image: ${KAFKA_IMAGE:?KAFKA_IMAGE is not set - see test-infra/compose/versions.env}
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Fixed id for an ephemeral single-node cluster (22-character base64url UUID).
+      CLUSTER_ID: yipkZXHRTo-tCMDS_KbtJg
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    mem_limit: ${KAFKA_MEM_LIMIT:-1g}
+    # The image declares these three paths as VOLUMEs. tmpfs mounts replace the anonymous volumes
+    # (nothing unlabelled is left behind) and keep test data in memory.
+    tmpfs:
+      - /var/lib/kafka/data
+      - /etc/kafka/secrets
+      - /mnt/shared/config
+    healthcheck:
+      # A broker API probe (D8 §6.4). The tool starts its own JVM, so its heap is kept small.
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      start_period: 15s
+      interval: 5s
+      timeout: 20s
+      retries: 20
+    labels: *ci-labels

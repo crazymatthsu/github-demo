@@ -1,0 +1,24 @@
+# The reference case of source-database (D8 §5.2, §6.5): SQL Server -> connector image -> Deephaven.
+case: positions-basic
+connector: source-database
+# config/local/cash/source-database/<instance>. stack.sh also uses it as the default APP_INSTANCE when
+# it starts the app under test.
+instance: positions-db-to-deephaven
+# Major == the connector family's major (lockstep, DL-03). The family is still 0.x.
+datasetVersion: 0.1.0
+input:
+  # The database the input files run in. test-infra/seed/sqlserver/00-databases.sql creates it.
+  database: positions
+  schema: input/schema.sql
+  seed: [input/positions.sql]
+expected:
+  target: deephaven                # deephaven | amps | stub
+  table: positions                 # the harness prepends the run prefix IT_TABLE_PREFIX (D8 §6.6)
+  file: expected/positions.jsonl   # canonical JSON lines (D8 §5.5), without the ignored columns
+compare:
+  keyColumns: [account, instrument]
+  ordered: false
+  ignoreColumns: [ingested_at]
+  timestampTolerance: { columns: [as_of], seconds: 2 }
+  numericTolerance: { columns: [qty], abs: 0 }
+  timeout: PT60S                   # poll until the expected row count is present, then compare once

@@ -1,0 +1,13 @@
+# test-infra/compose/stacks.yml: the dependency stacks each Gradle subproject declares (D8 §6.2).
+#
+# Key: the project name, i.e. the last segment of the Gradle path (:deephaven-connectors:source-database
+# -> source-database). Each stack is a file <stack>.yml in this directory and a service of the same
+# name. `stack.sh up --project <gradle path>` merges base.yml, these files and it-runner.yml, plus the
+# app's docker/docker-compose.yml when APP_IMAGE is set, plus local-ports.yml with --local.
+#
+# stack.sh reads this file without yq, so keep one flow-style line per project.
+source-database: [deephaven, sqlserver]
+source-kafka: [deephaven, kafka]
+# AMPS has no public image: the stub sink stands in until the licence for CI is confirmed (D8 §4.5).
+source-amps: [deephaven]
+connectors-framework: [deephaven]

@@ -295,7 +295,7 @@ services:
       START_OPTS: "-Xmx1536m ${DEEPHAVEN_AUTH_OPTS}"   # anonymous handler in CI (verify property names)
     mem_limit: 2g
     healthcheck:
-      test: ["CMD-SHELL", "<probe on http://localhost:10000/ (verify tool in image)>"]
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:10000"]   # ships in the server image (42.5); bash /dev/tcp probe is the fallback
       start_period: 30s
       interval: 5s
       retries: 24
@@ -351,11 +351,11 @@ home bind-mounted, `IT_DEEPHAVEN_HOST=deephaven`, `IT_SQLSERVER_HOST=sqlserver`,
 | Component | Memory | Setting |
 |---|---|---|
 | Deephaven | heap 1.5 GB, limit 2 GB | `START_OPTS=-Xmx1536m`, `mem_limit: 2g` |
-| SQL Server | limit 2 GB (its documented minimum, verify) | `MSSQL_MEMORYLIMIT_MB`, `mem_limit` |
+| SQL Server | limit 2.5 GB — it refuses to start with less than about 2 GB visible (verified against `mssql/server:2022`) | `MSSQL_MEMORY_LIMIT_MB=2048`, `mem_limit: 2560m` |
 | Connector under test | limit 768 MB | `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60`, `mem_limit: 768m` |
 | `it-runner` | limit 1.2 GB | Gradle `-Xmx1g`, `--no-daemon` |
 | Runner OS + Docker | about 1 GB | — |
-| **Total** | about 6.5–7 GB | at the limit of the standard class; §5.8 fallbacks |
+| **Total** | about 7–7.5 GB | at or above the standard class — measure on the first run; §5.8 fallbacks |
 
 ### 6.9 Local parity commands
 
