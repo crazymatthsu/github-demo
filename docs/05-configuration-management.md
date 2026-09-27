@@ -24,7 +24,7 @@ the workflow files themselves (D7), image tag computation (D4).
 Phasing:
 
 - **Demo step 1 (compose)** — config tree in this repo, consumed directly by `run-compose.sh` on
-  laptops, in CI and on the dev compose hosts; `deploy-dev` reads `config/us-dev/targets.yml`.
+  laptops, in CI and on the dev compose hosts; `deploy-dev` reads `config/us-dev/cash/targets.yml`.
 - **Demo step 2 (kind + Helm)** — the same files become Helm values and a ConfigMap per release;
   config-lint adds `helm lint` / `helm template`; `deploy-dev` runs `helm upgrade --install`.
 - **Phase 3 (EKS + GitOps)** — a controller reconciles the config tree into the clusters;
@@ -280,8 +280,8 @@ Every file in a layer directory is shipped to the same mount path, so a referenc
 
 Required files per instance (`config/<env>/<flow>/<AppName>/<AppInstance>/`): `compose.env`,
 `application.yml`, `values.yaml` (from Demo step 2). Required per `app-common/`: `application.yml`,
-`values.yaml`. Required per `*-dev` env: `targets.yml` (only dev envs are auto-deployed; retired by
-ApplicationSets). Optional: `_common` layers,
+`values.yaml`. Required per flow directory of a `*-dev` env: `targets.yml` (one inventory per flow, v1.3, DL-39; only
+dev envs are auto-deployed; retired by ApplicationSets). Optional: `_common` layers,
 `logback.xml`, client properties. Forbidden: anything matching a secret pattern; `.env` files other
 than `compose.env`.
 
@@ -297,44 +297,46 @@ than `compose.env`.
 | 8 | Parity: key sets of the merged configuration diffed across `us-dev` / `us-qa` / `us-prod` (and `jp-*`) for the same `<flow>/<AppName>/<AppInstance>`; report attached to the PR | missing key in a higher env (fail for prod, warn for qa) | Demo step 1 (compose) |
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
-| 11 | `targets.yml`: schema valid; every instance directory has one target and every target has a directory; `pools.<flow>` has unique valid hosts, a login-name `user` and an absolute `root`; a compose target has a `host` or a pool, and a `host` under a pool is one of its boxes | inventory drift | Demo step 1 (compose); pools from v1.3 (DL-39) |
+| 11 | `config/<env>/<flow>/targets.yml` per flow of a `*-dev` env (an env-level file is an error): `env` and `flow` equal the path; every instance directory of the flow has one target and every target has a directory; `pool` has unique valid hosts (a host in two flows with the same `root` is an error), a login-name `user` and an absolute `root`; a compose target has a `host` or a `pool`, and a `host` under a pool is one of its boxes | inventory drift | Demo step 1 (compose); per-flow files and pools from v1.3 (DL-39) |
 | 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers, through `scripts/helm-deploy-instance.sh --mode lint` / `--mode template` (one flag list, D11 §8.3); kubeconform (`-strict`, Kubernetes 1.37) on the rendered releases when it is installed (CI installs it) | chart or values invalid; a rendered object invalid | Demo step 2 (kind + Helm) |
 | 13 | ApplicationSet dry-run: generated Application names equal `<app>-<instance>` and are ≤ 53 chars | generator mismatch | Phase 3 (EKS + GitOps) |
 
 ### 6.6 Inventory — `targets.yml` (Demo step 1 and 2) and what replaces it
 
-`config/us-dev/targets.yml` (the real file; `pools` since v1.3, DL-39):
+One inventory per flow, `config/<env>/<flow>/targets.yml`, so each flow team owns its hosts (CODEOWNERS on
+`config/<env>/<flow>/**`, §6.7). The real `config/us-dev/cash/targets.yml` (v1.3, DL-39):
 
 ```yaml
 env: us-dev
-pools:                          # the bare-metal boxes of <env>/<flow> (DL-39); optional
-  cash:
-    hosts:                      # unique DNS names; every box receives the whole configuration of the flow
-      - dev-cash-01.us-dev.example.com
-      - dev-cash-02.us-dev.example.com
-    user: deploy                # SSH user on every box (default deploy, DL-35)
-    root: /opt/platform         # install root of the host bundle on every box (default)
+flow: cash                      # both must equal the path
+pool:                           # the bare-metal boxes of us-dev/cash (DL-39); optional
+  hosts:                        # unique DNS names; every box receives the whole configuration of the flow
+    - dev-cash-01.us-dev.example.com
+    - dev-cash-02.us-dev.example.com
+  user: deploy                  # SSH user on every box (default deploy, DL-35)
+  root: /opt/platform           # install root of the host bundle on every box (default)
 defaults:
   kind: helm                    # compose | helm
   cluster: kind-ci              # Demo step 2: kind inside the workflow; later the dev EKS cluster
-  namespace: "{flow}"           # DL-38 leaning: namespace per flow
+  namespace: cash               # default: the flow name (DL-38); the literal "{flow}" is still accepted
 targets:
-  - instance: cash/source-database/trades-db-to-amps
-    kind: compose               # no host: any box of pools.cash; the write-back records the box as `host`
-  - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
+  - instance: source-database/trades-db-to-amps            # <AppName>/<AppInstance>, relative to this flow
+    kind: compose               # no host: any box of the pool; the write-back records the box as `host`
+  - instance: source-database/positions-db-to-deephaven    # inherits the helm defaults
 ```
 
-A compose target names its box (`host`) or belongs to a pool: with a pool, `host` is the **recorded
-placement** — absent until the first deploy assigns a box, then written back next to the tag, and
-required to be one of the pool's boxes; changing it in a PR moves the instance. `targets` stays one
+A compose target names its box (`host`) or relies on the flow's `pool`: with a pool, `host` is the
+**recorded placement** — absent until the first deploy assigns a box, then written back next to the tag,
+and required to be one of the pool's boxes; changing it in a PR moves the instance. `targets` stays one
 entry per instance, because it is the deployment record and the write-back anchor. Every box of a pool
 receives the flow's **host bundle** on each deploy (D9 §6.4): the compose runtime plus `config/_common/`,
-`config/<env>/_common/`, all of `config/<env>/<flow>/` and this file, under `root`, so `run-compose.sh
-<env> <flow> <app> <inst> start` works on any box. Two instances on one box need distinct `*_HOST_PORT`
-values in their `compose.env` (§6.3).
+`config/<env>/_common/` and all of `config/<env>/<flow>/` (this file included), under `root`, so
+`run-compose.sh <env> <flow> <app> <inst> start` works on any box. Two instances on one box need distinct
+`*_HOST_PORT` values in their `compose.env` (§6.3). A box listed by two flows of one env with the same
+`root` is an error (their bundles would collide). There is no env-level `config/<env>/<flow>/targets.yml`.
 
-Only `*-dev` envs carry a `targets.yml` consumed by `deploy-dev`; qa and prod are never touched by
-that job (§5.12). In Phase 3 (EKS + GitOps) the ApplicationSet's git directory generator enumerates
+Only `*-dev` envs carry `targets.yml` files (one per flow directory) consumed by `deploy-dev`; qa and prod
+are never touched by that job (§5.12). In Phase 3 (EKS + GitOps) the ApplicationSet's git directory generator enumerates
 `config/<env>/<flow>/<AppName>/<AppInstance>/` and a cluster generator maps `<env>` to a cluster, so
 the file retires (D11).
 
@@ -428,7 +430,7 @@ flowchart LR
   guard{"Bot author or skip ci?"}
   stop["No deploy (loop guard)"]
   subgraph demo["deploy-dev job — Demo step 1 (compose) / Demo step 2 (kind + Helm)"]
-    tg["read config/us-dev/targets.yml"]
+    tg["read config/us-dev/*/targets.yml"]
     rc["run-compose.sh pull, start, health on the compose host"]
     hu["helm upgrade --install per instance (atomic)"]
     wb["write back IMAGE_TAG / image.tag with skip ci"]
@@ -502,7 +504,7 @@ unavailable, which the sync window confines to the deployment window.
 | `config/us-dev/cash/source-database/trades-db-to-amps/{compose.env,application.yml,values.yaml}` and `.../positions-db-to-deephaven/{...}` | the two instances whose effective configuration provably differs (§6.3) | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
 | `config/us-dev/_common/application.yml`, `config/_common/source-database/application.yml` | optional layers 3 and 2 with one key each, to prove the precedence order | Demo step 1 (compose) |
 | `config/local/cash/source-database/...` | developer stack: the same shape with `localhost` endpoints (§5.13) | Demo step 1 (compose) |
-| `config/us-dev/targets.yml` | inventory read by `deploy-dev`; `pools` for the bare-metal boxes (DL-39) | Demo step 1 (compose), Demo step 2 (kind + Helm), host pools (v1.3) |
+| `config/us-dev/cash/targets.yml` (one per flow) | inventory read by `deploy-dev`; `pool` for the bare-metal boxes of the flow (DL-39) | Demo step 1 (compose), Demo step 2 (kind + Helm), host pools (v1.3) |
 | `deephaven-connectors/source-database/src/main/resources/application.yml` | layer 1 with the import list of §6.1 | Demo step 1 (compose) |
 | `deephaven-connectors/connectors-framework/` (`ConnectorIdentity`, `@ConfigurationProperties` + `@Validated` bindings, masked start-up summary) | validation and the identity tuple in logs and metrics | Demo step 1 (compose) |
 | `build-logic/` (root task `configLint`) | checks 1–6 and 9–12 runnable locally and in CI (7 and 8 reported as TODO); `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |

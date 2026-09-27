@@ -292,7 +292,7 @@ flowchart LR
     ac["us-dev/cash/source-database/app-common/ (values.yaml, application.yml)"]
     i1["us-dev/cash/source-database/trades-db-to-amps/ (values.yaml, application.yml, compose.env)"]
     i2["us-dev/cash/source-database/positions-db-to-deephaven/"]
-    tg["us-dev/targets.yml (demo)"]
+    tg["us-dev/cash/targets.yml (demo, one per flow)"]
   end
   subgraph inv["Inventory → one release per instance"]
     dd["deploy-dev job: helm upgrade --install (Demo step 2)"]
@@ -340,7 +340,7 @@ flowchart LR
   merge["Merge to main"]
   build["build + integration-test + publish image (pre-release tag)"]
   subgraph demo["Demo step 2 (kind + Helm)"]
-    tg["read config/us-dev/targets.yml"]
+    tg["read config/us-dev/*/targets.yml"]
     up["helm upgrade --install per instance --rollback-on-failure --wait"]
     ok{"ready in 5m?"}
     wb["write back image.tag / IMAGE_TAG, skip ci"]
@@ -383,7 +383,7 @@ sequenceDiagram
   G->>W: push to main (not by the bot, no skip ci)
   W->>W: build, unit tests, integration tests (compose stack, D10)
   W->>R: push image source-database with the pre-release tag
-  W->>W: deploy-dev: read config/us-dev/targets.yml
+  W->>W: deploy-dev: read config/us-dev/*/targets.yml
   loop for each instance with kind helm
     W->>K: kubectl create secret ...-secrets (demo stub, D2)
     W->>K: helm upgrade --install app-instance -n cash -f app-common/values.yaml -f inst/values.yaml --set-file ... --set-string image.tag=TAG --rollback-on-failure --wait --timeout 5m
@@ -417,7 +417,7 @@ the loop guard keys on.
 |---|---|---|
 | `deephaven-connectors/<AppName>/helm/<AppName>/` for `source-database`, `source-kafka` and `source-amps` (`Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/{_helpers.tpl,deployment,configmap,service,serviceaccount,networkpolicy,pdb,servicemonitor,externalsecret}.yaml`, `templates/tests/smoke-test.yaml`, `NOTES.txt`, `README.md`) | three charts, identical apart from `Chart.yaml` and `image.repository` (`diff -r`) | Demo step 2 (kind + Helm) |
 | `config/{local,us-dev}/cash/<AppName>/app-common/values.yaml` and `config/{local,us-dev}/cash/<AppName>/<AppInstance>/values.yaml` | values layers 2 and 3 for every existing app-common and instance directory; `image.tag` equals `IMAGE_TAG` of the sibling `compose.env` (config-lint check 4) | Demo step 2 (kind + Helm) |
-| `config/us-dev/targets.yml` (`defaults: {kind: helm, cluster: kind-ci, namespace: "{flow}"}`; `trades-db-to-amps` stays `kind: compose`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
+| `config/us-dev/cash/targets.yml` (one inventory per flow since v1.3, DL-39; `defaults: {kind: helm, cluster: kind-ci, namespace: cash}`; `trades-db-to-amps` is `kind: compose`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
 | `scripts/helm-deploy-instance.sh`, `scripts/helm-smoke-diff.sh` | the one implementation of §6.4 (§8.3); the smoke diff of §7 | Demo step 2 (kind + Helm) |
 | `build-logic/src/main/kotlin/buildlogic/ConfigLint*.kt` (checks 3, 4, 10, 12), `.github/workflows/config-lint.yml` (`setup-kube-tools`: helm, kubeconform) | D5 check 12: `helm lint` / `helm template` per instance, kubeconform on the rendered releases | Demo step 2 (kind + Helm) |
 | `test-infra/kind/{versions.env,cluster.yaml,kind.sh,README.md}`; `.github/actions/{setup-kube-tools,kind-cluster,helm-deploy-instance}/action.yml` | pinned tools; the kind lifecycle (`up`, `load`, `diagnostics`, `down`, `leak-check`, D10); the composite actions of D7 | Demo step 2 (kind + Helm) |

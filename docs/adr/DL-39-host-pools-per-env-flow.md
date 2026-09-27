@@ -5,7 +5,7 @@
 | Status | Accepted (v1.3, 2026-09-27) |
 | Date | 2026-09-27 |
 | Blocking for demo skeleton | no (follow-up to demo step 2) |
-| Demo | `pools` in `config/us-dev/targets.yml`; `scripts/pool-deploy.sh`; the runner plays every box until the dev boxes exist (DL-35) |
+| Demo | `pool` in `config/us-dev/cash/targets.yml`; `scripts/pool-deploy.sh`; the runner plays every box until the dev boxes exist (DL-35) |
 
 ## Context
 
@@ -20,10 +20,12 @@ decision reopens it for the compose path only.
 
 ## Decision
 
-1. **Pool per flow in the inventory.** `config/<env>/targets.yml` may declare `pools.<flow>` with
-   `hosts` (the boxes), `user` (SSH user, default `deploy`) and `root` (install root, default
-   `/opt/platform`). A compose target then needs no `host`; a `host` it does carry must be one of the
-   pool's boxes. config-lint check 11 enforces both (D5 §6.6).
+1. **One inventory per flow, with its pool.** The inventory moves into the flow directory:
+   `config/<env>/<flow>/targets.yml` (the env-level file is retired), so each flow team owns its hosts
+   through CODEOWNERS on `config/<env>/<flow>/**`. The file may declare `pool` with `hosts` (the boxes),
+   `user` (SSH user, default `deploy`) and `root` (install root, default `/opt/platform`); its targets
+   are `<AppName>/<AppInstance>` relative to the flow. A compose target then needs no `host`; a `host` it
+   does carry must be one of the pool's boxes. config-lint check 11 enforces all of it (D5 §6.6).
 2. **The whole flow on every box.** On every deploy the job builds one **host bundle** per flow — the
    compose runtime (`scripts/run-compose.sh`, `scripts/smoke.sh`, each app's compose template and
    wrappers) plus `config/_common/`, `config/<env>/_common/`, `config/<env>/<flow>/**` (every app,
@@ -54,8 +56,8 @@ decision reopens it for the compose path only.
 
 ## Consequences
 
-- `targets.yml` keeps one entry per instance (the deployment record and write-back anchor); only `host`
-  becomes optional for pooled flows.
+- Each flow's `targets.yml` keeps one entry per instance (the deployment record and write-back anchor);
+  only `host` becomes optional for pooled flows. `deploy-dev` merges the flows' files, prefixing the flow.
 - The DL-35 transport now carries the bundle sync as well as the three commands; the forced command on
   the boxes must allow `run-compose.sh` with `pull`, `start`, `stop`, `health` and `status` for the deploy
   user, and the same user is used box-to-box for the single-run rule.

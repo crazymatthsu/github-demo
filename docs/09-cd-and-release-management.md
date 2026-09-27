@@ -188,8 +188,8 @@ reaches prod.
 |---|---|
 | Position | last job of `main.yml`, `needs: [publish]`, `environment: dev`, `concurrency: deploy-dev` (no parallel deploys, `cancel-in-progress: false`) |
 | Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
-| Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `kind: compose` or `kind: helm` (schema in D5 §6.6) |
-| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back. **Demo placeholder (brief v1.1):** no dev host exists, so the step runs `run-compose.sh ... start --dry-run` on the runner (validates the target and prints the compose command) and echoes the SSH command it would run, next to a `TODO(DL-35)` comment describing the transport (§6.6). **Host pools (v1.3, DL-39):** for a flow with a `pools.<flow>` entry, `scripts/pool-deploy.sh <env> <flow> deploy --tag <tag>` replaces the per-target loop: it builds the flow's host bundle (compose runtime + `config/_common`, `config/<env>/_common`, all of `config/<env>/<flow>`, `targets.yml`, a `.platform-bundle` manifest), syncs it to every box of the pool (`rsync --delete` into `root` over the DL-35 SSH channel), resolves each instance's box (pinned → discovered through `run-compose.sh status --json` → assigned to the box with the fewest placements) and runs `pull` → `start` → `health` there; the write-back records the box as `host`. Transport `local` (the runner plays every box: sync per box, `validate` + `start --dry-run`) until the Environment `dev` holds `DEV_DEPLOY_SSH_KEY` and `config/<env>/known_hosts` exists |
+| Input | `config/us-dev/<flow>/targets.yml` for every flow directory (one inventory per flow, v1.3; `jp-dev/...` when jp targets exist): every `<app>/<instance>` of the flow with `kind: compose` or `kind: helm` (schema in D5 §6.6); the job merges them with the flow prepended |
+| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back. **Demo placeholder (brief v1.1):** no dev host exists, so the step runs `run-compose.sh ... start --dry-run` on the runner (validates the target and prints the compose command) and echoes the SSH command it would run, next to a `TODO(DL-35)` comment describing the transport (§6.6). **Host pools (v1.3, DL-39):** for a flow whose `targets.yml` declares a `pool`, `scripts/pool-deploy.sh <env> <flow> deploy --tag <tag>` replaces the per-target loop: it builds the flow's host bundle (compose runtime + `config/_common`, `config/<env>/_common`, all of `config/<env>/<flow>`, `targets.yml`, a `.platform-bundle` manifest), syncs it to every box of the pool (`rsync --delete` into `root` over the DL-35 SSH channel), resolves each instance's box (pinned → discovered through `run-compose.sh status --json` → assigned to the box with the fewest placements) and runs `pull` → `start` → `health` there; the write-back records the box as `host`. Transport `local` (the runner plays every box: sync per box, `validate` + `start --dry-run`) until the Environment `dev` holds `DEV_DEPLOY_SSH_KEY` and `config/<env>/known_hosts` exists |
 | Helm adapter (Demo step 2) | per `kind: helm` target: `scripts/helm-deploy-instance.sh us-dev <flow> <app> <inst> --tag <tag> --namespace <ns>` (D11 §8.3) = `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <ns> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml [--set-file appConfig.platform=... appConfig.env=...] --rollback-on-failure --wait --timeout 5m`, then `rollout status` and `helm test`. Targets of `cluster: kind-ci` go into a kind cluster `deploy-<run_id>-<attempt>` created in the job and deleted in `always()` until a dev cluster exists (DL-32); any other cluster fails with `TODO(Phase 3)` (kubeconfig from the Environment `dev` secrets) |
 | Health gate | compose: `health` exit code; Helm: `--rollback-on-failure --wait` plus `kubectl rollout status` and `helm test` (the kind deploy test adds the smoke diff: two instances differ in effective config, §7 of the brief) |
 | Write-back | commit `chore(config): us-dev deployed <tag> [skip ci]` by the bot identity (GitHub App token, DL-09 / §5.5) touching only `image.tag` / `IMAGE_TAG` of the deployed instances; pushed to `main` directly (branch protection allows the App) |
@@ -198,24 +198,24 @@ reaches prod.
 | Never | touches `config/*-qa/**` or `config/*-prod/**`; the adapter refuses any env other than `*-dev` (and `run-compose.sh` enforces the same allow-list, D6) |
 | Phase 3 | the adapters are replaced by Argo CD auto-sync on `config/<region>-dev/**`; the job shrinks to "wait for Application health, smoke test, write-back" |
 
-### 6.5 Illustrative `config/us-dev/targets.yml`
+### 6.5 Illustrative `config/us-dev/cash/targets.yml`
 
 ```yaml
-# schema owned by D5 (§6.6); one entry per AppInstance deployed in us-dev
+# config/us-dev/cash/targets.yml — schema owned by D5 (§6.6); one file per flow, one entry per AppInstance of the flow
 env: us-dev
-pools:                             # host pools (v1.3, DL-39): the bare-metal boxes of <env>/<flow>
-  cash:
-    hosts: [dev-cash-01.us-dev.example.com, dev-cash-02.us-dev.example.com]
-    user: deploy                   # SSH user on every box (DL-35)
-    root: /opt/platform            # install root of the host bundle
+flow: cash
+pool:                              # host pool (v1.3, DL-39): the bare-metal boxes of us-dev/cash
+  hosts: [dev-cash-01.us-dev.example.com, dev-cash-02.us-dev.example.com]
+  user: deploy                     # SSH user on every box (DL-35)
+  root: /opt/platform              # install root of the host bundle
 defaults:
   kind: helm                       # compose | helm
   cluster: kind-ci                 # Demo step 2: kind inside the workflow; later the dev EKS cluster
-  namespace: "{flow}"              # DL-38 leaning: namespace per flow
+  namespace: cash                  # default: the flow name (DL-38)
 targets:
-  - instance: cash/source-database/trades-db-to-amps
-    kind: compose                  # any box of pools.cash; `host` appears once the write-back records the placement
-  - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
+  - instance: source-database/trades-db-to-amps            # <AppName>/<AppInstance>
+    kind: compose                  # any box of the pool; `host` appears once the write-back records the placement
+  - instance: source-database/positions-db-to-deephaven    # inherits the helm defaults
 ```
 
 ### 6.6 Illustrative `deploy-dev` job skeleton
@@ -231,8 +231,10 @@ deploy-dev:
   permissions: { contents: write, deployments: write, id-token: write }
   steps:
     - uses: actions/checkout@v4
-    - id: targets
-      run: echo "list=$(yq -o=json -I=0 '.targets' config/us-dev/targets.yml)" >> "$GITHUB_OUTPUT"   # schema: D5 §6.6
+    - id: targets                            # one inventory per flow (D5 §6.6): merge config/us-dev/*/targets.yml,
+      run: |                                 # prefixing every instance with its flow
+        list=$(for f in config/us-dev/*/targets.yml; do yq -o=json -I=0 '(.flow) as $fl | .targets | map(.instance |= $fl + "/" + .)' "$f"; done | jq -cs 'add')
+        echo "list=$list" >> "$GITHUB_OUTPUT"
     - name: Deploy compose targets (Demo step 1; host pools since v1.3, DL-39)
       env: { IMAGE_TAG: ${{ needs.publish.outputs.tag }}, POOL_TRANSPORT: local, POOL_LOCAL_ROOT: ${{ runner.temp }}/boxes }
       run: |
@@ -510,9 +512,9 @@ branches exist.
 
 | Phase | File / path | What it proves |
 |---|---|---|
-| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` resolves the targets in `config/us-dev/targets.yml` and runs the placeholder adapter (`--dry-run` + printed SSH command, `TODO(DL-35)`) without a manual step; the real SSH transport is a later implementation |
-| Demo step 1 (compose) | `config/us-dev/targets.yml` (§6.5) | inventory of dev targets; `kind: compose` entries |
-| Host pools (v1.3, DL-39) | `config/us-dev/targets.yml` `pools`; `scripts/pool-deploy.sh` (`bundle`, `plan`, `sync`, `discover`, `deploy`, `status`); `scripts/ci/set-target-host.sh`; `scripts/test/pool-deploy-test.sh` (lint job) | the flow's whole configuration on every box of the pool, deterministic placement, the box recorded in `targets.yml` by the write-back; ssh transport stub-tested, `local` transport run by `deploy-dev` until the boxes exist |
+| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` resolves the targets in `config/us-dev/cash/targets.yml` and runs the placeholder adapter (`--dry-run` + printed SSH command, `TODO(DL-35)`) without a manual step; the real SSH transport is a later implementation |
+| Demo step 1 (compose) | `config/us-dev/cash/targets.yml` (§6.5; per flow since v1.3) | inventory of dev targets; `kind: compose` entries |
+| Host pools (v1.3, DL-39) | `config/us-dev/cash/targets.yml` (`pool`; one inventory per flow); `scripts/pool-deploy.sh` (`bundle`, `plan`, `sync`, `discover`, `deploy`, `status`); `scripts/ci/set-target-host.sh`; `scripts/test/pool-deploy-test.sh` (lint job) | the flow's whole configuration on every box of the pool, deterministic placement, the box recorded in `targets.yml` by the write-back; ssh transport stub-tested, `local` transport run by `deploy-dev` until the boxes exist |
 | Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
 | Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof) and a dev bump PR so dev runs the release tag |
 | Demo step 1 (compose) | GitHub Environment `dev` settings; branch protection on `main`; `CODEOWNERS` with `config/**` rules | gates as in §6.2 |

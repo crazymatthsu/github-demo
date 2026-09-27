@@ -32,7 +32,7 @@ split plus a deployer source change.
 - `deploy-dev`, Argo CD and compose all read the same tree; `run-compose.sh` resolves `CONFIG_ROOT`
   to `<repo>/config` by default and accepts an override (D6).
 - Bot write-back commits land in the code repository, so the loop guard is mandatory (DL-36).
-- `config/<env>/targets.yml` is the dev deploy inventory until an ApplicationSet replaces it (D11).
+- `config/<env>/<flow>/targets.yml` (one per flow, v1.3) is the dev deploy inventory until an ApplicationSet replaces it (D11).
 
 ## References
 
