@@ -26,6 +26,7 @@ plugins {
 val springBootBom = catalogLibrary("spring-boot-dependencies")
 val junitJupiter = catalogLibrary("junit-jupiter")
 val junitLauncher = catalogLibrary("junit-platform-launcher")
+val deephavenClient = catalogLibrary("deephaven-java-client-flight-dagger")
 
 testing {
     suites {
@@ -35,6 +36,9 @@ testing {
                 implementation(project())
                 implementation(platform(springBootBom))
                 implementation(junitJupiter)
+                // Every component stack contains Deephaven and the tests assert through its Java client
+                // (Flight session: upload, snapshot, release; D8 §5.2, D10 §5.3).
+                implementation(deephavenClient)
                 runtimeOnly(junitLauncher)
             }
             targets.all {
@@ -44,6 +48,9 @@ testing {
                     // The stack is external state: never up-to-date, never from the build cache.
                     outputs.upToDateWhen { false }
                     outputs.cacheIf { false }
+                    // Arrow (under the Deephaven Flight client) reads direct buffers reflectively: JDK 16+ needs
+                    // java.nio opened, or MemoryUtil fails to initialise.
+                    jvmArgs("--add-opens=java.base/java.nio=ALL-UNNAMED")
                 }
             }
         }

@@ -17,7 +17,8 @@ Commands
       up --wait --wait-timeout 180, apply the SQL Server seed, then start the app under test.
       Exports COMPOSE_FILE, COMPOSE_PROJECT_NAME, COMPOSE_ENV_FILES and the IT_* values to
       $GITHUB_ENV in CI and records them in test-infra/compose/.state/<project>.env.
-      --local also publishes 10000 / 1433 / 9092 on 127.0.0.1 (local-ports.yml).
+      --local also publishes 10000 / 1433 / 9092 on 127.0.0.1 (local-ports.yml). In CI the app under
+      test publishes no port either (tests reach it as <AppName>:8080 on the stack network).
   diagnostics <dir>
       Write compose-ps.txt, <service>.log, health-<service>.json and stats.txt for the stack into <dir>.
   down
@@ -64,7 +65,8 @@ DOWN_TIMEOUT=20
 STATE_VARS="COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PATH_SEPARATOR COMPOSE_ENV_FILES
   CI_RUN_ID CI_RUN_ATTEMPT IT_SA_PASSWORD IT_TABLE_PREFIX IT_RUNNER_UID IT_RUNNER_GID IT_WORKSPACE
   IT_GRADLE_HOME STACK_PROJECT STACK_SERVICES APP_IMAGE APP_NAME APP_ENV APP_FLOW APP_INSTANCE
-  COMMON_DIR CONFIG_DIR PROJECT IMAGE_REPO IMAGE_TAG SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD"
+  COMMON_DIR CONFIG_DIR PLATFORM_DIR ENV_COMMON_DIR PROJECT IMAGE_REPO IMAGE_TAG ACTUATOR_HOST_PORT
+  SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD"
 
 COMPOSE_CMD=()
 ENGINE=
@@ -281,20 +283,31 @@ manifest_instance() {
 # Interpolation values for the app's compose template when it joins the stack, mirroring what
 # run-compose.sh exports (D6 §6.2): identity, config directories, compose.env, the image under test.
 prepare_app() {
-  local app=$1 base
+  local app=$1 base config_root=${CONFIG_ROOT:-$REPO_ROOT/config} compose_env=''
   export APP_NAME=${APP_NAME:-$app} APP_ENV=${APP_ENV:-local} APP_FLOW=${APP_FLOW:-cash}
   APP_INSTANCE=${APP_INSTANCE:-$(manifest_instance "$app")}
   if [[ -n $APP_INSTANCE ]]; then
     export APP_INSTANCE
-    base=${CONFIG_ROOT:-$REPO_ROOT/config}/$APP_ENV/$APP_FLOW/$APP_NAME
+    base=$config_root/$APP_ENV/$APP_FLOW/$APP_NAME
     export COMMON_DIR=${COMMON_DIR:-$base/app-common} CONFIG_DIR=${CONFIG_DIR:-$base/$APP_INSTANCE}
     if [[ -f $CONFIG_DIR/compose.env ]]; then
-      ENV_FILES+=("$CONFIG_DIR/compose.env")
+      compose_env=$CONFIG_DIR/compose.env
+      ENV_FILES+=("$compose_env")
     else
       warn "$(rel "$CONFIG_DIR")/compose.env not found; the app template gets no instance compose.env"
     fi
   else
     warn "APP_INSTANCE is unset and no test-infra/testdata/$app manifest names one; CONFIG_DIR stays unset"
+  fi
+  # The optional layers exactly as run-compose.sh mounts them (D5 §6.1, D6 §6.2): set when the directory
+  # exists, unset otherwise (the template then mounts the empty-layer volume).
+  unset PLATFORM_DIR ENV_COMMON_DIR
+  if [[ -d $config_root/_common/$APP_NAME ]]; then export PLATFORM_DIR=$config_root/_common/$APP_NAME; fi
+  if [[ -d $config_root/$APP_ENV/_common ]]; then export ENV_COMMON_DIR=$config_root/$APP_ENV/_common; fi
+  # The template publishes 127.0.0.1:${ACTUATOR_HOST_PORT:?...}, which compose interpolates even when the CI
+  # override drops the port. Default it only when compose.env does not set it: the shell beats --env-file.
+  if [[ -z ${ACTUATOR_HOST_PORT:-} ]] && ! { [[ -n $compose_env ]] && grep -Eq '^[[:space:]]*ACTUATOR_HOST_PORT=' "$compose_env"; }; then
+    export ACTUATOR_HOST_PORT=18080
   fi
   export PROJECT=$COMPOSE_PROJECT_NAME
 
@@ -333,6 +346,18 @@ write_local_ports() {
     ' "$COMPOSE_DIR/local-ports.yml" >"$out"
   )
   if [[ $(wc -l <"$out") -le 1 ]]; then printf 'services: {}\n' >"$out"; fi
+}
+
+# D10 §5.6: nothing publishes a port in CI. The app template publishes its actuator on 127.0.0.1; this
+# override, merged after it, empties that list (compose `!reset`, Docker Compose 2.24+), so the template
+# stays as it is. Tests reach the app as <AppName>:8080 on the stack network.
+write_app_no_ports() {
+  local out=$1 service=$2
+  (
+    umask 077
+    printf '# Written by stack.sh up in CI: the app under test publishes no port (D10 §5.6).\nservices:\n  %s:\n    ports: !reset []\n' \
+      "$service" >"$out"
+  )
 }
 
 # --- labels, prune, leftovers ------------------------------------------------------------------------
@@ -449,11 +474,16 @@ cmd_up() {
   local files=("$COMPOSE_DIR/base.yml")
   for stack in $stacks; do files+=("$COMPOSE_DIR/$stack.yml"); done
   files+=("$COMPOSE_DIR/it-runner.yml")
+  mkdir -p "$STATE_DIR"
   if [[ -n $app_file ]]; then
     files+=("$app_file")
     prepare_app "$app"
+    if in_ci; then
+      local no_ports_file=${STATE_FILE%.env}.app-no-ports.yml
+      write_app_no_ports "$no_ports_file" "$app"
+      files+=("$no_ports_file")
+    fi
   fi
-  mkdir -p "$STATE_DIR"
   if $local_ports; then
     local ports_file=${STATE_FILE%.env}.local-ports.yml
     # shellcheck disable=SC2086 # one argument per service
@@ -610,7 +640,9 @@ cmd_down() {
     log "down: no compose files recorded for ${COMPOSE_PROJECT_NAME:-this run}; removing by label"
   fi
   prune_by_labels
-  if [[ -n ${STATE_FILE:-} ]]; then rm -f "$STATE_FILE" "${STATE_FILE%.env}.local-ports.yml"; fi
+  if [[ -n ${STATE_FILE:-} ]]; then
+    rm -f "$STATE_FILE" "${STATE_FILE%.env}.local-ports.yml" "${STATE_FILE%.env}.app-no-ports.yml"
+  fi
 
   local leftovers
   leftovers=$(list_leftovers)
