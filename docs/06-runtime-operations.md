@@ -170,7 +170,7 @@ config-lint job calls (D5).
 
 | Variable | Resolved as | Example (`us-dev cash source-database trades-db-to-amps`) |
 |---|---|---|
-| `REPO_ROOT` | `git rev-parse --show-toplevel` from the script's directory, else `<script dir>/../../..` | `/srv/github-demo` |
+| `REPO_ROOT` | the nearest ancestor of the script that holds a `.platform-bundle` marker (a synced host bundle, DL-39), else `git rev-parse --show-toplevel` from the script's directory, else `<script dir>/../../..` | `/srv/github-demo`; `/opt/platform` on a pooled box |
 | `APP_DIR` | `<script dir>/..` | `deephaven-connectors/source-database` |
 | `CONFIG_ROOT` | `$CONFIG_ROOT` if set, else `$REPO_ROOT/config` (keeps the layout repo-agnostic, DL-06) | `config` |
 | `ENV_DIR` | `$CONFIG_ROOT/<env>` | `config/us-dev` |
@@ -227,6 +227,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 | `--dry-run` | prints the resolved paths, the identity, the engine and the exact compose command line, then exits 0 without invoking the engine. Valid for every command |
 | Exit codes | 0 success or check passed · 1 operation failed or check negative (unhealthy, drift, lint) · 2 usage · 3 refused by a safety rule · 4 config tree error · 5 engine not found or daemon not running · 124 timeout |
 | Audit line | one line per invocation to syslog (`logger -t run-compose`, if present) and stderr: `ts=<iso8601> who=<SUDO_USER or USER> host=<hostname> env=<env> flow=<flow> app=<app> instance=<inst> cmd=<cmd> opts=<…> result=<exit>`; when `GITHUB_RUN_ID` is set the line adds `run=<GITHUB_SERVER_URL>/<repo>/actions/runs/<id> actor=<GITHUB_ACTOR>` |
+| Pool guard (DL-39) | `start` and `restart` on a box whose `.platform-bundle` lists more than one pool host ask every other box (`run-compose.sh <env> <flow> <app> <inst> status --json` over the DL-35 SSH channel, user and root from the manifest) and exit 3 when the instance already runs elsewhere (`--force` overrides, `POOL_PEER_CHECK=off` disables); an unreachable peer only warns, so a dead box never blocks a failover |
 | CI project name | when `GITHUB_RUN_ID` is set **and the env is `local`** (a `*-dev` host keeps its stable project name so a redeploy replaces the stack instead of starting a second one), `PROJECT` becomes `ci-<run_id>-<attempt>-<app>-<instance>`: the prefix matches the run-scoped `COMPOSE_PROJECT_NAME` that D10 defines for its `test-infra` stacks, so a name-prefix filter finds it, and every resource also carries the label `com.<company>.ci.run=<run_id>` (§5.11) that D10's `always()` teardown and leak check use. There is no separate `ci` env token in the config tree (D5 §6.2) |
 
 ### 6.6 Engine detection, rootless Podman, SELinux
@@ -259,7 +260,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 | Check | Where | Rule |
 |---|---|---|
 | ShellCheck | `pr.yml` lint job (D7) | `shellcheck -S warning scripts/run-compose.sh`; `#!/usr/bin/env bash`, `set -euo pipefail` |
-| bats tests (optional) | `scripts/test/run-compose.bats`, run in the same lint job | a stub `docker` on `PATH` records arguments; cases: valid tuple → expected command line; unknown instance → exit 4; `us-prod` → exit 3; `down --volumes` on `us-dev` without `--force` → exit 3; `--dry-run` never calls the stub |
+| Script tests | `scripts/test/pool-deploy-test.sh` (plain bash, run in the same lint job) | stub `ssh` / `rsync` on `PATH` record arguments; cases: bundle content and marker; placement pinned / discovered / assigned; an instance on two boxes → exit 6; `--move`; identical trees per box; dry-run command lines; failed health re-runs `start` without the override; the pool guard of §6.5 |
 | Single copy | `build-logic` copies the canonical script into every app's `scripts/` at build time, or each app's copy is checked identical by the lint job | one implementation, no drift between apps |
 
 ### 6.9 Observability
@@ -503,7 +504,8 @@ project name and label this script assigned.
 | Demo step 1 (compose) | `deephaven-connectors/<app>/docker/docker-compose.yml` | one template for all env / flow / instance: `${IMAGE_REPO}`, `${IMAGE_TAG}`, mounts of §6.7, `healthcheck`, `read_only`, labels |
 | Demo step 1 (compose) | `config/local/cash/source-database/...`, `config/us-dev/cash/source-database/{app-common,trades-db-to-amps,positions-db-to-deephaven}/compose.env` | `local` env for laptops; two instances that differ in endpoints |
 | Demo step 1 (compose) | `test-infra/compose/` + Gradle `devUp` / `devDown` | dependency stack shared by ITs and local development |
-| Demo step 1 (compose) | `.github/workflows/pr.yml` lint job; `scripts/test/run-compose.bats` | ShellCheck, bats cases of §6.8 |
+| Demo step 1 (compose) | `.github/workflows/pr.yml` lint job; `scripts/test/pool-deploy-test.sh` | ShellCheck, script tests of §6.8 |
+| Host pools (v1.3, DL-39) | `scripts/pool-deploy.sh`, the `.platform-bundle` marker in `run-compose.sh` and the wrappers, the pool guard of §6.5 | the flow's configuration and runtime on every box under `/opt/platform`; one running copy per instance across the pool |
 | Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` | `pull`, `start`, `health` on the compose hosts (D9); in the demo a placeholder that runs `start --dry-run` on the runner (`TODO(DL-35)`) |
 | Demo step 2 (kind + Helm) | `deephaven-connectors/<app>/helm/<app>/templates/deployment.yaml` | probes, resources, `securityContext`, `strategy`, checksum annotation, identity labels |
 | Demo step 2 (kind + Helm) | `.../templates/{service,servicemonitor,networkpolicy,pdb}.yaml` with `enabled` switches; `values.yaml` defaults | monitoring and policy objects rendered and linted; PDB only when `replicas > 1` |

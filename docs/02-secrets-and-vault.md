@@ -439,7 +439,7 @@ Where the value comes from in the demo:
 | Stack | Source of the value | Phase |
 |---|---|---|
 | Integration-test stack in CI and locally | generated per run (`openssl rand`), given to SQL Server as `MSSQL_SA_PASSWORD` and to the app as `SPRING_DATASOURCE_PASSWORD`; nothing stored | Demo step 1 (compose) |
-| Dev compose hosts (`deploy-dev`) | GitHub Environment `dev` secret, exported into the remote shell before `run-compose.sh start` (transport per DL-35) | Demo step 1 (compose) |
+| Dev compose hosts (`deploy-dev`) | GitHub Environment `dev` secret, exported into the remote shell before `run-compose.sh start` (transport per DL-35). With host pools (DL-39) every box of a pool must hold the secret environment of **every** instance of its flow, provisioned per box outside git (never in the synced bundle); later a Vault agent | Demo step 1 (compose); pools v1.3 |
 | kind cluster in the workflow | `kubectl create secret generic source-database-trades-db-to-amps-secrets --from-literal=spring.datasource.username=... --from-literal=spring.datasource.password=...` from the same generated value, before `helm upgrade --install` | Demo step 2 (kind + Helm) |
 
 The switch to Vault (Phase 3), two variants, neither touching Java code:

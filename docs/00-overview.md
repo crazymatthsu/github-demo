@@ -29,7 +29,7 @@ the demo stubs them behind the same Spring property names.
 
 Decided so far (details in the decision log, §8): DL-01 monorepo, DL-02 EKS, DL-06 config in the
 monorepo, DL-15 / DL-24 compose as the demo test stack, DL-17 / DL-25 GitHub-hosted runners for the
-demo, DL-23 Spring Boot 4.1, DL-29 Helm, DL-32 kind in demo step 2, DL-33 one release per AppInstance,
+demo, DL-23 Spring Boot 4.1, DL-29 Helm, DL-32 kind in demo step 2, DL-33 one release per AppInstance, DL-39 host pools per env/flow on the bare-metal boxes,
 DL-37 naming model, DL-09 and DL-30 for the dev auto-deploy; and, decided on 2026-09-26 (v1.0): DL-03
 hybrid versioning scope, DL-04 Conventional Commits with a release PR, DL-05 semver plus sha tags, DL-07
 explicit import list, DL-09 bot PRs for qa and prod, DL-13 company base JRE image, DL-14 Dockerfile with
@@ -231,6 +231,7 @@ No row blocks the demo skeleton: the eleven blocking rows were decided on 2026-0
 | [DL-36](adr/DL-36-loop-guard-for-bot-write-backs.md) | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | **Decided (v1.0):** skip bot author + `[skip ci]`; config-only human merges still deploy | yes | decided (v1.0) |
 | [DL-37](adr/DL-37-appinstance-naming.md) | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
 | [DL-38](adr/DL-38-kubernetes-namespace-layout.md) | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (deferred; the demo uses namespace = `<flow>` as a working assumption) | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
+| [DL-39](adr/DL-39-host-pools-per-env-flow.md) | Host pools for the bare-metal compose targets | host per instance / pool per `<env>/<flow>` with recorded placement / deploy-time scheduler | **Pool per `<env>/<flow>` in `targets.yml`; every box gets the flow's whole configuration (host bundle synced on deploy); placement pinned → discovered → assigned, recorded as `host` by the write-back; single-run rule on the boxes** | no | decided (v1.3) |
 
 ## 9. Traceability from the brief
 
