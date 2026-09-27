@@ -221,7 +221,7 @@ targets:
 # illustrative — real job in .github/workflows/main.yml (D7 owns the workflow set)
 deploy-dev:
   needs: [publish]
-  if: github.actor != 'platform-bot[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
+  if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')   # demo bot identity; a GitHub App in the enterprise
   runs-on: ubuntu-latest
   environment: dev
   concurrency: { group: deploy-dev, cancel-in-progress: false }

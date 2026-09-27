@@ -247,7 +247,9 @@ CI shape is one command away (§6.9).
 
 Mounting the container socket into a job container is root-equivalent on the runner: acceptable on
 ephemeral runners only (GitHub-hosted, ARC ephemeral pods), never on a persistent self-hosted runner;
-a rootless Podman socket is the alternative where the Docker socket is refused (§8). The `ci-build`
+a rootless Podman socket is the alternative where the Docker socket is refused (§8). In the demo the
+`build` job container runs as the image's user 1001 with `--group-add <docker GID of the runner>` (the probe
+job reads it with `stat -c %g /var/run/docker.sock`) rather than as root. The `ci-build`
 image runs as a non-root user; job containers are never `privileged`; the workflow `permissions:`
 block grants the minimum (`contents: read`, `packages: write`, `id-token: write` where OIDC is used);
 licensed images (AMPS) receive their licence from a masked secret, never from a compose file.

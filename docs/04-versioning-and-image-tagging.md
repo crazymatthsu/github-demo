@@ -268,7 +268,7 @@ Bump conventions:
 
 | Item | Convention | Example |
 |---|---|---|
-| Write-back commit (dev) | author = GitHub App bot; message `chore(deploy): us-dev source-database → 1.5.0-rc.7 [skip ci]`; touches only `config/us-dev/**` | loop guard: `if: github.actor != 'platform-bot[bot]'` on the `main` workflow + `[skip ci]` (DL-36) |
+| Write-back commit (dev) | author = GitHub App bot; message `chore(deploy): us-dev source-database → 1.5.0-rc.7 [skip ci]`; touches only `config/us-dev/**` | loop guard: `if: github.actor != '<bot>'` (`github-actions[bot]` in the demo, a GitHub App in the enterprise) on the `main` workflow + `[skip ci]` (DL-36) |
 | qa bump PR | branch `bump/us-qa/source-database/1.5.0`; title `chore(release): bump source-database to 1.5.0 in us-qa/*`; body lists digest, changelog link, scan result, source run URL | opened by `release.yml`; reviewed by flow owners (CODEOWNERS `config/us-qa/**`) |
 | prod bump PR | branch `bump/us-prod/…`; body adds the change-ticket reference; label `deploy:prod` | opened by the `promote` workflow on approver request; approvals per D9 |
 | Config-lint on bump PRs | digest resolves to the tag in the stage's repo; tag not floating; every instance of the app in the env bumped together unless the PR says otherwise | D5 |
@@ -281,7 +281,7 @@ Bump conventions:
 |---|---|---|---|
 | `pr-*` tags deleted when the PR is closed + 7 days | dev repo | `pr.yml` on `closed` schedules deletion; nightly sweep catches leftovers | none needed |
 | Keep the last 20 `*-rc.*` per subproject, and everything younger than 30 days | dev repo | nightly `jf rt search` (AQL by name pattern and `created`) → delete | **in-use protection**: any tag or digest present in `config/**/compose.env` or `values.yaml` on `main` is never deleted (job greps the config tree) |
-| Untagged manifests older than 7 days | dev repo | Artifactory policy or nightly AQL | referenced digests from in-use list kept |
+| Untagged manifests older than 7 days | dev repo (Artifactory) | Artifactory policy or nightly AQL | referenced digests from in-use list kept; **GHCR (demo): never deleted**, because untagged versions there include the platform manifests of tagged images |
 | Convenience tags (`main`, `1.5`, `1`, `latest`) | dev repo only | moved, never deleted; absent in qa / prod repos | config-lint forbids them outside `*-dev` / `local` |
 | Release versions | all repos | never deleted while a git tag references them; prod repo never touched by any job | job hard-codes `docker-prod-local` as excluded |
 | Base images | base repo | keep last 10 per name | any base referenced by a `FROM` on `main` kept |
@@ -414,7 +414,9 @@ sequenceDiagram
 The workflow asserts that Gradle's git-derived version equals the tag before anything is pushed, so
 a mis-tagged commit fails early. The `alt` branch on the scan gate shows that a failing image never
 reaches qa and never produces a bump PR; the previous release keeps running because nothing in
-`config/` changed.
+`config/` changed. In the demo pipeline `release.yml` retags the digests of the tested `main` run for every app
+and rebuilds nothing (D7 §4.8); the `app changed` branch above applies only when the tagged commit has no
+tested `main` run, such as a hotfix branch.
 
 ## 8. How the demo skeleton implements it
 
