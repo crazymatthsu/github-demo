@@ -230,7 +230,7 @@ With ESO (R3) none of these settings exist in the app; ESO owns authentication, 
 |---|---|---|
 | ServiceAccount | `<app>-<instance>` | identity for Vault Kubernetes auth (and IRSA if AWS-native secrets appear, DL-11) |
 | `Secret` (opaque) | `<app>-<instance>-secrets` | keys = property names; demo: created by the workflow; Phase 3: owned by ESO |
-| `ExternalSecret` | `<app>-<instance>` | `refreshInterval` short (for example 1m); `dataFrom.extract` from the instance path, plus the `app-common` and `_common` paths |
+| `ExternalSecret` | `<app>-<instance>` | `refreshInterval` short (for example 1m); `dataFrom.extract` from the `_common` path, the `app-common` path, then the instance path (later entries win) |
 | Volume mount | `/secrets/` read-only | one file per key; `spring.config.import=optional:configtree:/secrets/` |
 | Restart on change | Reloader-style annotation on the Deployment (D5 §4, D11) | the `Secret` is not Helm-owned, so a checksum annotation cannot see rotations |
 
@@ -456,10 +456,10 @@ spec:
   refreshInterval: 1m
   secretStoreRef: { kind: ClusterSecretStore, name: vault-us-dev }
   target: { name: source-database-trades-db-to-amps-secrets }
-  dataFrom:
-    - extract: { key: us-dev/cash/source-database/trades-db-to-amps }   # keys = property names (verify path form)
-    - extract: { key: us-dev/cash/source-database/app-common }
-    - extract: { key: us-dev/_common }
+  dataFrom:                                                             # later entries win: env-wide, app-common,
+    - extract: { key: us-dev/_common }                                  # then the instance path (keys = property names,
+    - extract: { key: us-dev/cash/source-database/app-common }          # verify path form) — the order the chart's
+    - extract: { key: us-dev/cash/source-database/trades-db-to-amps }   # externalsecret.yaml renders
 ```
 
 - **In-process (alternative)** — add the Spring Cloud Vault starter to the app's dependencies and
