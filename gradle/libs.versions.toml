@@ -1,0 +1,55 @@
+# Version catalog: the only place a dependency or plugin version appears (D1 §6.3).
+# Upgrades arrive as Renovate / Dependabot PRs; Spring Boot 4.x minors are tracked (DL-23).
+# Libraries without a version are managed by the Spring Boot BOM, applied as a platform by the
+# `buildlogic.java-conventions` plugin.
+
+[versions]
+spring-boot = "4.1.1"
+# JUnit Jupiter (the JUnit 5 programming model); 6.0.x is the line the Spring Boot 4.1 BOM manages.
+# Pinned here for classpaths that do not use the BOM (the integrationTest suites).
+junit = "6.0.3"
+# Same value as the Spring Boot 4.1 BOM; pinned for the BOM-free integrationTest classpath.
+mssql-jdbc = "13.4.0.jre11"
+# Deephaven Community Core Java client (Maven Central io.deephaven:deephaven-java-client-*).
+# Keep equal to the server image pinned in deephaven-server/docker/Dockerfile.
+deephaven = "42.5"
+# YAML parser used by build-logic (config-lint); same value as the Spring Boot 4.1 BOM.
+snakeyaml = "2.6"
+
+[libraries]
+# Platforms
+spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+
+# Build logic (consumed by build-logic/build.gradle.kts)
+spring-boot-gradle-plugin = { module = "org.springframework.boot:spring-boot-gradle-plugin", version.ref = "spring-boot" }
+snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
+
+# Spring Boot 4.1 modular starters (versions from the BOM)
+spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
+spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-webmvc" }
+spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation" }
+spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
+
+# Observability (versions from the BOM)
+micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+
+# JSON (Jackson 3, version from the BOM)
+jackson-databind = { module = "tools.jackson.core:jackson-databind" }
+
+# Tests
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+# Third-party clients
+mssql-jdbc = { module = "com.microsoft.sqlserver:mssql-jdbc", version.ref = "mssql-jdbc" }
+deephaven-client-session-dagger = { module = "io.deephaven:deephaven-java-client-session-dagger", version.ref = "deephaven" }
+deephaven-client-flight-dagger = { module = "io.deephaven:deephaven-java-client-flight-dagger", version.ref = "deephaven" }
+
+[bundles]
+observability = ["spring-boot-starter-actuator", "micrometer-registry-prometheus"]
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
