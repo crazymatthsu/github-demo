@@ -282,7 +282,8 @@ Required files per instance (`config/<env>/<flow>/<AppName>/<AppInstance>/`): `c
 `application.yml`, `values.yaml` (from Demo step 2). Required per `app-common/`: `application.yml`,
 `values.yaml`. Required per flow directory of a `*-dev` env: `targets.yml` (one inventory per flow, v1.3, DL-39; only
 dev envs are auto-deployed; retired by ApplicationSets). Optional: `_common` layers,
-`logback.xml`, client properties. Forbidden: anything matching a secret pattern; `.env` files other
+`logback.xml`, client properties, `config/<env>/known_hosts` (pinned SSH host keys of the pool boxes in
+`ssh-keyscan` format, DL-39). Forbidden: anything matching a secret pattern; `.env` files other
 than `compose.env`.
 
 | # | config-lint check | Fails when | Phase |
@@ -297,7 +298,7 @@ than `compose.env`.
 | 8 | Parity: key sets of the merged configuration diffed across `us-dev` / `us-qa` / `us-prod` (and `jp-*`) for the same `<flow>/<AppName>/<AppInstance>`; report attached to the PR | missing key in a higher env (fail for prod, warn for qa) | Demo step 1 (compose) |
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
-| 11 | `config/<env>/<flow>/targets.yml` per flow of a `*-dev` env (an env-level file is an error): `env` and `flow` equal the path; every instance directory of the flow has one target and every target has a directory; `pool` has unique valid hosts (a host in two flows with the same `root` is an error), a login-name `user` and an absolute `root`; a compose target has a `host` or a `pool`, and a `host` under a pool is one of its boxes | inventory drift | Demo step 1 (compose); per-flow files and pools from v1.3 (DL-39) |
+| 11 | `config/<env>/<flow>/targets.yml` per flow of a `*-dev` env (an env-level file is an error): `env` and `flow` equal the path; every instance directory of the flow has one target and every target has a directory; `pool` has unique valid hosts (a host in two flows with the same `root` is an error), a login-name `user` and an absolute `root`; a compose target has a `host` or a `pool`, and a `host` under a pool is one of its boxes; every compose `host` is a valid host name and every helm `namespace` a DNS label; `root` is plain absolute path segments; `config/<env>/known_hosts`, when present, is in `ssh-keyscan` format | inventory drift | Demo step 1 (compose); per-flow files and pools from v1.3 (DL-39) |
 | 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers, through `scripts/helm-deploy-instance.sh --mode lint` / `--mode template` (one flag list, D11 §8.3); kubeconform (`-strict`, Kubernetes 1.37) on the rendered releases when it is installed (CI installs it) | chart or values invalid; a rendered object invalid | Demo step 2 (kind + Helm) |
 | 13 | ApplicationSet dry-run: generated Application names equal `<app>-<instance>` and are ≤ 53 chars | generator mismatch | Phase 3 (EKS + GitOps) |
 
@@ -333,7 +334,7 @@ receives the flow's **host bundle** on each deploy (D9 §6.4): the compose runti
 `config/<env>/_common/` and all of `config/<env>/<flow>/` (this file included), under `root`, so
 `run-compose.sh <env> <flow> <app> <inst> start` works on any box. Two instances on one box need distinct
 `*_HOST_PORT` values in their `compose.env` (§6.3). A box listed by two flows of one env with the same
-`root` is an error (their bundles would collide). There is no env-level `config/<env>/<flow>/targets.yml`.
+`root` is an error (their bundles would collide). There is no env-level `config/<env>/targets.yml`.
 
 Only `*-dev` envs carry `targets.yml` files (one per flow directory) consumed by `deploy-dev`; qa and prod
 are never touched by that job (§5.12). In Phase 3 (EKS + GitOps) the ApplicationSet's git directory generator enumerates
@@ -355,8 +356,8 @@ the file retires (D11).
 | Item | Convention |
 |---|---|
 | Author | the deploy bot identity (GitHub App token, DL-09), never a personal token |
-| Files touched | only `IMAGE_TAG` in `<instance>/compose.env` (Demo step 1) and `image.tag` in `<instance>/values.yaml` (Demo step 2); one commit per `main` run covering every deployed instance |
-| Message | `chore(config): us-dev deployed <tag> to <n> instance(s) [skip ci]` |
+| Files touched | only `IMAGE_TAG` in `<instance>/compose.env` (Demo step 1), `image.tag` in `<instance>/values.yaml` (Demo step 2) and, for a pooled instance, `host` of its target in the flow's `targets.yml` (DL-39); one commit per `main` run covering every deployed instance |
+| Message | `chore(config): us-dev deployed <tag> [skip ci]`; the body lists the instances (with their boxes) and the run URL |
 | Loop guard | `if: github.actor != '<bot>'` on the `main` workflow plus `[skip ci]` (R8); a human config-only merge still deploys |
 | Branch protection | the bot needs a bypass for direct pushes to `main`, or the write-back opens an auto-merged PR — decide with DL-09 |
 

@@ -34,6 +34,12 @@
 # Config tree (DL-06): dev and shared layers — connectors team (@example/connectors-team)
 /config/                @crazymatthsu
 
+# Each flow owns its directory in every env, including its deploy inventory and host pool
+# config/<env>/<flow>/targets.yml (DL-39) — flow teams (@example/flow-cash @example/flow-deriv @example/flow-swap)
+/config/*/cash/         @crazymatthsu
+/config/*/deriv/        @crazymatthsu
+/config/*/swap/         @crazymatthsu
+
 # qa: bump PRs are the deploy intent — connectors ops (@example/connectors-ops)
 /config/*-qa/           @crazymatthsu
 

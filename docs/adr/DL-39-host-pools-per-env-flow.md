@@ -29,8 +29,10 @@ decision reopens it for the compose path only.
 2. **The whole flow on every box.** On every deploy the job builds one **host bundle** per flow — the
    compose runtime (`scripts/run-compose.sh`, `scripts/smoke.sh`, each app's compose template and
    wrappers) plus `config/_common/`, `config/<env>/_common/`, `config/<env>/<flow>/**` (every app,
-   instance and layer) and `targets.yml`, with a `.platform-bundle` manifest — and syncs it to every
-   box of the pool (`rsync --delete` over the DL-35 SSH channel). `run-compose.sh` resolves its root
+   instance and layer), `targets.yml` and `config/<env>/known_hosts` when present, with a `.platform-bundle`
+   manifest (`BUNDLE_SHA256` over the sorted file hashes) — and syncs it to every box of the pool
+   (`rsync --delete`, the box's `.state/` kept, over the DL-35 SSH channel; each copy verified by a second
+   checksum dry run). `run-compose.sh` resolves its root
    from the bundle marker, so `run-compose.sh <env> <flow> <app> <inst> start` works on any box.
 3. **Placement is recorded, not fixed.** Each instance runs on exactly one box. `scripts/pool-deploy.sh`
    resolves the box as pinned (`host` in `targets.yml`) → discovered (the one box where it already runs,

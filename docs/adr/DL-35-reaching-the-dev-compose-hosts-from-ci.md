@@ -32,7 +32,8 @@ self-hosted runner on the host. The host-side command is identical in both cases
 - The mechanism stays for the bare-metal boxes after demo step 2: with host pools (DL-39, v1.3) the same
   SSH channel carries the per-flow bundle sync (`rsync --delete` into `/opt/platform`) before the three
   commands, and the forced command must allow `run-compose.sh` with `pull`, `start`, `stop`, `health` and
-  `status`; the boxes use the same user among themselves for the single-run rule.
+  `status --json`, plus the bundle sync (`rsync --server` into the root, for example through `rrsync`); the boxes
+  hold the deploy key and the env's `known_hosts` and use the same user among themselves for the single-run rule.
 
 ## References
 
