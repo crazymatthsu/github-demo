@@ -1,0 +1,10 @@
+# Layer 5 — instance positions-db-to-deephaven: positions from its SQL Server into Deephaven (D5 §6.3).
+connector:
+  source:
+    host: sql-positions.us-dev.example.com
+    database: positions
+    table: dbo.positions
+  sink:
+    type: deephaven
+    deephaven:
+      table: cash_positions

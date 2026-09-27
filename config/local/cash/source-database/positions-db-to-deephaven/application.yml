@@ -1,0 +1,10 @@
+# Layer 5 — the reference integration-test instance (D8 §5.2): positions from SQL Server into Deephaven.
+# Integration tests set IT_TABLE_PREFIX to isolate their target table (D8 §6.6).
+connector:
+  source:
+    database: positions
+    table: dbo.positions
+  sink:
+    type: deephaven
+    deephaven:
+      table: ${IT_TABLE_PREFIX:}positions

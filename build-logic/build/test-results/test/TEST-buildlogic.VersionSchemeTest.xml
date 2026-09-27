@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="buildlogic.VersionSchemeTest" tests="11" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:56:15.586Z" hostname="vm" time="0.029">
+  <properties/>
+  <testcase name="main is the next version as a release candidate numbered by the distance()" classname="buildlogic.VersionSchemeTest" time="0.01"/>
+  <testcase name="without any tag the next version is 0_1_0()" classname="buildlogic.VersionSchemeTest" time="0.004"/>
+  <testcase name="a hotfix branch always bumps the patch()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="a commit carrying the release tag is that version with the immutable tag pair()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="tags are sanitised to the Docker tag grammar()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="a pull request build carries the PR number and the short sha()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="an explicit version overrides the computation()" classname="buildlogic.VersionSchemeTest" time="0.0"/>
+  <testcase name="the merge queue ref is a pull request build too()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="deephaven-server has its own line and everything else is the family()" classname="buildlogic.VersionSchemeTest" time="0.002"/>
+  <testcase name="a developer build is local, counts the distance and flags a dirty tree()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <testcase name="breaking changes bump the major version()" classname="buildlogic.VersionSchemeTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

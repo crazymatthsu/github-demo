@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConnectorIdentity.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">connectors-framework</a> &gt; <a href="index.source.html" class="el_package">com.example.connectors.framework</a> &gt; <span class="el_source">ConnectorIdentity.java</span></div><h1>ConnectorIdentity.java</h1><pre class="source lang-java linenums">package com.example.connectors.framework;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.springframework.core.env.PropertyResolver;
+
+/**
+ * The identity tuple {@code &lt;env&gt;/&lt;flow&gt;/&lt;AppName&gt;/&lt;AppInstance&gt;} of one running pipeline (D5 §6.2, DL-37).
+ *
+ * &lt;p&gt;The deployer sets it through the environment variables {@code APP_ENV}, {@code APP_FLOW},
+ * {@code APP_NAME} and {@code APP_INSTANCE} (compose.env / Helm values); it must equal the config-tree path
+ * the instance was started from. Without them (a laptop, a unit test) the identity is
+ * {@code local/none/&lt;spring.application.name&gt;/none}, which {@link #isComplete()} reports as incomplete.
+ */
+public record ConnectorIdentity(String env, String flow, String app, String instance) {
+
+    public static final String ENV_VARIABLE = &quot;APP_ENV&quot;;
+    public static final String FLOW_VARIABLE = &quot;APP_FLOW&quot;;
+    public static final String NAME_VARIABLE = &quot;APP_NAME&quot;;
+    public static final String INSTANCE_VARIABLE = &quot;APP_INSTANCE&quot;;
+
+    /** Marker for a flow or instance that was not set (only accepted in the {@code local} env). */
+    public static final String UNSET = &quot;none&quot;;
+
+<span class="fc" id="L28">    static final Pattern ENV = Pattern.compile(&quot;^(local|[a-z]{2}-(dev|qa|prod))$&quot;);</span>
+<span class="fc" id="L29">    static final Pattern TOKEN = Pattern.compile(&quot;^[a-z0-9]([a-z0-9-]*[a-z0-9])?$&quot;);</span>
+<span class="fc" id="L30">    static final Set&lt;String&gt; FLOWS = Set.of(&quot;cash&quot;, &quot;deriv&quot;, &quot;swap&quot;);</span>
+    static final int MAX_APP_NAME = 20;
+    static final int MAX_APP_INSTANCE = 32;
+
+<span class="fc" id="L34">    public ConnectorIdentity {</span>
+<span class="pc bpc" id="L35" title="1 of 4 branches missed.">        require(env != null &amp;&amp; ENV.matcher(env).matches(),</span>
+                ENV_VARIABLE + &quot;='&quot; + env + &quot;' must be local or &lt;region&gt;-&lt;stage&gt; (e.g. us-dev)&quot;);
+<span class="fc" id="L37">        boolean local = &quot;local&quot;.equals(env);</span>
+<span class="pc bpc" id="L38" title="2 of 8 branches missed.">        require(flow != null &amp;&amp; (FLOWS.contains(flow) || (local &amp;&amp; UNSET.equals(flow))),</span>
+                FLOW_VARIABLE + &quot;='&quot; + flow + &quot;' must be one of &quot; + FLOWS);
+<span class="pc bpc" id="L40" title="2 of 6 branches missed.">        require(app != null &amp;&amp; TOKEN.matcher(app).matches() &amp;&amp; app.length() &lt;= MAX_APP_NAME,</span>
+                NAME_VARIABLE + &quot;='&quot; + app + &quot;' must be lower-case kebab-case, at most &quot; + MAX_APP_NAME + &quot; characters&quot;);
+<span class="pc bpc" id="L42" title="2 of 6 branches missed.">        require(instance != null &amp;&amp; TOKEN.matcher(instance).matches() &amp;&amp; instance.length() &lt;= MAX_APP_INSTANCE</span>
+<span class="fc bfc" id="L43" title="All 4 branches covered.">                        &amp;&amp; !instance.chars().allMatch(Character::isDigit)</span>
+<span class="pc bpc" id="L44" title="1 of 2 branches missed.">                        &amp;&amp; (local || !UNSET.equals(instance)),</span>
+                INSTANCE_VARIABLE + &quot;='&quot; + instance + &quot;' must be a lower-case kebab-case business name (never a bare&quot;
+                        + &quot; number), at most &quot; + MAX_APP_INSTANCE + &quot; characters&quot;);
+<span class="fc" id="L47">    }</span>
+
+    /**
+     * Reads the identity from the environment. {@code APP_NAME}, when set, must equal
+     * {@code spring.application.name}: an image started with another app's compose.env fails fast.
+     */
+    public static ConnectorIdentity from(PropertyResolver environment) {
+<span class="fc" id="L54">        String applicationName = blankToNull(environment.getProperty(&quot;spring.application.name&quot;));</span>
+<span class="fc" id="L55">        String appName = blankToNull(environment.getProperty(NAME_VARIABLE));</span>
+<span class="pc bpc" id="L56" title="1 of 6 branches missed.">        if (appName != null &amp;&amp; applicationName != null &amp;&amp; !appName.equals(applicationName)) {</span>
+<span class="fc" id="L57">            throw new IllegalStateException(NAME_VARIABLE + &quot;=&quot; + appName + &quot; but this is the &quot; + applicationName</span>
+                    + &quot; image: the compose.env or Helm values of another app were used&quot;);
+        }
+<span class="pc bpc" id="L60" title="1 of 4 branches missed.">        String app = appName != null ? appName : (applicationName != null ? applicationName : &quot;unknown&quot;);</span>
+<span class="fc" id="L61">        return new ConnectorIdentity(</span>
+<span class="fc" id="L62">                valueOr(environment, ENV_VARIABLE, &quot;local&quot;),</span>
+<span class="fc" id="L63">                valueOr(environment, FLOW_VARIABLE, UNSET),</span>
+                app,
+<span class="fc" id="L65">                valueOr(environment, INSTANCE_VARIABLE, UNSET));</span>
+    }
+
+    /** True when flow and instance were set by a deployer (never the {@code none} markers). */
+    public boolean isComplete() {
+<span class="pc bpc" id="L70" title="1 of 4 branches missed.">        return !UNSET.equals(flow) &amp;&amp; !UNSET.equals(instance);</span>
+    }
+
+    /** {@code us-dev/cash/source-database/trades-db-to-amps}. */
+    public String tuple() {
+<span class="fc" id="L75">        return env + &quot;/&quot; + flow + &quot;/&quot; + app + &quot;/&quot; + instance;</span>
+    }
+
+    /** The compose project name {@code &lt;env&gt;-&lt;flow&gt;-&lt;app&gt;-&lt;instance&gt;} (D6 §6.2). */
+    public String composeProject() {
+<span class="fc" id="L80">        return env + &quot;-&quot; + flow + &quot;-&quot; + app + &quot;-&quot; + instance;</span>
+    }
+
+    /** The Helm release / Deployment name {@code &lt;app&gt;-&lt;instance&gt;} (D11). */
+    public String releaseName() {
+<span class="fc" id="L85">        return app + &quot;-&quot; + instance;</span>
+    }
+
+    /** The Deephaven table-name prefix {@code &lt;flow&gt;_&lt;instance&gt;_} with dashes as underscores (D5 §6.2). */
+    public String tablePrefix() {
+<span class="fc" id="L90">        return (flow + &quot;_&quot; + instance + &quot;_&quot;).replace('-', '_');</span>
+    }
+
+    /** {@code env, flow, app, instance}: metric tags, MDC fields, log fields and labels (D6 §6.9). */
+    public Map&lt;String, String&gt; asTags() {
+<span class="fc" id="L95">        Map&lt;String, String&gt; tags = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L96">        tags.put(&quot;env&quot;, env);</span>
+<span class="fc" id="L97">        tags.put(&quot;flow&quot;, flow);</span>
+<span class="fc" id="L98">        tags.put(&quot;app&quot;, app);</span>
+<span class="fc" id="L99">        tags.put(&quot;instance&quot;, instance);</span>
+<span class="fc" id="L100">        return tags;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L105">        return tuple();</span>
+    }
+
+    private static String valueOr(PropertyResolver environment, String name, String fallback) {
+<span class="fc" id="L109">        String value = blankToNull(environment.getProperty(name));</span>
+<span class="fc bfc" id="L110" title="All 2 branches covered.">        return value != null ? value : fallback;</span>
+    }
+
+    private static String blankToNull(String value) {
+<span class="pc bpc" id="L114" title="1 of 4 branches missed.">        return (value == null || value.isBlank()) ? null : value.trim();</span>
+    }
+
+    private static void require(boolean condition, String message) {
+<span class="fc bfc" id="L118" title="All 2 branches covered.">        if (!condition) {</span>
+<span class="fc" id="L119">            throw new IllegalArgumentException(&quot;Invalid connector identity: &quot; + message);</span>
+        }
+<span class="fc" id="L121">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

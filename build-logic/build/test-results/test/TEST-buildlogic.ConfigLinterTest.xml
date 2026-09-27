@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="buildlogic.ConfigLinterTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:56:15.132Z" hostname="vm" time="0.428">
+  <properties/>
+  <testcase name="targets must match the instance directories()" classname="buildlogic.ConfigLinterTest" time="0.274"/>
+  <testcase name="secrets in YAML and floating tags in prod fail()" classname="buildlogic.ConfigLinterTest" time="0.02"/>
+  <testcase name="naming, identity and allow-list violations are reported()" classname="buildlogic.ConfigLinterTest" time="0.012"/>
+  <testcase name="unknown apps, missing files and missing targets are reported()" classname="buildlogic.ConfigLinterTest" time="0.009"/>
+  <testcase name="a failing render is an error and a missing compose CLI only a warning()" classname="buildlogic.ConfigLinterTest" time="0.02"/>
+  <testcase name="checks 7 and 8 are reported as TODO()" classname="buildlogic.ConfigLinterTest" time="0.015"/>
+  <testcase name="a valid tree has no findings and passes placeholders for the secrets to the renderer()" classname="buildlogic.ConfigLinterTest" time="0.042"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConfigurationSummary.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">connectors-framework</a> &gt; <a href="index.source.html" class="el_package">com.example.connectors.framework</a> &gt; <span class="el_source">ConfigurationSummary.java</span></div><h1>ConfigurationSummary.java</h1><pre class="source lang-java linenums">package com.example.connectors.framework;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
+
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.context.properties.source.ConfigurationPropertyName;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.boot.context.properties.source.IterableConfigurationPropertySource;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.PropertySource;
+
+/**
+ * The effective configuration of a connector as every app prints it at start-up, as
+ * {@code --print-config} prints it and as {@code /actuator/connectorconfig} returns it (D6 §4.3): the
+ * identity, the configuration layers that were found, and every property under {@link #PREFIXES} with its
+ * effective value — secrets masked by {@link SecretMasker}.
+ */
+public record ConfigurationSummary(ConnectorIdentity identity, List&lt;String&gt; layers, SortedMap&lt;String, String&gt; properties) {
+
+    /** The prefixes shown: the connector contract and the datasource (to prove its credentials are masked). */
+<span class="fc" id="L29">    public static final List&lt;String&gt; PREFIXES = List.of(&quot;connector&quot;, &quot;spring.datasource&quot;);</span>
+
+<span class="fc" id="L31">    public ConfigurationSummary {</span>
+<span class="fc" id="L32">        layers = List.copyOf(layers);</span>
+<span class="fc" id="L33">        properties = Collections.unmodifiableSortedMap(new TreeMap&lt;&gt;(properties));</span>
+<span class="fc" id="L34">    }</span>
+
+    public static ConfigurationSummary capture(ConfigurableEnvironment environment, ConnectorIdentity identity) {
+<span class="fc" id="L37">        Binder binder = Binder.get(environment);</span>
+<span class="fc" id="L38">        SortedMap&lt;String, String&gt; properties = new TreeMap&lt;&gt;();</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">        for (ConfigurationPropertySource source : ConfigurationPropertySources.get(environment)) {</span>
+<span class="pc bpc" id="L40" title="1 of 2 branches missed.">            if (!(source instanceof IterableConfigurationPropertySource iterable)) {</span>
+                continue;
+            }
+<span class="fc" id="L43">            iterable.stream().filter(ConfigurationSummary::isShown).forEach(name -&gt; properties.computeIfAbsent(</span>
+<span class="fc" id="L44">                    name.toString(), key -&gt; SecretMasker.mask(key, effectiveValue(binder, name))));</span>
+<span class="fc" id="L45">        }</span>
+<span class="fc" id="L46">        return new ConfigurationSummary(identity, configLayers(environment), properties);</span>
+    }
+
+    private static boolean isShown(ConfigurationPropertyName name) {
+<span class="fc bfc" id="L50" title="All 2 branches covered.">        for (String prefix : PREFIXES) {</span>
+<span class="fc" id="L51">            ConfigurationPropertyName root = ConfigurationPropertyName.of(prefix);</span>
+<span class="fc bfc" id="L52" title="All 2 branches covered.">            if (root.isAncestorOf(name)) {</span>
+<span class="fc" id="L53">                return true;</span>
+            }
+<span class="fc" id="L55">        }</span>
+<span class="fc" id="L56">        return false;</span>
+    }
+
+    private static String effectiveValue(Binder binder, ConfigurationPropertyName name) {
+        try {
+<span class="fc" id="L61">            return binder.bind(name, Bindable.of(String.class)).orElse(null);</span>
+        }
+<span class="nc" id="L63">        catch (RuntimeException ex) {</span>
+<span class="nc" id="L64">            return &quot;&lt;unresolvable: &quot; + ex.getClass().getSimpleName() + &quot;&gt;&quot;;</span>
+        }
+    }
+
+    /**
+     * The config-tree layers and secret trees that contributed, lowest precedence first (D5 §6.1). Property
+     * source names carry the resource location, never a value.
+     */
+    private static List&lt;String&gt; configLayers(ConfigurableEnvironment environment) {
+<span class="fc" id="L73">        List&lt;String&gt; layers = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L74" title="All 2 branches covered.">        for (PropertySource&lt;?&gt; source : environment.getPropertySources()) {</span>
+<span class="fc" id="L75">            String name = source.getName();</span>
+<span class="fc" id="L76">            String lower = name.toLowerCase(java.util.Locale.ROOT);</span>
+<span class="fc" id="L77">            boolean fileLayer = lower.startsWith(&quot;config resource 'file [&quot;);</span>
+<span class="pc bpc" id="L78" title="2 of 4 branches missed.">            boolean secretTree = lower.contains(&quot;config tree&quot;) || lower.contains(&quot;configtree&quot;);</span>
+<span class="fc bfc" id="L79" title="All 2 branches covered.">            if (fileLayer) {</span>
+                // Config resource 'file [/config/instance/application.yml]' via location '...'
+<span class="fc" id="L81">                layers.add(between(name, '[', ']'));</span>
+            }
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">            else if (secretTree) {</span>
+                // Config tree '/secrets'
+<span class="nc" id="L85">                String path = between(name, '\'', '\'');</span>
+<span class="nc bnc" id="L86" title="All 2 branches missed.">                layers.add(path.endsWith(&quot;/&quot;) ? path : path + &quot;/&quot;);</span>
+            }
+<span class="fc" id="L88">        }</span>
+<span class="fc" id="L89">        Collections.reverse(layers);</span>
+<span class="fc" id="L90">        return layers;</span>
+    }
+
+    private static String between(String text, char open, char close) {
+<span class="fc" id="L94">        int start = text.indexOf(open);</span>
+<span class="fc" id="L95">        int end = text.indexOf(close, start + 1);</span>
+<span class="pc bpc" id="L96" title="2 of 4 branches missed.">        return (start &gt;= 0 &amp;&amp; end &gt; start) ? text.substring(start + 1, end) : text;</span>
+    }
+
+    /** The structured form (actuator endpoint, tests). */
+    public Map&lt;String, Object&gt; asMap() {
+<span class="fc" id="L101">        Map&lt;String, Object&gt; map = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L102">        map.put(&quot;identity&quot;, identity.tuple());</span>
+<span class="fc" id="L103">        map.put(&quot;complete&quot;, identity.isComplete());</span>
+<span class="fc" id="L104">        map.put(&quot;layers&quot;, layers);</span>
+<span class="fc" id="L105">        map.put(&quot;properties&quot;, properties);</span>
+<span class="fc" id="L106">        return map;</span>
+    }
+
+    /** The text form, one property per line (start-up log, {@code --print-config}). */
+    public String render() {
+<span class="fc" id="L111">        StringBuilder text = new StringBuilder();</span>
+<span class="fc" id="L112">        text.append(&quot;Connector &quot;).append(identity.tuple())</span>
+<span class="fc" id="L113">                .append(&quot; (env=&quot;).append(identity.env()).append(&quot; flow=&quot;).append(identity.flow())</span>
+<span class="fc" id="L114">                .append(&quot; app=&quot;).append(identity.app()).append(&quot; instance=&quot;).append(identity.instance()).append(')');</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">        if (!identity.isComplete()) {</span>
+<span class="fc" id="L116">            text.append(&quot;\n  identity incomplete: APP_FLOW / APP_INSTANCE not set (fine on a laptop, never deployed)&quot;);</span>
+        }
+<span class="fc" id="L118">        text.append(&quot;\n  config layers (lowest precedence first): &quot;)</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">                .append(layers.isEmpty() ? &quot;none (jar defaults only)&quot; : String.join(&quot;, &quot;, layers));</span>
+<span class="fc" id="L120">        text.append(&quot;\n  effective configuration (secrets masked):&quot;);</span>
+<span class="fc bfc" id="L121" title="All 2 branches covered.">        if (properties.isEmpty()) {</span>
+<span class="fc" id="L122">            text.append(&quot;\n    (no connector.* properties)&quot;);</span>
+        }
+<span class="fc" id="L124">        properties.forEach((key, value) -&gt; text.append(&quot;\n    &quot;).append(key).append(&quot; = &quot;).append(value));</span>
+<span class="fc" id="L125">        return text.toString();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

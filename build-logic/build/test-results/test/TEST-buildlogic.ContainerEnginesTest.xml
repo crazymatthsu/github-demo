@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="buildlogic.ContainerEnginesTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:56:15.562Z" hostname="vm" time="0.023">
+  <properties/>
+  <testcase name="docker with a daemon and buildx is preferred()" classname="buildlogic.ContainerEnginesTest" time="0.003"/>
+  <testcase name="a docker CLI without a daemon falls back to podman()" classname="buildlogic.ContainerEnginesTest" time="0.002"/>
+  <testcase name="podman builds keep the docker manifest format()" classname="buildlogic.ContainerEnginesTest" time="0.002"/>
+  <testcase name="nothing usable explains why()" classname="buildlogic.ContainerEnginesTest" time="0.002"/>
+  <testcase name="buildx loads the result into the local image store()" classname="buildlogic.ContainerEnginesTest" time="0.002"/>
+  <testcase name="the base image default is read from the Dockerfile()" classname="buildlogic.ContainerEnginesTest" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

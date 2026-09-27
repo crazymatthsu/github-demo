@@ -1,0 +1,78 @@
+# The ONE compose template of source-kafka for every env / flow / instance (D6 §6.3, §6.7): local development, CI
+# test stacks and the dev compose hosts of demo step 1 — never qa or prod. Always started through
+# scripts/run-compose.sh, which sets the identity (APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE from the
+# config-tree path), CONFIG_DIR, COMMON_DIR, the optional PLATFORM_DIR / ENV_COMMON_DIR layers, PROJECT,
+# the SELinux mount suffixes and DEPS_NETWORK, and passes <instance>/compose.env with --env-file.
+services:
+  app:
+    image: ${IMAGE_REPO:?IMAGE_REPO is set in compose.env}/${APP_NAME:?run through run-compose.sh}:${IMAGE_TAG:?IMAGE_TAG is set in compose.env}
+    env_file:
+      - ${CONFIG_DIR:?run through run-compose.sh}/compose.env
+    environment:
+      # Identity from the config-tree path (overrides compose.env, which must restate it, D5 §6.3).
+      APP_ENV: ${APP_ENV:?run through run-compose.sh}
+      APP_FLOW: ${APP_FLOW:?run through run-compose.sh}
+      APP_NAME: ${APP_NAME:?run through run-compose.sh}
+      APP_INSTANCE: ${APP_INSTANCE:?run through run-compose.sh}
+      # Integration tests prefix their target tables (D8 §6.6); empty everywhere else.
+      IT_TABLE_PREFIX: ${IT_TABLE_PREFIX:-}
+    volumes:
+      # Config layers, read-only (D5 §6.1). Shared layers get :z and the instance :Z on SELinux hosts
+      # (run-compose.sh sets the suffixes when getenforce reports Enforcing, D6 §6.6); missing optional
+      # layers fall back to the empty directory next to this file.
+      - ${PLATFORM_DIR:-./empty-layer}:/config/platform:ro${SELINUX_LABEL_SHARED:-}
+      - ${ENV_COMMON_DIR:-./empty-layer}:/config/env:ro${SELINUX_LABEL_SHARED:-}
+      - ${COMMON_DIR:?run through run-compose.sh}:/config/common:ro${SELINUX_LABEL_SHARED:-}
+      - ${CONFIG_DIR:?run through run-compose.sh}:/config/instance:ro${SELINUX_LABEL_PRIVATE:-}
+      # Optional file appenders only; stdout is the log channel (D6 §6.9). LOGS_DIR binds a host path.
+      - ${LOGS_DIR:-logs}:/logs
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${MEM_LIMIT:-1g}
+    stop_grace_period: 30s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 120s
+    ports:
+      # The actuator only, on localhost only (D5 §6.3, D6 §6.6).
+      - "127.0.0.1:${ACTUATOR_HOST_PORT:?ACTUATOR_HOST_PORT is set in compose.env}:8080"
+    labels:
+      com.example.env: ${APP_ENV}
+      com.example.flow: ${APP_FLOW}
+      com.example.app: ${APP_NAME}
+      com.example.instance: ${APP_INSTANCE}
+      com.example.ci.run: ${CI_RUN_ID:-local}
+      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      default:
+        aliases:
+          - ${APP_NAME}
+
+volumes:
+  logs:
+    labels:
+      com.example.ci.run: ${CI_RUN_ID:-local}
+      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}
+
+networks:
+  # The project network, or — when DEPS_NETWORK names the dependency stack started by `./gradlew devUp`
+  # (or test-infra in CI) — that external network, so service names such as sqlserver and deephaven resolve.
+  default:
+    name: ${DEPS_NETWORK:-${PROJECT:?run through run-compose.sh}_default}
+    external: ${DEPS_NETWORK_EXTERNAL:-false}
+    labels:
+      com.example.ci.run: ${CI_RUN_ID:-local}
+      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}

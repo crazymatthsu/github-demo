@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.connectors.sourcedatabase.HelloWorldQueryTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:47:11.159Z" hostname="vm" time="2.851">
+  <properties/>
+  <testcase name="runsSelectOneAndCountsTheConfiguredTable()" classname="com.example.connectors.sourcedatabase.HelloWorldQueryTest" time="0.421"/>
+  <testcase name="aMissingDatabaseIsReportedNotThrown()" classname="com.example.connectors.sourcedatabase.HelloWorldQueryTest" time="0.027"/>
+  <testcase name="withoutATableOnlySelectOneRuns()" classname="com.example.connectors.sourcedatabase.HelloWorldQueryTest" time="0.037"/>
+  <testcase name="refusesATableNameThatIsNotAnIdentifier()" classname="com.example.connectors.sourcedatabase.HelloWorldQueryTest" time="0.009"/>
+  <system-out><![CDATA[2026-09-27T01:47:13.901Z  INFO [us-dev/cash/source-database/trades-db-to-amps] 15441 --- [source-database] [    Test worker] c.e.c.sourcedatabase.HelloWorldQuery     : Hello-world query succeeded: SELECT 1 -> 1, SELECT COUNT(*) FROM dbo.positions -> 42
+2026-09-27T01:47:13.950Z  WARN [us-dev/cash/source-database/trades-db-to-amps] 15441 --- [source-database] [    Test worker] c.e.c.sourcedatabase.HelloWorldQuery     : Hello-world query failed (non-fatal, the app keeps running): ConnectException: Connection refused
+2026-09-27T01:47:13.965Z  INFO [us-dev/cash/source-database/trades-db-to-amps] 15441 --- [source-database] [    Test worker] c.e.c.sourcedatabase.HelloWorldQuery     : Hello-world query succeeded: SELECT 1 -> 1
+2026-09-27T01:47:14.006Z  WARN [us-dev/cash/source-database/trades-db-to-amps] 15441 --- [source-database] [    Test worker] c.e.c.sourcedatabase.HelloWorldQuery     : Hello-world query failed (non-fatal, the app keeps running): IllegalArgumentException: connector.source.table 'dbo.positions; DROP TABLE x' is not a plain [database.][schema.]table identifier
+]]></system-out>
+  <system-err><![CDATA[Mockito is currently self-attaching to enable the inline-mock-maker. This will no longer work in future releases of the JDK. Please add Mockito as an agent to your build as described in Mockito's documentation: https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/Mockito.html#0.3
+WARNING: A Java agent has been loaded dynamically (/root/.gradle/caches/modules-2/files-2.1/net.bytebuddy/byte-buddy-agent/1.18.11/82212e5b3633e7a65fca8bec525762cfb6c9bae4/byte-buddy-agent-1.18.11.jar)
+WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading to hide this warning
+WARNING: If a serviceability tool is not in use, please run with -Djdk.instrument.traceUsage for more information
+WARNING: Dynamic loading of agents will be disallowed by default in a future release
+]]></system-err>
+</testsuite>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.connectors.sourceamps.SourceAmpsApplicationTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-27T01:46:57.286Z" hostname="vm" time="20.447">
+  <properties/>
+  <testcase name="connectorConfigEndpointMasksSecrets()" classname="com.example.connectors.sourceamps.SourceAmpsApplicationTest" time="3.264"/>
+  <testcase name="readinessIsUpAndIncludesTheConnectorIndicator()" classname="com.example.connectors.sourceamps.SourceAmpsApplicationTest" time="0.489"/>
+  <testcase name="livenessIsUp()" classname="com.example.connectors.sourceamps.SourceAmpsApplicationTest" time="0.047"/>
+  <testcase name="prometheusCarriesIdentityTags()" classname="com.example.connectors.sourceamps.SourceAmpsApplicationTest" time="0.266"/>
+  <testcase name="infoShowsIdentityAndBuild()" classname="com.example.connectors.sourceamps.SourceAmpsApplicationTest" time="0.082"/>
+  <system-out><![CDATA[01:46:59.046 [Test worker] INFO org.springframework.test.context.support.AnnotationConfigContextLoaderUtils -- Could not detect default configuration classes for test class [com.example.connectors.sourceamps.SourceAmpsApplicationTest]: SourceAmpsApplicationTest does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+01:46:59.590 [Test worker] INFO org.springframework.boot.test.context.SpringBootTestContextBootstrapper -- Found @SpringBootConfiguration com.example.connectors.sourceamps.SourceAmpsApplication for test class com.example.connectors.sourceamps.SourceAmpsApplicationTest
+01:47:00.146 [Test worker] INFO org.springframework.test.context.support.AnnotationConfigContextLoaderUtils -- Could not detect default configuration classes for test class [com.example.connectors.sourceamps.SourceAmpsApplicationTest]: SourceAmpsApplicationTest does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+01:47:00.147 [Test worker] INFO org.springframework.test.context.support.AnnotationConfigContextLoaderUtils -- Could not detect default configuration classes for test class [com.example.connectors.framework.testing.AbstractConnectorApplicationTest]: AbstractConnectorApplicationTest does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+01:47:00.157 [Test worker] INFO org.springframework.boot.test.context.SpringBootTestContextBootstrapper -- Found @SpringBootConfiguration com.example.connectors.sourceamps.SourceAmpsApplication for test class com.example.connectors.sourceamps.SourceAmpsApplicationTest
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v4.1.1)
+
+2026-09-27T01:47:03.172Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] c.e.c.s.SourceAmpsApplicationTest        : Starting SourceAmpsApplicationTest using Java 21.0.10 with PID 15490 (started by root in /home/user/github-demo/deephaven-connectors/source-amps)
+2026-09-27T01:47:03.175Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] c.e.c.s.SourceAmpsApplicationTest        : No active profile set, falling back to 1 default profile: "default"
+2026-09-27T01:47:10.528Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] o.s.boot.tomcat.TomcatWebServer          : Tomcat initialized with port 0 (http)
+2026-09-27T01:47:10.601Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] o.apache.catalina.core.StandardService   : Starting service [Tomcat]
+2026-09-27T01:47:10.601Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] o.apache.catalina.core.StandardEngine    : Starting Servlet engine: [Apache Tomcat/11.0.24]
+2026-09-27T01:47:10.760Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] b.w.c.s.WebApplicationContextInitializer : Root WebApplicationContext: initialization completed in 7420 ms
+2026-09-27T01:47:13.009Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 4 endpoints beneath base path '/actuator'
+2026-09-27T01:47:13.256Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] o.s.boot.tomcat.TomcatWebServer          : Tomcat started on port 34171 (http) with context path '/'
+2026-09-27T01:47:13.305Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] c.e.c.s.SourceAmpsApplicationTest        : Started SourceAmpsApplicationTest in 12.103 seconds (process running for 22.168)
+2026-09-27T01:47:13.517Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] c.e.c.f.ConnectorStartupReporter         : Started local/cash/source-amps/unit-test
+2026-09-27T01:47:13.530Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [    Test worker] c.e.c.f.ConnectorStartupReporter         : Connector local/cash/source-amps/unit-test (env=local flow=cash app=source-amps instance=unit-test)
+  config layers (lowest precedence first): none (jar defaults only)
+  effective configuration (secrets masked):
+    connector.amps.password = ******
+    connector.sink.type = stub
+    connector.source.poll-interval = 30s
+2026-09-27T01:47:15.971Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [o-auto-1-exec-1] o.a.c.c.C.[Tomcat].[localhost].[/]       : Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-09-27T01:47:15.972Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [o-auto-1-exec-1] o.s.web.servlet.DispatcherServlet        : Initializing Servlet 'dispatcherServlet'
+2026-09-27T01:47:15.984Z  INFO [local/cash/source-amps/unit-test] 15490 --- [source-amps] [o-auto-1-exec-1] o.s.web.servlet.DispatcherServlet        : Completed initialization in 8 ms
+]]></system-out>
+  <system-err><![CDATA[Mockito is currently self-attaching to enable the inline-mock-maker. This will no longer work in future releases of the JDK. Please add Mockito as an agent to your build as described in Mockito's documentation: https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/Mockito.html#0.3
+WARNING: A Java agent has been loaded dynamically (/root/.gradle/caches/modules-2/files-2.1/net.bytebuddy/byte-buddy-agent/1.18.11/82212e5b3633e7a65fca8bec525762cfb6c9bae4/byte-buddy-agent-1.18.11.jar)
+WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading to hide this warning
+WARNING: If a serviceability tool is not in use, please run with -Djdk.instrument.traceUsage for more information
+WARNING: Dynamic loading of agents will be disallowed by default in a future release
+]]></system-err>
+</testsuite>

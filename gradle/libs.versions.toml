@@ -1,17 +1,16 @@
 # Version catalog: the only place a dependency or plugin version appears (D1 §6.3).
 # Upgrades arrive as Renovate / Dependabot PRs; Spring Boot 4.x minors are tracked (DL-23).
-# Libraries without a version are managed by the Spring Boot BOM, applied as a platform by the
-# `buildlogic.java-conventions` plugin.
+# Libraries without a version are managed by the Spring Boot BOM, which the `buildlogic.java-conventions`
+# plugin applies as a platform to every JVM subproject: Spring, Jackson 3, Micrometer, JUnit Jupiter,
+# HikariCP and the SQL Server JDBC driver therefore move together with Boot.
 
 [versions]
 spring-boot = "4.1.1"
-# JUnit Jupiter (the JUnit 5 programming model); 6.0.x is the line the Spring Boot 4.1 BOM manages.
-# Pinned here for classpaths that do not use the BOM (the integrationTest suites).
+# JUnit Jupiter for build-logic's own tests (build-logic does not use the Boot BOM). Keep equal to the
+# junit-jupiter version managed by the Spring Boot BOM (6.0.x for Boot 4.1: the JUnit 5 programming model).
 junit = "6.0.3"
-# Same value as the Spring Boot 4.1 BOM; pinned for the BOM-free integrationTest classpath.
-mssql-jdbc = "13.4.0.jre11"
-# Deephaven Community Core Java client (Maven Central io.deephaven:deephaven-java-client-*).
-# Keep equal to the server image pinned in deephaven-server/docker/Dockerfile.
+# Deephaven Community Core Java client (Maven Central io.deephaven:deephaven-java-client-*); not in the Boot
+# BOM. Keep equal to the server image pinned in deephaven-server/docker/Dockerfile.
 deephaven = "42.5"
 # YAML parser used by build-logic (config-lint); same value as the Spring Boot 4.1 BOM.
 snakeyaml = "2.6"
@@ -33,23 +32,25 @@ spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-star
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
 spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
 
-# Observability (versions from the BOM)
+# Observability (version from the BOM)
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
 
-# JSON (Jackson 3, version from the BOM)
+# JSON: Jackson 3 (tools.jackson), version from the BOM; the annotations keep their 2.x coordinates
 jackson-databind = { module = "tools.jackson.core:jackson-databind" }
+jackson-annotations = { module = "com.fasterxml.jackson.core:jackson-annotations" }
 
-# Tests
+# Tests (versions from the BOM)
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 
 # Third-party clients
-mssql-jdbc = { module = "com.microsoft.sqlserver:mssql-jdbc", version.ref = "mssql-jdbc" }
-deephaven-client-session-dagger = { module = "io.deephaven:deephaven-java-client-session-dagger", version.ref = "deephaven" }
-deephaven-client-flight-dagger = { module = "io.deephaven:deephaven-java-client-flight-dagger", version.ref = "deephaven" }
+mssql-jdbc = { module = "com.microsoft.sqlserver:mssql-jdbc" } # version from the BOM (13.4.0.jre11 in Boot 4.1.1)
+deephaven-java-client-session-dagger = { module = "io.deephaven:deephaven-java-client-session-dagger", version.ref = "deephaven" }
+deephaven-java-client-flight-dagger = { module = "io.deephaven:deephaven-java-client-flight-dagger", version.ref = "deephaven" }
 
 [bundles]
 observability = ["spring-boot-starter-actuator", "micrometer-registry-prometheus"]
 
 [plugins]
+# Informational: build-logic depends on the plugin artifact above, so convention plugins apply it by id.
 spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }

@@ -1,0 +1,3 @@
+# Build context = this subproject (by hand) or the staged build/docker/ (buildImage).
+*
+!docker/**

@@ -1,0 +1,120 @@
+{
+  "groups": [
+    {
+      "name": "connector",
+      "type": "com.example.connectors.framework.ConnectorProperties",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties"
+    },
+    {
+      "name": "connector.sink",
+      "type": "com.example.connectors.framework.ConnectorProperties$Sink",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties",
+      "sourceMethod": "sink()"
+    },
+    {
+      "name": "connector.sink.amps",
+      "type": "com.example.connectors.framework.ConnectorProperties$Amps",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Sink",
+      "sourceMethod": "amps()"
+    },
+    {
+      "name": "connector.sink.deephaven",
+      "type": "com.example.connectors.framework.ConnectorProperties$Deephaven",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Sink",
+      "sourceMethod": "deephaven()"
+    },
+    {
+      "name": "connector.source",
+      "type": "com.example.connectors.framework.ConnectorProperties$Source",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties",
+      "sourceMethod": "source()"
+    },
+    {
+      "name": "management.endpoint.connectorconfig",
+      "type": "com.example.connectors.framework.ConnectorConfigEndpoint",
+      "sourceType": "com.example.connectors.framework.ConnectorConfigEndpoint"
+    }
+  ],
+  "properties": [
+    {
+      "name": "connector.sink.amps.host",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Amps"
+    },
+    {
+      "name": "connector.sink.amps.port",
+      "type": "java.lang.Integer",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Amps"
+    },
+    {
+      "name": "connector.sink.amps.topic",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Amps"
+    },
+    {
+      "name": "connector.sink.deephaven.host",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Deephaven"
+    },
+    {
+      "name": "connector.sink.deephaven.port",
+      "type": "java.lang.Integer",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Deephaven"
+    },
+    {
+      "name": "connector.sink.deephaven.table",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Deephaven"
+    },
+    {
+      "name": "connector.sink.type",
+      "type": "com.example.connectors.framework.ConnectorProperties$SinkType",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Sink",
+      "defaultValue": "stub"
+    },
+    {
+      "name": "connector.source.database",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Source"
+    },
+    {
+      "name": "connector.source.host",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Source"
+    },
+    {
+      "name": "connector.source.poll-interval",
+      "type": "java.time.Duration",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Source",
+      "defaultValue": "30s"
+    },
+    {
+      "name": "connector.source.port",
+      "type": "java.lang.Integer",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Source"
+    },
+    {
+      "name": "connector.source.table",
+      "type": "java.lang.String",
+      "sourceType": "com.example.connectors.framework.ConnectorProperties$Source"
+    },
+    {
+      "name": "management.endpoint.connectorconfig.access",
+      "type": "org.springframework.boot.actuate.endpoint.Access",
+      "description": "Permitted level of access for the connectorconfig endpoint.",
+      "sourceType": "com.example.connectors.framework.ConnectorConfigEndpoint",
+      "defaultValue": "unrestricted"
+    },
+    {
+      "name": "management.endpoint.connectorconfig.cache.time-to-live",
+      "type": "java.time.Duration",
+      "description": "Maximum time that a response can be cached.",
+      "sourceType": "com.example.connectors.framework.ConnectorConfigEndpoint",
+      "defaultValue": "0ms"
+    }
+  ],
+  "hints": [],
+  "ignored": {
+    "properties": []
+  }
+}

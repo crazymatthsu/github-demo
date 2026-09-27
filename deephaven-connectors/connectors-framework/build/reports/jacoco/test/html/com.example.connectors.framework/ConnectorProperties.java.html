@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConnectorProperties.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">connectors-framework</a> &gt; <a href="index.source.html" class="el_package">com.example.connectors.framework</a> &gt; <span class="el_source">ConnectorProperties.java</span></div><h1>ConnectorProperties.java</h1><pre class="source lang-java linenums">package com.example.connectors.framework;
+
+import java.time.Duration;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
+import org.springframework.validation.annotation.Validated;
+
+/**
+ * The {@code connector.*} property contract shared by every connector (D5 §6.3). Endpoints, topics and table
+ * names live here and in the config tree's YAML layers; secrets never do (D2 §6.4).
+ *
+ * &lt;pre&gt;
+ * connector.source.{host,port,database,table,poll-interval}
+ * connector.sink.type                       amps | deephaven | stub
+ * connector.sink.amps.{host,port,topic}
+ * connector.sink.deephaven.{host,port,table}
+ * &lt;/pre&gt;
+ */
+@Validated
+@ConfigurationProperties(&quot;connector&quot;)
+<span class="fc" id="L28">public record ConnectorProperties(@Valid @DefaultValue Source source, @Valid @DefaultValue Sink sink) {</span>
+
+    /** Where the pipeline reads from: a database, a Kafka broker or an AMPS server. */
+<span class="fc" id="L31">    public record Source(</span>
+            String host,
+            @Min(1) @Max(65535) Integer port,
+            String database,
+            /** Table (JDBC), topic (Kafka) or subscription topic (AMPS). */
+            String table,
+            @NotNull @DefaultValue(&quot;30s&quot;) Duration pollInterval) {
+    }
+
+    /** Where the pipeline publishes to. */
+<span class="fc" id="L41">    public record Sink(</span>
+            @NotNull @DefaultValue(&quot;stub&quot;) SinkType type,
+            @Valid @DefaultValue Amps amps,
+            @Valid @DefaultValue Deephaven deephaven) {
+
+        @AssertTrue(message = &quot;connector.sink.amps.host, .port and .topic are required when connector.sink.type=amps&quot;)
+        public boolean isAmpsComplete() {
+<span class="pc bpc" id="L48" title="2 of 8 branches missed.">            return type != SinkType.AMPS || (hasText(amps.host()) &amp;&amp; amps.port() != null &amp;&amp; hasText(amps.topic()));</span>
+        }
+
+        @AssertTrue(message = &quot;connector.sink.deephaven.host, .port and .table are required when connector.sink.type=deephaven&quot;)
+        public boolean isDeephavenComplete() {
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">            return type != SinkType.DEEPHAVEN</span>
+<span class="pc bnc" id="L54" title="All 6 branches missed.">                    || (hasText(deephaven.host()) &amp;&amp; deephaven.port() != null &amp;&amp; hasText(deephaven.table()));</span>
+        }
+    }
+
+    /** {@code amps}, {@code deephaven} or {@code stub} (the demo stand-in for an unavailable target). */
+<span class="fc" id="L59">    public enum SinkType {</span>
+<span class="fc" id="L60">        AMPS, DEEPHAVEN, STUB</span>
+    }
+
+<span class="fc" id="L63">    public record Amps(String host, @Min(1) @Max(65535) Integer port, String topic) {</span>
+    }
+
+<span class="fc" id="L66">    public record Deephaven(String host, @Min(1) @Max(65535) Integer port, String table) {</span>
+    }
+
+    private static boolean hasText(String value) {
+<span class="pc bpc" id="L70" title="1 of 4 branches missed.">        return value != null &amp;&amp; !value.isBlank();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

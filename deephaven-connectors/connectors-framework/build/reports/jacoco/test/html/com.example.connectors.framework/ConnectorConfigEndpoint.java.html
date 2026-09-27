@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConnectorConfigEndpoint.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">connectors-framework</a> &gt; <a href="index.source.html" class="el_package">com.example.connectors.framework</a> &gt; <span class="el_source">ConnectorConfigEndpoint.java</span></div><h1>ConnectorConfigEndpoint.java</h1><pre class="source lang-java linenums">package com.example.connectors.framework;
+
+import java.util.Map;
+
+import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
+import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
+import org.springframework.core.env.ConfigurableEnvironment;
+
+/**
+ * {@code GET /actuator/connectorconfig}: the same masked summary as the start-up log, for
+ * {@code run-compose.sh ... app-config} against a running stack (D6 §4.3). Unlike {@code /actuator/env} it
+ * never shows a value that the summary would mask.
+ */
+@Endpoint(id = &quot;connectorconfig&quot;)
+public class ConnectorConfigEndpoint {
+
+    private final ConfigurableEnvironment environment;
+    private final ConnectorIdentity identity;
+
+<span class="fc" id="L20">    public ConnectorConfigEndpoint(ConfigurableEnvironment environment, ConnectorIdentity identity) {</span>
+<span class="fc" id="L21">        this.environment = environment;</span>
+<span class="fc" id="L22">        this.identity = identity;</span>
+<span class="fc" id="L23">    }</span>
+
+    @ReadOperation
+    public Map&lt;String, Object&gt; config() {
+<span class="nc" id="L27">        return ConfigurationSummary.capture(environment, identity).asMap();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

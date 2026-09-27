@@ -1,0 +1,211 @@
+name: setup-build-env
+description: >-
+  Shared build environment (D7 §6.2, D10 §6.7): Temurin 21 only when the job does not run in the
+  ci-build image, Gradle wrapper validation and Gradle user-home cache, an optional CA bundle, and the
+  company base images (D3 §6.1). A base image is taken from GHCR (digest-pinned) when published and
+  otherwise built locally from docker/base/<name>/Dockerfile with a GitHub Actions layer cache, so the
+  very first run on a new repository succeeds before base-image.yml has published anything.
+  Exports BASE_IMAGE (jre21) and CI_BUILD_IMAGE (ci-build) for later steps.
+inputs:
+  java:
+    description: "'true' installs Temurin 21 with actions/setup-java (jobs on the runner host); 'false' inside ci-build."
+    required: false
+    default: 'false'
+  gradle:
+    description: "'true' sets up Gradle: wrapper validation and the user-home cache."
+    required: false
+    default: 'true'
+  gradle-cache-read-only:
+    description: "'true' / 'false'; empty keeps setup-gradle's default (write on the default branch only)."
+    required: false
+    default: ''
+  ensure-base:
+    description: "Comma-separated base images the job needs: jre21 (exports BASE_IMAGE), ci-build (exports CI_BUILD_IMAGE)."
+    required: false
+    default: ''
+  jre21-image:
+    description: Already-resolved jre21 reference (skips the registry probe).
+    required: false
+    default: ''
+  ci-build-image:
+    description: Already-resolved ci-build reference (skips the registry probe).
+    required: false
+    default: ''
+  rebuild-base:
+    description: "'true' builds the requested base images locally even when GHCR has them (a PR that changes docker/base/**)."
+    required: false
+    default: 'false'
+  image-namespace:
+    description: Registry namespace of the base images (the Gradle buildlogic.docker-image default).
+    required: false
+    default: ghcr.io/crazymatthsu
+  ca-bundle:
+    description: >-
+      Optional path of a PEM bundle for tools outside the JVM (curl, jf, node). Empty in the demo:
+      GitHub-hosted runners need no enterprise CA; in the enterprise the ci-build image carries it (D3).
+    required: false
+    default: ''
+outputs:
+  base-image:
+    description: The jre21 reference exported as BASE_IMAGE (empty when not requested).
+    value: ${{ steps.export.outputs.base-image }}
+  ci-build-image:
+    description: The ci-build reference exported as CI_BUILD_IMAGE (empty when not requested).
+    value: ${{ steps.export.outputs.ci-build-image }}
+  built-locally:
+    description: Space-separated names of the base images built locally in this job (empty when all came from GHCR).
+    value: ${{ steps.resolve.outputs.local }}
+runs:
+  using: composite
+  steps:
+    - name: Trust the workspace for git
+      shell: bash
+      run: |
+        # Job containers run as root over a workspace created by the runner user; git (and the Gradle
+        # git-version plugin, which shells out to git) refuses "dubious ownership" without this.
+        if command -v git >/dev/null 2>&1; then
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        fi
+
+    - name: JDK 21 (runner host only)
+      if: inputs.java == 'true'
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Gradle (wrapper validation, user-home cache)
+      if: inputs.gradle == 'true'
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # The open-source provider over actions/cache: no proprietary component in an enterprise pipeline.
+        cache-provider: basic
+        cache-read-only: ${{ inputs.gradle-cache-read-only != '' && inputs.gradle-cache-read-only || (github.event.repository != null && github.ref_name != github.event.repository.default_branch) }}
+
+    - name: CA bundle for non-JVM tools
+      if: inputs.ca-bundle != ''
+      shell: bash
+      env:
+        CA_BUNDLE: ${{ inputs.ca-bundle }}
+      run: |
+        set -euo pipefail
+        bundle=$(realpath "$CA_BUNDLE")
+        [[ -s $bundle ]] || { echo "::error::CA bundle $CA_BUNDLE not found or empty"; exit 1; }
+        {
+          echo "SSL_CERT_FILE=$bundle"
+          echo "CURL_CA_BUNDLE=$bundle"
+          echo "NODE_EXTRA_CA_CERTS=$bundle"
+          echo "REQUESTS_CA_BUNDLE=$bundle"
+        } >> "$GITHUB_ENV"
+
+    - name: Resolve base images (GHCR first, local build as bootstrap)
+      id: resolve
+      if: inputs.ensure-base != ''
+      shell: bash
+      env:
+        ENSURE: ${{ inputs.ensure-base }}
+        PRE_JRE21: ${{ inputs.jre21-image }}
+        PRE_CI_BUILD: ${{ inputs.ci-build-image }}
+        REBUILD: ${{ inputs.rebuild-base }}
+        NAMESPACE: ${{ inputs.image-namespace }}
+      run: |
+        set -euo pipefail
+        local_builds=()
+        for name in ${ENSURE//,/ }; do
+          case "$name" in
+            jre21) pre=$PRE_JRE21 ;;
+            ci-build) pre=$PRE_CI_BUILD ;;
+            *) echo "::error::ensure-base: unknown base image '$name' (expected jre21, ci-build)"; exit 2 ;;
+          esac
+          ref=""
+          if [[ $REBUILD != true ]]; then
+            if [[ -n $pre ]]; then
+              ref=$pre
+            else
+              ref=$(scripts/ci/resolve-image.sh "$NAMESPACE/base/$name:latest") || ref=""
+            fi
+          fi
+          if [[ -z $ref ]]; then
+            [[ -f docker/base/$name/Dockerfile ]] ||
+              { echo "::error::$NAMESPACE/base/$name:latest is not published and docker/base/$name/Dockerfile is missing"; exit 1; }
+            ref="$NAMESPACE/base/$name:bootstrap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            local_builds+=("$name")
+            if [[ $REBUILD == true ]]; then
+              echo "::notice title=base image::building $name locally because docker/base/$name changed in this change set"
+            else
+              echo "::notice title=base image::$NAMESPACE/base/$name:latest is not published yet — building it locally (bootstrap). Run base-image.yml once to publish it."
+            fi
+          fi
+          key=${name//-/_}
+          echo "ref_${key}=${ref}" >> "$GITHUB_OUTPUT"
+          echo "build_${key}=$([[ " ${local_builds[*]} " == *" $name "* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        done
+        echo "local=${local_builds[*]}" >> "$GITHUB_OUTPUT"
+
+    - name: Buildx builder for local base builds
+      id: buildx
+      if: steps.resolve.outputs.local != ''
+      uses: docker/setup-buildx-action@v4
+      with:
+        # Not made the default builder: the Gradle image build must keep using the engine's own image
+        # store, where the locally loaded base images live.
+        use: false
+
+    - name: Build base image jre21 locally
+      if: steps.resolve.outputs.build_jre21 == 'true'
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        # Build contexts as documented in each Dockerfile's header; keep in step with base-image.yml.
+        context: test-infra/ca
+        file: docker/base/jre21/Dockerfile
+        platforms: linux/amd64
+        load: true
+        push: false
+        provenance: false
+        tags: ${{ steps.resolve.outputs.ref_jre21 }}
+        cache-from: type=gha,scope=base-jre21
+        cache-to: type=gha,scope=base-jre21,mode=max
+
+    - name: Build base image ci-build locally
+      if: steps.resolve.outputs.build_ci_build == 'true'
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: test-infra/ca
+        file: docker/base/ci-build/Dockerfile
+        platforms: linux/amd64
+        load: true
+        push: false
+        provenance: false
+        tags: ${{ steps.resolve.outputs.ref_ci_build }}
+        cache-from: type=gha,scope=base-ci-build
+        cache-to: type=gha,scope=base-ci-build,mode=max
+
+    - name: Export BASE_IMAGE / CI_BUILD_IMAGE
+      id: export
+      shell: bash
+      env:
+        JRE21: ${{ steps.resolve.outputs.ref_jre21 }}
+        CI_BUILD: ${{ steps.resolve.outputs.ref_ci_build }}
+        LOCAL: ${{ steps.resolve.outputs.local }}
+      run: |
+        set -euo pipefail
+        echo "base-image=${JRE21}" >> "$GITHUB_OUTPUT"
+        echo "ci-build-image=${CI_BUILD}" >> "$GITHUB_OUTPUT"
+        if [[ -n $JRE21 ]]; then echo "BASE_IMAGE=${JRE21}" >> "$GITHUB_ENV"; fi
+        if [[ -n $CI_BUILD ]]; then echo "CI_BUILD_IMAGE=${CI_BUILD}" >> "$GITHUB_ENV"; fi
+        if [[ -n $JRE21 || -n $CI_BUILD ]]; then
+          {
+            echo "### Base images"
+            echo ""
+            echo "| image | reference | source |"
+            echo "|---|---|---|"
+            for pair in "jre21|$JRE21" "ci-build|$CI_BUILD"; do
+              name=${pair%%|*}; ref=${pair#*|}
+              [[ -n $ref ]] || continue
+              source=GHCR; [[ " $LOCAL " == *" $name "* ]] && source="built locally (bootstrap)"
+              echo "| $name | \`$ref\` | $source |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi

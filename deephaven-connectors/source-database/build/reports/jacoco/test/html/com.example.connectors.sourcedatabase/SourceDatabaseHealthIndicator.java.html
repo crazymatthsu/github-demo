@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SourceDatabaseHealthIndicator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">source-database</a> &gt; <a href="index.source.html" class="el_package">com.example.connectors.sourcedatabase</a> &gt; <span class="el_source">SourceDatabaseHealthIndicator.java</span></div><h1>SourceDatabaseHealthIndicator.java</h1><pre class="source lang-java linenums">package com.example.connectors.sourcedatabase;
+
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
+import org.springframework.stereotype.Component;
+
+/**
+ * Health contributor {@code sourceDatabase}: the result of the start-up {@link HelloWorldQuery}. Not a member
+ * of the readiness group, so a missing database never stops the app from starting or becoming ready — it
+ * shows in {@code /actuator/health} as DOWN with the error instead.
+ */
+@Component
+public class SourceDatabaseHealthIndicator implements HealthIndicator {
+
+    private final HelloWorldQuery query;
+
+<span class="fc" id="L17">    public SourceDatabaseHealthIndicator(HelloWorldQuery query) {</span>
+<span class="fc" id="L18">        this.query = query;</span>
+<span class="fc" id="L19">    }</span>
+
+    @Override
+    public Health health() {
+<span class="fc" id="L23">        HelloWorldQuery.QueryResult result = query.result();</span>
+<span class="pc bpc" id="L24" title="1 of 3 branches missed.">        Health.Builder builder = switch (result.state()) {</span>
+<span class="fc" id="L25">            case PENDING -&gt; Health.unknown();</span>
+<span class="nc" id="L26">            case SUCCEEDED -&gt; Health.up();</span>
+<span class="fc" id="L27">            case FAILED -&gt; Health.down();</span>
+        };
+<span class="fc bfc" id="L29" title="All 2 branches covered.">        builder.withDetail(&quot;query&quot;, &quot;SELECT 1&quot; + (result.table() != null ? &quot; / SELECT COUNT(*) FROM &quot; + result.table() : &quot;&quot;));</span>
+<span class="pc bpc" id="L30" title="1 of 2 branches missed.">        if (result.selectOne() != null) {</span>
+<span class="nc" id="L31">            builder.withDetail(&quot;selectOne&quot;, result.selectOne());</span>
+        }
+<span class="pc bpc" id="L33" title="1 of 2 branches missed.">        if (result.rowCount() != null) {</span>
+<span class="nc" id="L34">            builder.withDetail(&quot;rowCount&quot;, result.rowCount());</span>
+        }
+<span class="fc bfc" id="L36" title="All 2 branches covered.">        if (result.error() != null) {</span>
+<span class="fc" id="L37">            builder.withDetail(&quot;error&quot;, result.error());</span>
+        }
+<span class="fc bfc" id="L39" title="All 2 branches covered.">        if (result.checkedAt() != null) {</span>
+<span class="fc" id="L40">            builder.withDetail(&quot;checkedAt&quot;, result.checkedAt().toString());</span>
+        }
+<span class="fc" id="L42">        return builder.build();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>
