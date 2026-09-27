@@ -221,12 +221,17 @@ heap first, then move Kafka-based suites to their own jobs, then a larger runner
 
 ### 5.9 Kubernetes as the test substrate
 
-- **Demo step 2 (kind + Helm)**: `kind-deploy` in `main.yml` creates a kind cluster, loads the run's
-  images, runs `helm lint` and `helm upgrade --install <app>-<instance> helm/<app> -f
-  app-common/values.yaml -f <instance>/values.yaml --set image.tag=<tag> --set-file ... --atomic`
-  for `us-dev/cash/source-database/{trades-db-to-amps,positions-db-to-deephaven}`, waits for
-  readiness, runs the smoke test proving the two instances differ, and deletes the cluster in an
-  `always()` step. It is a deployment test of D11's chart, not an integration test.
+- **Demo step 2 (kind + Helm)**: the reusable `_kind-deploy.yml` (job `kind-deploy`, called by `pr.yml`
+  when the affected map's `deploy-test` matches and this run pushed the `source-database` image, and by
+  `main.yml` between `publish` and `deploy-dev`) creates the kind cluster `ci-<run_id>-<attempt>`
+  (`test-infra/kind/kind.sh up`), loads the run's `source-database` image by digest as `<repo>:<tag>`,
+  and for every instance directory of `config/us-dev/*/source-database/` runs
+  `scripts/helm-deploy-instance.sh` (`helm lint`, `helm upgrade --install <app>-<instance>
+  deephaven-connectors/<app>/helm/<app> -f app-common/values.yaml -f <instance>/values.yaml --set-string
+  image.tag=<tag> --set-file ... --rollback-on-failure --wait`, `rollout status`, `helm test`); then
+  `scripts/helm-smoke-diff.sh` proves the two instances differ, and `kind.sh down` + `leak-check` run in
+  `always()`. It is a deployment test of D11's chart and the config tree, not an integration test: the
+  apps become ready without a reachable database or Deephaven.
 - **Phase 3 (EKS + GitOps)**: system ITs and deployment tests on `main` / nightly run in an ephemeral
   namespace `ci-<run_id>` on a dev EKS cluster. The job authenticates with GitHub OIDC → IAM role →
   EKS RBAC limited to `ci-*` namespaces; the `always()` step deletes the namespace and a janitor
@@ -321,7 +326,7 @@ home bind-mounted, `IT_DEEPHAVEN_HOST=deephaven`, `IT_SQLSERVER_HOST=sqlserver`,
 | Prune volumes | `docker volume ls -q --filter "label=com.<company>.ci.run=$GITHUB_RUN_ID" \| xargs -r docker volume rm -f` |
 | Prune networks | `docker network ls -q --filter "label=com.<company>.ci.run=$GITHUB_RUN_ID" \| xargs -r docker network rm` |
 | Leak check | the three `ls` commands above plus `--filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"`; any output → exit 1 and a summary table |
-| Kind (step 2) | `kind delete cluster --name ci-$GITHUB_RUN_ID` in `always()`; leak check adds `docker ps --filter label=io.x-k8s.kind.cluster` (verify label) |
+| Kind (step 2) | `test-infra/kind/kind.sh down` (`kind delete cluster --name ci-<run_id>-<attempt>`; `deploy-<run_id>-<attempt>` in deploy-dev) in `always()`; `kind.sh leak-check`: no cluster of that name, no container or network labelled `io.x-k8s.kind.cluster=<name>` |
 
 ### 6.5 Diagnostics bundle
 
@@ -338,7 +343,7 @@ home bind-mounted, `IT_DEEPHAVEN_HOST=deephaven`, `IT_SQLSERVER_HOST=sqlserver`,
 |---|---|---|
 | CI (`it-runner`, connector) | `deephaven:10000` on the compose network | none |
 | Local (host JVM) | `localhost:10000` via `local-ports.yml` | 10000, 1433, 9092 (all above 1024) |
-| Kind (step 2) | Service DNS inside the cluster; smoke via `kubectl port-forward` | none on the runner |
+| Kind (step 2) | Service DNS inside the cluster; smoke inside the cluster too: the `helm test` Job curls the release's Service, `scripts/helm-smoke-diff.sh` runs `kubectl exec deploy/<release> -- curl localhost:8080/actuator/...` (no port-forward) | none on the runner |
 
 ### 6.7 Caches and pre-pull
 
@@ -578,7 +583,7 @@ are the same `always()` steps on every path. A cancel interrupts the test step, 
 | The acceptance IT (write and read a table through the Deephaven client) | `deephaven-connectors/source-database/src/integrationTest/java/.../SqlServerToDeephavenIT.java` (D8) | Demo step 1 (compose) |
 | Our Deephaven image for system ITs | `deephaven-server/docker/Dockerfile` (D3), built in `build`, referenced as `DEEPHAVEN_IMAGE` on `main` | Demo step 1 (compose) |
 | Teardown drill | `.github/workflows/nightly.yml` jobs `teardown-drill-fail` and `teardown-drill-cancel` | Demo step 1 (compose) |
-| kind deployment test | `.github/workflows/main.yml` job `kind-deploy`; `test-infra/kind/cluster.yaml`; chart under `deephaven-connectors/source-database/helm/source-database/` (D11) | Demo step 2 (kind + Helm) |
+| kind deployment test | `.github/workflows/_kind-deploy.yml` (job `kind-deploy` in `pr.yml` and `main.yml`); `test-infra/kind/{versions.env,cluster.yaml,kind.sh}`; actions `setup-kube-tools`, `kind-cluster`, `helm-deploy-instance`; charts under `deephaven-connectors/<app>/helm/<app>/` (D11) | Demo step 2 (kind + Helm) |
 | Ephemeral EKS namespace, ARC runners | documented here, not provisioned | Phase 3 (EKS + GitOps) |
 
 ## 9. Open items

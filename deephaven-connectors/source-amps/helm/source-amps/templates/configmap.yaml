@@ -1,0 +1,21 @@
+{{- /*
+One ConfigMap per release with a key per layer file (D11 §6.3): <layer>.application.yml from appConfig
+(platform, env, common, instance — only the layers given) and <layer>.<file> from appFiles. The Deployment
+projects each key to /config/<layer>/<file>; the jar's optional: imports skip a missing layer (D5 §6.1).
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "connector.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "connector.labels" . | nindent 4 }}
+data:
+{{- range $layer := list "platform" "env" "common" "instance" }}
+  {{- if hasKey $.Values.appConfig $layer }}
+  {{- include "connector.dataEntry" (list (printf "%s.application.yml" $layer) (index $.Values.appConfig $layer)) | nindent 2 }}
+  {{- end }}
+  {{- range $name, $content := (get $.Values.appFiles $layer | default dict) }}
+  {{- include "connector.dataEntry" (list (printf "%s.%s" $layer $name) $content) | nindent 2 }}
+  {{- end }}
+{{- end }}

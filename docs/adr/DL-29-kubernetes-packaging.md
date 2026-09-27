@@ -29,7 +29,7 @@ values (`--set-file`, or `helm.fileParameters` in Argo CD) and rendered into a C
 ## Consequences
 
 - `helm lint` and `helm template` for every instance run in config-lint (D5, D11).
-- The same chart serves `deploy-dev` (`helm upgrade --install --atomic`) and Argo CD (D9).
+- The same chart serves `deploy-dev` (`helm upgrade --install --rollback-on-failure --wait`, Helm 4's name for `--atomic`) and Argo CD (D9).
 - Chart defaults carry the probes, resources and security context of D6.
 
 ## References

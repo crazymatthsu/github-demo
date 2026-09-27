@@ -2,20 +2,24 @@
 # write-back-tag.sh — record the deployed image tag in the dev config tree (D9 §6.4, D5 §6.8, DL-36).
 #
 # Usage: write-back-tag.sh <env> <tag> [<flow>/<AppName>/<AppInstance>...]
-#   Sets IMAGE_TAG=<tag> in config/<env>/<flow>/<AppName>/<AppInstance>/compose.env of every deployed
-#   instance — the ones given, or else every target in config/<env>/targets.yml whose effective kind
-#   (target `kind`, else `defaults.kind`, else compose) is listed in WRITE_BACK_KINDS — on top of the
-#   current tip of the branch, commits
+#   Sets the tag in both files of every deployed instance under config/<env>/<flow>/<AppName>/<AppInstance>/:
+#   IMAGE_TAG=<tag> in compose.env and image.tag in values.yaml (demo step 2; skipped while an instance has
+#   no values.yaml), so the two always agree (config-lint check 4) whether compose or Helm deployed it.
+#   The instances are the ones given, or else every target in config/<env>/targets.yml whose effective
+#   kind (target `kind`, else `defaults.kind`, else compose) is listed in WRITE_BACK_KINDS. On top of the
+#   current tip of the branch it commits
 #       chore(config): <env> deployed <tag> [skip ci]
 #   as github-actions[bot] and pushes it to the branch. `[skip ci]` plus the actor check in main.yml
 #   form the loop guard (DL-36). Idempotent: no commit when every file already carries the tag.
 #   Only *-dev envs are accepted: qa and prod change through reviewed bump PRs, never through here.
 #
-# Environment: WRITE_BACK_BRANCH (main) · WRITE_BACK_REMOTE (origin) · WRITE_BACK_KINDS (compose)
+# Environment: WRITE_BACK_BRANCH (main) · WRITE_BACK_REMOTE (origin) · WRITE_BACK_KINDS (compose,helm)
 #   WRITE_BACK_PUSH (true; false commits in a scratch worktree only — for tests and dry runs)
 #   WRITE_BACK_ATTEMPTS (3: re-applied on a fresh tip when the push loses a race)
-# Exit codes: 0 written, or nothing to write · 1 git or push failure · 2 usage · 3 refused (env is
-#   not *-dev) · 4 config tree error (targets.yml or an instance's compose.env missing).
+#   values.yaml is edited with mikefarah yq v4 (preinstalled on GitHub-hosted runners).
+# Exit codes: 0 written, or nothing to write · 1 git, push or yq failure · 2 usage · 3 refused (env is
+#   not *-dev) · 4 config tree error (targets.yml or an instance's compose.env missing, or a values.yaml
+#   without an image.tag to set).
 #
 # TODO(DL-09): the enterprise identity is a GitHub App installation token (actor <app>[bot], allowed
 # to bypass the `main` ruleset); then main.yml's loop guard must name that actor instead.
@@ -26,7 +30,7 @@ bot_name="github-actions[bot]"
 bot_email="41898282+github-actions[bot]@users.noreply.github.com"
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -36,7 +40,7 @@ tag=$2
 shift 2
 branch=${WRITE_BACK_BRANCH:-main}
 remote=${WRITE_BACK_REMOTE:-origin}
-kinds=${WRITE_BACK_KINDS:-compose}
+kinds=${WRITE_BACK_KINDS:-compose,helm}
 push=${WRITE_BACK_PUSH:-true}
 attempts=${WRITE_BACK_ATTEMPTS:-3}
 
@@ -83,13 +87,28 @@ fetch_tip() {
 }
 
 apply() { # prints the changed files
-  local files=() instance
+  local files=() values=() instance dir file
   for instance in "${instances[@]}"; do
-    local file="$worktree/config/$env_name/$instance/compose.env"
-    [[ -f $file ]] || { echo "write-back-tag.sh: config/$env_name/$instance/compose.env not found on $branch" >&2; return 4; }
-    files+=("$file")
+    dir="$worktree/config/$env_name/$instance"
+    [[ -f $dir/compose.env ]] || { echo "write-back-tag.sh: config/$env_name/$instance/compose.env not found on $branch" >&2; return 4; }
+    files+=("$dir/compose.env")
+    if [[ -f $dir/values.yaml ]]; then
+      files+=("$dir/values.yaml")
+      values+=("$dir/values.yaml")
+    fi
   done
-  "$here/set-image-tag.sh" "$tag" "${files[@]}"
+  if [[ ${#values[@]} -gt 0 ]] && ! yq --version 2>/dev/null | grep -q mikefarah; then
+    echo "write-back-tag.sh: updating values.yaml needs mikefarah yq v4 on PATH (as on GitHub-hosted runners)" >&2
+    return 1
+  fi
+  "$here/set-image-tag.sh" "$tag" "${files[@]}" || return
+  # set-image-tag.sh edits image.tag only under an existing `image:` mapping; both files must now agree.
+  for file in ${values[@]+"${values[@]}"}; do
+    if [[ $(yq '.image.tag // ""' "$file") != "$tag" ]]; then
+      echo "write-back-tag.sh: ${file#"$worktree"/} has no image.tag to set (add image: {tag: ...}, D11 §6.2)" >&2
+      return 4
+    fi
+  done
 }
 
 subject="chore(config): $env_name deployed $tag [skip ci]"

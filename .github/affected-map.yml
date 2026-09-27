@@ -7,6 +7,7 @@
 # Every changed path is classified by the FIRST section that matches, in this order:
 #   docs → config → shared → paths → (no match: treated as shared, so an unmapped file can never
 #   silently skip the tests it affects). Keep this file in step with the repository tree.
+# `base-images` and `deploy-test` are flags instead: any matching path raises them, whatever its class.
 schema: 1
 
 # Every Gradle project CI knows. `image`: has buildImage / pushImage / printImageRef (D1 §6.2).
@@ -68,3 +69,20 @@ paths:
 # the published ones from GHCR, so the change is tested before base-image.yml publishes it.
 base-images:
   - "docker/base/**"
+
+# Kind deployment test (demo step 2, D10 §5.9): `deploy-test` is true when `full` is, or when a path
+# here changed — the charts, the config tree, the kind tier, the Helm deploy scripts and their actions,
+# or the app the test deploys. pr.yml then runs `kind-deploy` (PR and merge queue) when this run also
+# pushed the source-database image; without one (a config-only change builds nothing) config-lint's
+# helm lint / template / kubeconform per instance is the PR check, and main.yml's kind-deploy runs
+# before deploy-dev.
+deploy-test:
+  - "**/helm/**"
+  - "config/**"
+  - "test-infra/kind/**"
+  - "scripts/helm-*.sh"
+  - ".github/actions/setup-kube-tools/**"
+  - ".github/actions/kind-cluster/**"
+  - ".github/actions/helm-deploy-instance/**"
+  - ".github/workflows/_kind-deploy.yml"
+  - "deephaven-connectors/source-database/**"

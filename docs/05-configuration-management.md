@@ -290,7 +290,7 @@ than `compose.env`.
 | 1 | Naming: regex, enumerated `<env>` / `<flow>`, length budget, uniqueness of `<AppInstance>` within `<env>/<flow>/<AppName>`, no bare numbers | any token violates §6.2 | Demo step 1 (compose) |
 | 2 | Every `<AppName>` directory matches a deployable Gradle subproject and vice versa for envs that must be complete | orphan or missing app directory | Demo step 1 (compose) |
 | 3 | Required files present (list above) | a file is missing | Demo step 1 (compose) |
-| 4 | Identity restated in `compose.env` and in `values.yaml` `env:` equals the directory path | mismatch | Demo step 1 (compose) |
+| 4 | Identity restated in `compose.env`, and in `values.yaml` (`identity` map and `env:` `APP_*`), equals the directory path; `image.tag` equals `IMAGE_TAG` of the sibling `compose.env`; `values.yaml` `env:` holds only the app-facing subset of §6.3 | mismatch | Demo step 1 (compose); the `values.yaml` rules from Demo step 2 (kind + Helm) |
 | 5 | `compose.env` contains only the allowed variables of §6.3; no forbidden prefixes | unknown or forbidden key | Demo step 1 (compose) |
 | 6 | Render: `docker compose config` per instance with a placeholder for each secret variable | compose template or env file invalid | Demo step 1 (compose) |
 | 7 | Merged configuration: layers 2–5 merged offline (YAML deep-merge in import order) and validated against the app's `spring-configuration-metadata.json`; unknown keys warn (version-skew guard, verify) | invalid type or missing required key | Demo step 1 (compose) |
@@ -298,7 +298,7 @@ than `compose.env`.
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
 | 11 | `targets.yml`: schema valid; every instance directory has one target and every target has a directory | inventory drift | Demo step 1 (compose) |
-| 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers (D11) | chart or values invalid | Demo step 2 (kind + Helm) |
+| 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers, through `scripts/helm-deploy-instance.sh --mode lint` / `--mode template` (one flag list, D11 §8.3); kubeconform (`-strict`, Kubernetes 1.37) on the rendered releases when it is installed (CI installs it) | chart or values invalid; a rendered object invalid | Demo step 2 (kind + Helm) |
 | 13 | ApplicationSet dry-run: generated Application names equal `<app>-<instance>` and are ≤ 53 chars | generator mismatch | Phase 3 (EKS + GitOps) |
 
 ### 6.6 Inventory — `targets.yml` (Demo step 1 and 2) and what replaces it
@@ -491,7 +491,7 @@ unavailable, which the sync window confines to the deployment window.
 | `config/us-dev/targets.yml` | inventory read by `deploy-dev` | Demo step 1 (compose), Demo step 2 (kind + Helm) |
 | `deephaven-connectors/source-database/src/main/resources/application.yml` | layer 1 with the import list of §6.1 | Demo step 1 (compose) |
 | `deephaven-connectors/connectors-framework/` (`ConnectorIdentity`, `@ConfigurationProperties` + `@Validated` bindings, masked start-up summary) | validation and the identity tuple in logs and metrics | Demo step 1 (compose) |
-| `build-logic/` (root task `configLint`) | checks 1–11 runnable locally and in CI; `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |
+| `build-logic/` (root task `configLint`) | checks 1–6 and 9–12 runnable locally and in CI (7 and 8 reported as TODO); `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |
 | `.github/workflows/pr.yml` (`config-lint` job, path-filtered), `.github/CODEOWNERS` | guard-rails of §6.7 | Demo step 1 (compose) |
 | `.github/workflows/main.yml` (`deploy-dev` job: read `targets.yml`, deploy, write back, loop guard) | R8 and §6.8 | Demo step 1 (compose), Demo step 2 (kind + Helm) |
 | `deephaven-connectors/source-database/helm/source-database/templates/configmap.yaml`, `deployment.yaml` (checksum annotation) | layers 2–5 as a ConfigMap, mounted per layer (D11) | Demo step 2 (kind + Helm) |

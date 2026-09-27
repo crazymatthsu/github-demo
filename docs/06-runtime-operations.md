@@ -268,7 +268,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 |---|---|---|
 | Startup probe | `GET /actuator/health/liveness`, `periodSeconds: 5`, `failureThreshold: 24` (2 min budget for JVM start and first source connection) | `healthcheck.start_period: 120s` |
 | Liveness probe | `GET /actuator/health/liveness`, `periodSeconds: 10`, `timeoutSeconds: 3`, `failureThreshold: 3`; **minimal**: JVM alive, not deadlocked — a dependency outage must not cause restart storms | `restart: unless-stopped` covers crashes; no liveness equivalent |
-| Readiness probe | `GET /actuator/health/readiness`, `periodSeconds: 10`, `failureThreshold: 3`; readiness group includes the framework's source and target `HealthIndicator`s, so `helm --atomic` and the smoke test wait for a **working pipeline** | `healthcheck.test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]`, `interval: 10s`, `timeout: 3s`, `retries: 3` (D3 decides whether `curl` is in the image; otherwise a JVM-based check) |
+| Readiness probe | `GET /actuator/health/readiness`, `periodSeconds: 10`, `failureThreshold: 3`; readiness group includes the framework's source and target `HealthIndicator`s, so `helm upgrade --wait` and the smoke test wait for a **working pipeline** | `healthcheck.test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]`, `interval: 10s`, `timeout: 3s`, `retries: 3` (D3 decides whether `curl` is in the image; otherwise a JVM-based check) |
 | Log format | JSON on stdout (Spring Boot structured logging, `logging.structured.format.console`, verify), one object per line; fields `@timestamp` (UTC), `level`, `logger`, `thread`, `message`, `env`, `flow`, `app`, `instance`, `version`, `traceId` when tracing is on | identical; `run-compose.sh logs` shows it; `json-file` driver with `max-size` in the template |
 | Log shipping | Fluent Bit DaemonSet (platform-provided) tails `/var/log/containers`, adds Kubernetes metadata and ships to CloudWatch or the enterprise stack (§8) | none — `docker compose logs`; CI uploads logs as artefacts (D10) |
 | Metrics | Micrometer Prometheus registry at `/actuator/prometheus`; chart renders a `Service` (port `http`) and a `ServiceMonitor` (`serviceMonitor.enabled`, interval 30s) for the Prometheus Operator | endpoint exposed on the published port; optional `test-infra/compose/observability/` stack later |
@@ -452,7 +452,7 @@ sequenceDiagram
     Note over S: liveness every 10s stays minimal
   else start-up failed or timed out
     K->>P: kill and restart (backoff)
-    Note over K,P: helm --atomic / Argo CD health report Degraded, old ReplicaSet kept
+    Note over K,P: helm --rollback-on-failure / Argo CD health report Degraded, old ReplicaSet kept
   end
 ```
 
@@ -461,7 +461,7 @@ sequenceDiagram
 The startup probe gives the JVM and
 the first source connection a two-minute budget before liveness starts counting; readiness decides
 when the instance is treated as working. On failure the previous release stays in place because
-`--atomic` (Demo step 2) or the controller (Phase 3) never removes it before the new pod is ready.
+`--rollback-on-failure` (Helm 4's name for `--atomic`, Demo step 2) or the controller (Phase 3) never removes it before the new pod is ready.
 
 ### 7.5 Sequence — `run-compose.sh start` for a CI test stack
 
@@ -507,7 +507,7 @@ project name and label this script assigned.
 | Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` | `pull`, `start`, `health` on the compose hosts (D9); in the demo a placeholder that runs `start --dry-run` on the runner (`TODO(DL-35)`) |
 | Demo step 2 (kind + Helm) | `deephaven-connectors/<app>/helm/<app>/templates/deployment.yaml` | probes, resources, `securityContext`, `strategy`, checksum annotation, identity labels |
 | Demo step 2 (kind + Helm) | `.../templates/{service,servicemonitor,networkpolicy,pdb}.yaml` with `enabled` switches; `values.yaml` defaults | monitoring and policy objects rendered and linted; PDB only when `replicas > 1` |
-| Demo step 2 (kind + Helm) | kind job: namespace with PSS `restricted` labels, `helm upgrade --install` per instance, readiness wait, smoke test | chart defaults pass `restricted`; the two instances differ in effective config |
+| Demo step 2 (kind + Helm) | kind job (`_kind-deploy.yml`, `scripts/helm-deploy-instance.sh`): namespace with PSS `restricted` labels, `helm upgrade --install --rollback-on-failure --wait` per instance, `rollout status`, `helm test`, `scripts/helm-smoke-diff.sh` | chart defaults pass `restricted`; the two instances differ in effective config |
 | Phase 3 (EKS + GitOps) | platform Fluent Bit, Prometheus Operator, CNI NetworkPolicy enforcement, IRSA roles, admission policy, Argo CD | documented here and in D11, not provisioned by the demo |
 | All | `docs/adr/DL-*.md`, `docs/adr/README.md` | one ADR per §6 row (§6.13) |
 

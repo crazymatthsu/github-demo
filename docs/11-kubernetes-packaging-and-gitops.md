@@ -67,7 +67,7 @@ Phasing:
 | §5.7 Delivery: Argo CD / Flux / CI push; controller placement | §4.2, §4.3, §5 |
 | §5.7 ConfigMap change → rolling restart; RBAC per env; audit; rollback | §6.5, D5 §4.6 |
 | §5.7 Secrets never in the config repo; delivered per DL-31 | §6.3, D2 |
-| §5.12 `helm upgrade --install ... --atomic --timeout 5m`; kind until a dev cluster exists; Argo CD auto-sync later | §6.4, §8, Figure 3 |
+| §5.12 `helm upgrade --install ... --rollback-on-failure --wait --timeout 5m`; kind until a dev cluster exists; Argo CD auto-sync later | §6.4, §8, Figure 3 |
 | §5.12 Deployment windows enforced in the cluster (sync windows); readiness-gated rollouts; post-sync smoke test | §6.6 |
 | §2.4 Chart contents: `Chart.yaml`, `values.yaml`, templates (Deployment, Service, ConfigMap, probes) | §6.1 |
 | §7 acceptance: mapping with one worked instance; GitOps sync flow; secrets delivery path | §6.2, §6.3, Figures 1–3 |
@@ -148,7 +148,7 @@ Recommended (to validate):
 | R3 | ApplicationSet = git directory generator × cluster generator (§4.5); `targets.yml` retires when it goes live | the tree is the inventory; no second file to keep in sync | §4.5 |
 | R4 | The chart never templates secret values: it mounts an existing `Secret <app>-<instance>-secrets` at `/secrets/` and, behind a flag, renders the `ExternalSecret` (D2) | one chart for demo and production; secrets stay out of values and git | D2 §4.3 |
 | R5 | Checksum annotation on the pod template for the Helm-owned ConfigMap; Reloader annotation behind a flag for the ESO-owned `Secret` (D5 §4.6) | rollout exactly when config changes; rotations still reach pods | D5 §4.6 |
-| R6 | `helm upgrade --install --atomic --timeout 5m` per instance from CI; `helm rollback` only as the demo's emergency path; on EKS rollback is a git revert | a failed deploy leaves the previous release running (§5.12); the controller owns state on EKS | §6.4 |
+| R6 | `helm upgrade --install --rollback-on-failure --wait --timeout 5m` per instance from CI; `helm rollback` only as the demo's emergency path; on EKS rollback is a git revert | a failed deploy leaves the previous release running (§5.12); the controller owns state on EKS | §6.4 |
 
 ## 6. Conventions
 
@@ -184,7 +184,7 @@ Recommended (to validate):
 | `config/us-dev/_common/application.yml` | `appConfig.env` → `/config/env/application.yml` | optional |
 | `.../app-common/application.yml` | `appConfig.common` → `/config/common/application.yml` | required |
 | `.../trades-db-to-amps/application.yml` | `appConfig.instance` → `/config/instance/application.yml` | required |
-| `.../app-common/logback.xml` | `appFiles.common.logback_xml` → `/config/common/logback.xml` (key → file name mapping in the chart, verify `--set-file` key escaping) | optional |
+| `.../app-common/logback.xml` | `--set-file appFiles.common.logback\.xml` (the `.` escaped for `--set-file`) → ConfigMap key `common.logback.xml` → `/config/common/logback.xml`; every file of a layer directory other than `application.yml`, `values.yaml`, `compose.env`, `README.md` ships this way | optional |
 | `compose.env` app-facing variables (D5 §6.3) | `env:` map in the instance values → container `env` | identity, `JAVA_OPTS`, `TZ`, `LOG_LEVEL_ROOT` |
 | `IMAGE_TAG` in `compose.env` | `image.tag` in the instance values | same value, written back together by `deploy-dev` |
 | not in git | `Secret source-database-trades-db-to-amps-secrets` → `/secrets/` (demo: created by the workflow; Phase 3: ESO) | D2 |
@@ -207,13 +207,21 @@ two differ only in values layer 3 and the instance `application.yml` (D5 §6.3).
 
 ### 6.4 Helm commands (Demo step 2 and dev until a controller exists)
 
-| Step | Command (illustrative) | Notes |
+Every command below is run by `scripts/helm-deploy-instance.sh <env> <flow> <AppName> <AppInstance> --tag <tag>
+--mode lint|template|deploy` (§8.3), so config-lint, the kind deploy test and `deploy-dev` share one flag
+list. Helm 4 (pinned in `test-infra/kind/versions.env`, `v4.3.0`) renamed `--atomic` to
+`--rollback-on-failure` (kept only as a hidden deprecated alias) and defaults `--wait` to its watcher
+strategy; the script refuses Helm 3 (exit 5).
+
+| Step | Command (as run by the script) | Notes |
 |---|---|---|
-| Lint per instance | `helm lint helm/source-database -f <app-common>/values.yaml -f <inst>/values.yaml --set-file appConfig.common=... --set-file appConfig.instance=...` | in config-lint (D5 check 12) |
-| Render | `helm template source-database-trades-db-to-amps helm/source-database -n cash ...same flags...` | diffed in PRs; used by the parity check |
-| Install / upgrade | `helm upgrade --install source-database-trades-db-to-amps helm/source-database -n cash --create-namespace ...values and files... --set image.tag=<tag> --atomic --timeout 5m` | `--atomic` implies `--wait`; on failure the previous revision is restored (a failed first install is removed). Helm 4 may have renamed or changed `--atomic` — verify against the pinned Helm before demo step 2 |
-| Readiness | `kubectl -n cash rollout status deployment/source-database-trades-db-to-amps --timeout=5m` | redundant with `--wait`, kept for the job log |
-| Smoke test | `helm test source-database-trades-db-to-amps -n cash` | proves the two instances differ (§7 acceptance) |
+| Lint per instance | `helm lint deephaven-connectors/source-database/helm/source-database -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml` plus `--set-file appConfig.platform=...`, `appConfig.env=...` when those layers exist and `appFiles.<layer>.<file>=...` for every extra file | config-lint check 12 (D5 §6.5), `--mode lint`. `--set-string`, because `--set` turns a numeric-looking tag such as `1` into an integer, which `values.schema.json` rejects |
+| Render | `helm template source-database-trades-db-to-amps <chart> -n cash ...same flags...` | `--mode template [--render-out <file>]`; config-lint keeps the output under `build/reports/config-lint/rendered/<env>/<flow>/<app>/<instance>.yaml` and validates it with kubeconform (`-strict`, Kubernetes 1.37). `helm template` also enforces the chart's `fail` guards (identity vs `env.APP_*`, `identity.app` vs chart name), which `helm lint` skips |
+| Namespace and `Secret` | `kubectl create namespace cash` when missing, then `kubectl label --overwrite namespace cash pod-security.kubernetes.io/enforce=restricted ...enforce-version=latest ...warn=restricted ...audit=restricted`; `kubectl -n cash create secret generic source-database-trades-db-to-amps-secrets --from-literal=spring.datasource.username=... --from-literal=spring.datasource.password=... --dry-run=client -o yaml \| kubectl label --local -f - <identity labels> \| kubectl apply --server-side -f -` | `--mode deploy`. The values come from `--secret-user` / `--secret-password` or `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD`, are masked in every printed command and never enter the chart (R4); server-side apply keeps them out of the last-applied annotation |
+| Install / upgrade | `helm upgrade --install source-database-trades-db-to-amps <chart> -n cash --create-namespace ...same flags... --rollback-on-failure --wait --timeout 5m` | `--rollback-on-failure` restores the previous revision when the upgrade fails. A **first install** runs without it: Helm 4 uninstalls a failed first install, which would delete the pods and logs the diagnostics need, so the failed release stays in place (`helm uninstall` removes it) |
+| Readiness | `kubectl -n cash rollout status deployment/source-database-trades-db-to-amps --timeout=5m` | redundant with `--wait`, kept for the job log; a failure here or in the smoke test after an upgrade runs `helm rollback <release> --wait` (Figure 3) |
+| Smoke test | `helm test source-database-trades-db-to-amps -n cash --logs --timeout 5m` | the chart's test Job (`templates/tests/smoke-test.yaml`): readiness `UP`, identity tuple and `complete: true` in `/actuator/info`. Helm 4's `--logs` prints Pod hooks only, so the Job carries `helm.sh/hook-output-log-policy: hook-succeeded,hook-failed` |
+| Smoke diff | `scripts/helm-smoke-diff.sh -n cash source-database-trades-db-to-amps source-database-positions-db-to-deephaven` | the §7 acceptance proof: the `/actuator/info` tuples differ and at least one masked `/actuator/connectorconfig` value differs, both read with `kubectl exec deploy/<release> -- curl localhost:8080/...` (no port-forward) |
 | History / rollback | `helm history <release> -n cash`; `helm rollback <release> <revision> -n cash --wait` | emergency only; the normal rollback is a git revert redeployed by `deploy-dev` |
 | Uninstall | `helm uninstall <release> -n cash` | kind: the whole cluster is deleted instead (D10) |
 
@@ -333,7 +341,7 @@ flowchart LR
   build["build + integration-test + publish image (pre-release tag)"]
   subgraph demo["Demo step 2 (kind + Helm)"]
     tg["read config/us-dev/targets.yml"]
-    up["helm upgrade --install per instance --atomic"]
+    up["helm upgrade --install per instance --rollback-on-failure --wait"]
     ok{"ready in 5m?"}
     wb["write back image.tag / IMAGE_TAG, skip ci"]
     red["job red, previous release still running"]
@@ -378,7 +386,7 @@ sequenceDiagram
   W->>W: deploy-dev: read config/us-dev/targets.yml
   loop for each instance with kind helm
     W->>K: kubectl create secret ...-secrets (demo stub, D2)
-    W->>K: helm upgrade --install app-instance -n cash -f app-common/values.yaml -f inst/values.yaml --set-file ... --set image.tag=TAG --atomic --timeout 5m
+    W->>K: helm upgrade --install app-instance -n cash -f app-common/values.yaml -f inst/values.yaml --set-file ... --set-string image.tag=TAG --rollback-on-failure --wait --timeout 5m
     K->>R: pull image (kind: loaded from the run instead)
     alt readiness within the timeout
       K-->>W: release deployed
@@ -405,84 +413,96 @@ the loop guard keys on.
 
 ### 8.1 File pointers by phase
 
-| File (planned tree, §2.3 / §2.4) | Role | Phase |
+| File | Role | Phase |
 |---|---|---|
-| `deephaven-connectors/source-database/helm/source-database/` (`Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/*`) | the first chart; `source-kafka` and `source-amps` copy it | Demo step 2 (kind + Helm) |
-| `config/us-dev/cash/source-database/app-common/values.yaml`, `.../trades-db-to-amps/values.yaml`, `.../positions-db-to-deephaven/values.yaml` | values layers 2 and 3 | Demo step 2 (kind + Helm) |
-| `config/us-dev/targets.yml` (`kind: helm`, `cluster`, `namespace`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
-| `.github/workflows/pr.yml` (`config-lint`: `helm lint`, `helm template` per instance) | D5 check 12 | Demo step 2 (kind + Helm) |
-| `.github/workflows/main.yml` (`kind-deploy` job: create cluster, load images, install both releases, readiness, `helm test`, delete cluster — lifecycle in D10, job name as in D7) | acceptance criterion "Demo step 2" of §7 | Demo step 2 (kind + Helm) |
-| `.github/workflows/main.yml` (`deploy-dev` job, Helm adapter) | §6.4 commands, write-back with loop guard | Demo step 2 (kind + Helm) |
-| `.github/actions/helm-deploy-instance/` (composite action: resolve paths from the identity tuple, build the flag list, run upgrade, rollout status, test) | one place for the command of §8.3 | Demo step 2 (kind + Helm) |
-| `deephaven-connectors/source-database/helm/source-database/templates/externalsecret.yaml`, `servicemonitor.yaml`, `pdb.yaml` | flags off in the demo | Phase 3 (EKS + GitOps) |
+| `deephaven-connectors/<AppName>/helm/<AppName>/` for `source-database`, `source-kafka` and `source-amps` (`Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/{_helpers.tpl,deployment,configmap,service,serviceaccount,networkpolicy,pdb,servicemonitor,externalsecret}.yaml`, `templates/tests/smoke-test.yaml`, `NOTES.txt`, `README.md`) | three charts, identical apart from `Chart.yaml` and `image.repository` (`diff -r`) | Demo step 2 (kind + Helm) |
+| `config/{local,us-dev}/cash/<AppName>/app-common/values.yaml` and `config/{local,us-dev}/cash/<AppName>/<AppInstance>/values.yaml` | values layers 2 and 3 for every existing app-common and instance directory; `image.tag` equals `IMAGE_TAG` of the sibling `compose.env` (config-lint check 4) | Demo step 2 (kind + Helm) |
+| `config/us-dev/targets.yml` (`defaults: {kind: helm, cluster: kind-ci, namespace: "{flow}"}`; `trades-db-to-amps` stays `kind: compose`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
+| `scripts/helm-deploy-instance.sh`, `scripts/helm-smoke-diff.sh` | the one implementation of §6.4 (§8.3); the smoke diff of §7 | Demo step 2 (kind + Helm) |
+| `build-logic/src/main/kotlin/buildlogic/ConfigLint*.kt` (checks 3, 4, 10, 12), `.github/workflows/config-lint.yml` (`setup-kube-tools`: helm, kubeconform) | D5 check 12: `helm lint` / `helm template` per instance, kubeconform on the rendered releases | Demo step 2 (kind + Helm) |
+| `test-infra/kind/{versions.env,cluster.yaml,kind.sh,README.md}`; `.github/actions/{setup-kube-tools,kind-cluster,helm-deploy-instance}/action.yml` | pinned tools; the kind lifecycle (`up`, `load`, `diagnostics`, `down`, `leak-check`, D10); the composite actions of D7 | Demo step 2 (kind + Helm) |
+| `.github/workflows/_kind-deploy.yml`, called by `pr.yml` (job `kind-deploy`, when the affected map's `deploy-test` matches and this run pushed the `source-database` image) and by `main.yml` (between `publish` and `deploy-dev`) | acceptance criterion "Demo step 2" of §7: cluster `ci-<run_id>-<attempt>`, the run's image loaded by digest, one release per instance directory of `config/us-dev/*/source-database/`, `helm test`, smoke diff, diagnostics on failure, `kind.sh down` + `leak-check` in `always()` | Demo step 2 (kind + Helm) |
+| `.github/workflows/_deploy-dev.yml` (Helm adapter for `cluster: kind-ci`), `scripts/ci/write-back-tag.sh` (`WRITE_BACK_KINDS=compose,helm`) | §6.4 commands into a kind cluster created in the job (`deploy-<run_id>-<attempt>`, deleted in `always()`); write-back of `IMAGE_TAG` and `image.tag` together; any other `cluster` fails with `TODO(Phase 3)` | Demo step 2 (kind + Helm) |
+| `templates/externalsecret.yaml`, `servicemonitor.yaml`, `pdb.yaml`, `networkpolicy.yaml` | rendered only behind `enabled` flags, all off in the demo | Phase 3 (EKS + GitOps) |
 | ApplicationSet and `AppProject` manifests — proposed location `config/<env>/_argocd/` next to `targets.yml` (assumption) | replaces `targets.yml` | Phase 3 (EKS + GitOps) |
 | `docs/adr/` | ADRs for DL-30 (EKS), DL-38, DL-34 once confirmed | phase 1 review |
 
-### 8.2 Illustrative — chart `values.yaml` skeleton (`helm/source-database/values.yaml`)
+### 8.2 Chart `values.yaml` (abridged; `deephaven-connectors/<AppName>/helm/<AppName>/values.yaml` is authoritative)
 
 ```yaml
 replicaCount: 1                       # DL-33: one replica per instance for now
 image:
-  repository: ghcr.io/<org>/deephaven-connectors/source-database   # JFrog or ECR mirror on EKS (DL-34)
-  tag: ""                             # always set by the instance values / --set image.tag
-  digest: ""                          # optional pin for qa / prod (DL-20)
+  repository: ghcr.io/crazymatthsu/deephaven-connectors/source-database   # JFrog or ECR mirror on EKS (DL-34)
+  tag: ""                             # always set: instance values, --set-string image.tag=<tag> by the deployer
+  digest: ""                          # optional pin for qa / prod (DL-20): renders repository@digest
   pullPolicy: IfNotPresent
 imagePullSecrets: []
-serviceAccount: { create: true }
-identity: { env: "", flow: "", app: source-database, instance: "" }   # rendered as labels; must equal env below
-env: {}                               # map → container env; instance values set APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE, JAVA_OPTS, TZ, LOG_LEVEL_ROOT
+serviceAccount: { create: true, automountToken: false }
+identity: { env: "", flow: "", app: "", instance: "" }   # the instance values set all four; app must equal the chart name,
+                                      # and env.APP_* must equal identity (`fail` guards enforced by template / upgrade)
+env: {}                               # map → container env (sorted); instance values set APP_ENV, APP_FLOW, APP_NAME,
+                                      # APP_INSTANCE, JAVA_OPTS, LOG_LEVEL_ROOT; app-common sets TZ
 appConfig: {}                         # platform | env | common | instance → /config/<layer>/application.yml (--set-file)
-appFiles: {}                          # <layer>: { <key>: <content> } → /config/<layer>/<file>
+appFiles: {}                          # <layer>: { <file name>: <content> } → /config/<layer>/<file name>
 secrets:
   existingSecret: ""                  # defaults to <release>-secrets; mounted at /secrets/ (D2)
   externalSecret: { enabled: false, storeRef: "", vaultPath: "" }   # Phase 3
 service: { port: 8080 }               # HTTP / actuator port: health, metrics (D3 EXPOSE 8080, D6 §6.9)
-probes:                               # paths and timings sized in D6
-  startup:   { path: /actuator/health/liveness,  failureThreshold: 24, periodSeconds: 5 }   # 2-minute budget (D6 §6.9)
-  readiness: { path: /actuator/health/readiness, periodSeconds: 10 }
-  liveness:  { path: /actuator/health/liveness,  periodSeconds: 10 }
+probes:                               # paths and timings from D6 §6.9
+  startup:   { path: /actuator/health/liveness,  periodSeconds: 5,  failureThreshold: 24, timeoutSeconds: 3 }   # 2-minute budget
+  readiness: { path: /actuator/health/readiness, periodSeconds: 10, failureThreshold: 3,  timeoutSeconds: 3 }
+  liveness:  { path: /actuator/health/liveness,  periodSeconds: 10, failureThreshold: 3,  timeoutSeconds: 3 }
 resources:
   requests: { cpu: 250m, memory: 1Gi }
-  limits:   { memory: 1Gi }           # requests == limits; JVM -XX:MaxRAMPercentage=70 in JAVA_OPTS (D3, D6 §6.10)
+  limits:   { memory: 1Gi }           # requests == limits; the JVM heap is a percentage (JAVA_OPTS, D3, D6 §6.10)
 strategy: { type: Recreate }          # single-consumer default; RollingUpdate only for idempotent pipelines (D6 §6.10)
 terminationGracePeriodSeconds: 30
-podSecurityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+podSecurityContext:                   # restricted PSS (D6 §6.11); the image runs as 10001:10001 (D3) and
+  runAsNonRoot: true                  # fsGroup lets that user read the 0400 files of the /secrets/ volume
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
 securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+tmp:  { sizeLimit: 256Mi }            # emptyDir /tmp (read-only root filesystem, D6 §6.7)
+logs: { sizeLimit: 256Mi }            # emptyDir /app/logs
+topologySpread: { enabled: true, topologyKey: topology.kubernetes.io/zone, maxSkew: 1, whenUnsatisfiable: ScheduleAnyway }
 reloader: { enabled: false }          # Reloader annotation for the ESO-owned Secret (D5 §4.6)
 serviceMonitor: { enabled: false }
-podDisruptionBudget: { enabled: false }
+podDisruptionBudget: { enabled: false }   # rendered only when replicaCount > 1
+networkPolicy: { enabled: false }     # kind's default CNI does not enforce it, EKS does
 ```
 
-### 8.3 Illustrative — `helm upgrade --install` for one instance (as run by `deploy-dev`)
+`values.schema.json` rejects unknown top-level keys, an empty `image.repository` or `image.tag`, and
+secret-bearing `env` names (`SPRING_*`, `CONNECTOR_*_PASSWORD`). The selector labels add
+`app.kubernetes.io/component: connector`, so the test Job (same name and instance labels) is never a
+Service endpoint.
 
-```bash
-#!/usr/bin/env bash
-# illustrative — deploy one AppInstance; arguments come from targets.yml and the identity tuple
-set -euo pipefail
-ENV=us-dev FLOW=cash APP=source-database INST=trades-db-to-amps TAG="$1"      # TAG = image built in this run
-CHART="deephaven-connectors/${APP}/helm/${APP}"
-COMMON="config/${ENV}/${FLOW}/${APP}/app-common"
-INSTD="config/${ENV}/${FLOW}/${APP}/${INST}"
-RELEASE="${APP}-${INST}"; NS="${FLOW}"                                         # DL-38 leaning
+### 8.3 `scripts/helm-deploy-instance.sh` — the commands of §6.4 for one instance
 
-flags=( -f "${COMMON}/values.yaml" -f "${INSTD}/values.yaml"
-        --set-file "appConfig.common=${COMMON}/application.yml"
-        --set-file "appConfig.instance=${INSTD}/application.yml"
-        --set "image.tag=${TAG}" )
-[[ -f "config/_common/${APP}/application.yml" ]] && flags+=( --set-file "appConfig.platform=config/_common/${APP}/application.yml" )
-[[ -f "config/${ENV}/_common/application.yml" ]] && flags+=( --set-file "appConfig.env=config/${ENV}/_common/application.yml" )
-
-helm lint "${CHART}" "${flags[@]}"
-helm upgrade --install "${RELEASE}" "${CHART}" -n "${NS}" --create-namespace \
-  "${flags[@]}" --atomic --timeout 5m
-kubectl -n "${NS}" rollout status "deployment/${RELEASE}" --timeout=5m
-helm test "${RELEASE}" -n "${NS}"
-echo "${INST}=${TAG}" >> deployed.txt                                          # consumed by the write-back step
+```text
+helm-deploy-instance.sh <env> <flow> <AppName> <AppInstance> --tag <tag> [--namespace <ns>] [--chart <dir>]
+    [--kubeconfig <file>] [--timeout 5m] [--secret-user <u>] [--secret-password <p>]
+    [--mode lint|template|deploy] [--render-out <file>] [--dry-run]
 ```
 
-The kind job of Demo step 2 runs the same script against a cluster created in the run (images
-loaded with `kind load docker-image`, D10); the `deploy-dev` job runs it against the target in
-`targets.yml`; in Phase 3 (EKS + GitOps) the ApplicationSet of §6.6 renders the same flags.
+The script resolves the chart (`deephaven-connectors/<AppName>/helm/<AppName>`), the two values layers
+and the four `application.yml` layers from the identity tuple, builds the flag list of §6.4 (extra
+files of a layer directory become `appFiles.<layer>.<file>`, `.` escaped as `\.`) and, in `deploy`
+mode, runs namespace → `Secret` → `helm lint` → `helm upgrade --install` → `rollout status` →
+`helm test`. Its only stdout line is `deployed <flow>/<AppName>/<AppInstance>=<tag>` (every tool's
+output goes to stderr), which the write-back consumes. Exit codes: 0 ok · 1 helm / kubectl failure ·
+2 usage · 3 refused (`deploy` to an env other than `local` / `*-dev` — qa and prod are never deployed
+from CI; `lint` and `template` accept every env so that config-lint renders qa and prod) · 4 config
+tree (chart, `values.yaml` or `application.yml` missing) · 5 tool missing or not Helm 4. `--dry-run`
+prints the commands with the Secret's values masked.
+
+The kind job (`_kind-deploy.yml`) and `deploy-dev` call it through the composite action
+`.github/actions/helm-deploy-instance`, which runs it for every instance directory (or every
+`targets.yml` target), first renders each release to check that every container image was loaded into
+kind, and writes the job-summary table (release, namespace, revision, ready, `helm test`, result).
+config-lint calls `--mode lint` and `--mode template` (D5 check 12). In Phase 3 (EKS + GitOps) the
+ApplicationSet of §6.6 renders the same flags.
 
 ## 9. Open items
 

@@ -6,8 +6,9 @@ import org.yaml.snakeyaml.constructor.SafeConstructor
 import java.io.File
 
 /**
- * config-lint (D5 §6.5): checks 1–6 and 9–11 over the config tree; 7 and 8 are reported as TODO.
- * Pure over the file system plus an optional [ComposeRenderer], so that it is unit-tested.
+ * config-lint (D5 §6.5): checks 1–6 and 9–12 over the config tree; 7 and 8 are reported as TODO.
+ * Pure over the file system plus the optional [ComposeRenderer], [HelmRunner] and [ManifestValidator], so that
+ * it is unit-tested.
  */
 enum class Severity { ERROR, WARN, TODO }
 
@@ -26,6 +27,32 @@ data class ComposeRenderRequest(
 fun interface ComposeRenderer {
     /** Renders and validates; `null` when no compose CLI is available. */
     fun render(request: ComposeRenderRequest): CommandResult?
+}
+
+/** The two check-12 modes of `scripts/helm-deploy-instance.sh` (D11 §8.3). */
+enum class HelmMode(val flag: String) { LINT("lint"), TEMPLATE("template") }
+
+/** One `scripts/helm-deploy-instance.sh <env> <flow> <app> <instance> --tag <tag> --mode lint|template` run. */
+data class HelmRequest(
+    val env: String,
+    val flow: String,
+    val app: String,
+    val instance: String,
+    val tag: String,
+    val chart: File,
+    val mode: HelmMode,
+    /** [HelmMode.TEMPLATE] only: the file the manifests are rendered to (`--render-out`). */
+    val renderOut: File? = null,
+)
+
+fun interface HelmRunner {
+    /** Runs the deploy script; `null` when Helm is switched off (`-PconfigLint.helm=none`). Exit 5: no usable Helm 4. */
+    fun run(request: HelmRequest): CommandResult?
+}
+
+fun interface ManifestValidator {
+    /** kubeconform over rendered manifests (JSON output with summary); `null` when kubeconform is not available. */
+    fun validate(rendered: File): CommandResult?
 }
 
 object ConfigRules {
@@ -50,6 +77,14 @@ object ConfigRules {
     val SCRIPT_VARIABLES = setOf("CONFIG_DIR", "COMMON_DIR", "PLATFORM_DIR", "ENV_COMMON_DIR", "PROJECT")
     val IDENTITY = listOf("APP_ENV", "APP_FLOW", "APP_NAME", "APP_INSTANCE")
 
+    /** D5 §6.3: the app-facing subset — the only names a values.yaml `env:` map may carry (check 4). */
+    val VALUES_ENV_ALLOWED = IDENTITY.toSet() + setOf("JAVA_OPTS", "TZ", "LOG_LEVEL_ROOT")
+    /** Knobs both consumers set: compose.env and the values `env:` should agree (check 4 warns otherwise). */
+    val SHARED_KNOBS = listOf("JAVA_OPTS", "TZ", "LOG_LEVEL_ROOT")
+    const val VALUES = "values.yaml"
+    /** The script's exit code for "no usable Helm 4" (helm-deploy-instance.sh). */
+    const val EXIT_TOOL = 5
+
     /** D2 §6.4: secret properties; none of them may appear in any YAML layer. */
     val SECRET_PROPERTIES = listOf(
         "spring.datasource.username", "spring.datasource.password",
@@ -59,6 +94,11 @@ object ConfigRules {
 
     val DOCKER_TAG = Regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
     val RELEASE_TAG = Regex("""^\d+\.\d+\.\d+(@sha256:[0-9a-f]{64})?$""")
+    val DIGEST = Regex("^sha256:[0-9a-f]{64}$")
+    /** What `helm-deploy-instance.sh --tag` accepts: a tag, optionally pinned by digest. */
+    val TAG_REFERENCE = Regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?$")
+    /** The Kubernetes version the rendered manifests are validated against (kubeconform, check 12). */
+    const val KUBERNETES_VERSION = "1.37.0"
 
     val SECRET_VALUE_PATTERNS = listOf(
         Regex("-----BEGIN [A-Z ]*PRIVATE KEY-----") to "PEM private key",
@@ -82,14 +122,27 @@ class ConfigLinter(
     private val configRoot: File,
     /** Deployable AppName -> its compose template (`<subproject>/docker/docker-compose.yml`). */
     private val apps: Map<String, File>,
-    /** Envs in which every deployable app must have configuration (check 2, "vice versa"). */
+    /**
+     * Envs in which every deployable app must have configuration (check 2, "vice versa") and a Helm chart
+     * (check 12: ERROR there, WARN elsewhere).
+     */
     private val completeEnvs: Set<String> = setOf("local"),
     private val renderer: ComposeRenderer? = null,
-    /** When true, a missing compose CLI fails check 6 instead of warning. */
+    /** When true, a missing compose CLI (check 6) or Helm (check 12) fails instead of warning. */
     private val requireRender: Boolean = false,
+    /** AppName -> its chart directory (`<subproject>/helm/<AppName>/`), for the apps that have one (check 12). */
+    private val charts: Map<String, File> = emptyMap(),
+    /** `scripts/helm-deploy-instance.sh --mode lint|template` (check 12); null: Helm switched off. */
+    private val helm: HelmRunner? = null,
+    /** kubeconform over the rendered manifests (check 12); null: not available. */
+    private val validator: ManifestValidator? = null,
+    /** Where check 12 keeps `<env>/<flow>/<AppName>/<AppInstance>.yaml`; null: temporary files. */
+    private val renderDir: File? = null,
 ) {
     private val findings = mutableListOf<Finding>()
     private val yaml = Yaml(SafeConstructor(LoaderOptions()))
+    private var helmSkipped = false
+    private var unvalidated = 0
 
     private fun rel(file: File): String = file.relativeTo(configRoot.parentFile ?: configRoot).path
 
@@ -98,6 +151,8 @@ class ConfigLinter(
 
     fun lint(): List<Finding> {
         findings.clear()
+        helmSkipped = false
+        unvalidated = 0
         if (!configRoot.isDirectory) {
             error(3, configRoot, "config tree not found")
             return findings.toList()
@@ -112,6 +167,10 @@ class ConfigLinter(
             }
         }
         configRoot.walkTopDown().filter { it.isFile }.sortedBy { it.path }.forEach { scanSecrets(it) }
+        if (unvalidated > 0) {
+            warn(12, configRoot, "kubeconform not available: $unvalidated rendered instance(s) not validated against the " +
+                "Kubernetes ${ConfigRules.KUBERNETES_VERSION} schemas (CI installs it)")
+        }
         findings += Finding(7, Severity.TODO, "config", "merged-configuration validation against " +
             "spring-configuration-metadata.json is not implemented yet (D5 §6.5 check 7)")
         findings += Finding(8, Severity.TODO, "config", "parity report across us-dev / us-qa / us-prod is not " +
@@ -174,11 +233,22 @@ class ConfigLinter(
             val app = appDir.name
             appsSeen += app
             checkAppName(appDir)
+            if (app in apps && app !in charts) {
+                val message = "no Helm chart for '$app': expected <subproject>/helm/$app/Chart.yaml (D11 §6.1)"
+                if (env in completeEnvs) error(12, appDir, message) else warn(12, appDir, message)
+            }
             val common = File(appDir, ConfigRules.APP_COMMON)
+            var commonEnv: Map<String, String> = emptyMap()
+            var commonComplete = false
             if (!common.isDirectory) {
-                error(3, common, "required: every <env>/<flow>/<AppName>/ has app-common/application.yml")
+                error(3, common, "required: every <env>/<flow>/<AppName>/ has app-common/application.yml and values.yaml")
             } else {
-                if (!File(common, "application.yml").isFile) error(3, File(common, "application.yml"), "required file missing")
+                val appYml = File(common, "application.yml")
+                val values = File(common, ConfigRules.VALUES)
+                if (!appYml.isFile) error(3, appYml, "required file missing")
+                if (!values.isFile) error(3, values, "required file missing (Helm values layer 2, D11 §6.2)")
+                else loadValues(values)?.let { commonEnv = checkCommonValues(values, it) }
+                commonComplete = appYml.isFile && values.isFile
                 lintLayerFiles(common, allowComposeEnv = false)
             }
             for (instDir in appDir.listFiles().orEmpty().sortedBy { it.name }) {
@@ -188,7 +258,7 @@ class ConfigLinter(
                     continue
                 }
                 instances += Triple(flowDir.name, app, instDir.name)
-                lintInstance(instDir, env, flowDir.name, app)
+                lintInstance(instDir, env, flowDir.name, app, commonEnv, commonComplete)
             }
         }
     }
@@ -203,31 +273,45 @@ class ConfigLinter(
         }
     }
 
-    private fun lintInstance(dir: File, env: String, flow: String, app: String) {
+    private fun lintInstance(
+        dir: File, env: String, flow: String, app: String, commonEnv: Map<String, String>, commonComplete: Boolean,
+    ) {
         val instance = dir.name
-        when {
-            !ConfigRules.TOKEN.matches(instance) ->
-                error(1, dir, "AppInstance must match ${ConfigRules.TOKEN.pattern}")
-            instance.all { it.isDigit() } ->
-                error(1, dir, "AppInstance is a business-logic name, never a bare number (DL-37)")
+        val nameProblem = when {
+            !ConfigRules.TOKEN.matches(instance) -> "AppInstance must match ${ConfigRules.TOKEN.pattern}"
+            instance.all { it.isDigit() } -> "AppInstance is a business-logic name, never a bare number (DL-37)"
             instance.length > ConfigRules.MAX_APP_INSTANCE ->
-                error(1, dir, "AppInstance is ${instance.length} characters, at most ${ConfigRules.MAX_APP_INSTANCE}")
+                "AppInstance is ${instance.length} characters, at most ${ConfigRules.MAX_APP_INSTANCE}"
             "$app-$instance".length > ConfigRules.MAX_RELEASE_NAME ->
-                error(1, dir, "'$app-$instance' exceeds the ${ConfigRules.MAX_RELEASE_NAME}-character Helm release budget")
+                "'$app-$instance' exceeds the ${ConfigRules.MAX_RELEASE_NAME}-character Helm release budget"
+            else -> null
         }
+        nameProblem?.let { error(1, dir, it) }
         val composeEnv = File(dir, "compose.env")
         val appYml = File(dir, "application.yml")
+        val valuesFile = File(dir, ConfigRules.VALUES)
         if (!appYml.isFile) error(3, appYml, "required file missing")
+        var vars: Map<String, String>? = null
         if (!composeEnv.isFile) {
             error(3, composeEnv, "required file missing")
         } else {
-            val vars = parseEnvFile(composeEnv)
+            vars = parseEnvFile(composeEnv)
             if (vars != null) {
                 checkComposeEnv(composeEnv, vars, env, flow, app, instance)
                 render(dir, composeEnv, vars, env, flow, app, instance)
             }
         }
+        var values: Map<*, *>? = null
+        if (!valuesFile.isFile) {
+            error(3, valuesFile, "required file missing (Helm values layer 3, D11 §6.2)")
+        } else {
+            values = loadValues(valuesFile)
+            values?.let { checkInstanceValues(valuesFile, it, commonEnv, vars, env, flow, app, instance) }
+        }
         lintLayerFiles(dir, allowComposeEnv = true)
+        if (nameProblem == null && commonComplete && appYml.isFile && valuesFile.isFile) {
+            helmRender(dir, env, flow, app, instance, renderTag(values, vars))
+        }
     }
 
     /** Every file of a layer directory: YAML parses, no forbidden env files, secret scan. */
@@ -318,22 +402,133 @@ class ConfigLinter(
         }
         // Check 10: tag policy.
         val tag = vars["IMAGE_TAG"]
-        if (tag == null) {
-            error(10, file, "IMAGE_TAG missing")
-        } else {
-            val bareTag = tag.substringBefore('@')
-            if (!ConfigRules.DOCKER_TAG.matches(bareTag)) error(10, file, "IMAGE_TAG '$tag' is not a valid image tag")
-            val immutableEnv = env.endsWith("-qa") || env.endsWith("-prod")
-            if (immutableEnv && !ConfigRules.RELEASE_TAG.matches(tag)) {
-                error(10, file, "IMAGE_TAG '$tag' in $env must be an immutable release tag X.Y.Z (optionally " +
-                    "@sha256:<digest>); floating tags are allowed only in *-dev and local (DL-20)")
-            }
-        }
+        if (tag == null) error(10, file, "IMAGE_TAG missing") else checkTag(file, "IMAGE_TAG", tag, env)
         if (vars["IMAGE_REPO"].isNullOrBlank()) error(5, file, "IMAGE_REPO missing")
         for ((key, value) in vars) {
             if (ConfigRules.HOST_PORT.matches(key) && value.toIntOrNull()?.let { it in 1024..65535 } != true) {
                 error(5, file, "$key=$value must be a port in 1024..65535 (rootless Podman, D6 §6.6)")
             }
+        }
+    }
+
+    /** Check 10: the tag policy, identical for `IMAGE_TAG` (compose.env) and `image.tag` (values.yaml). */
+    private fun checkTag(file: File, what: String, tag: String, env: String) {
+        val bareTag = tag.substringBefore('@')
+        if (!ConfigRules.DOCKER_TAG.matches(bareTag)) error(10, file, "$what '$tag' is not a valid image tag")
+        val immutableEnv = env.endsWith("-qa") || env.endsWith("-prod")
+        if (immutableEnv && !ConfigRules.RELEASE_TAG.matches(tag)) {
+            error(10, file, "$what '$tag' in $env must be an immutable release tag X.Y.Z (optionally " +
+                "@sha256:<digest>); floating tags are allowed only in *-dev and local (DL-20)")
+        }
+    }
+
+    // --- values.yaml (checks 3, 4, 10) ------------------------------------------------------------------
+
+    /** A values file as a map; null when it does not parse (check 3 reports that through [lintYaml]). */
+    private fun loadValues(file: File): Map<*, *>? {
+        val documents = try {
+            yaml.loadAll(file.readText()).toList()
+        } catch (e: Exception) {
+            return null
+        }
+        return when {
+            documents.size > 1 -> { error(3, file, "a Helm values file holds one YAML document"); null }
+            documents.isEmpty() || documents[0] == null -> emptyMap<String, Any>()
+            documents[0] is Map<*, *> -> documents[0] as Map<*, *>
+            else -> { error(3, file, "must be a YAML mapping (Helm values)"); null }
+        }
+    }
+
+    /** Check 4: the `env:` map carries only app-facing variables (D5 §6.3); returns its scalar entries. */
+    private fun valuesEnv(file: File, values: Map<*, *>): Map<String, String> {
+        val env = values["env"] ?: return emptyMap()
+        if (env !is Map<*, *>) {
+            error(4, file, "env: must be a map NAME: value (the container environment, D11 §6.3)")
+            return emptyMap()
+        }
+        val result = linkedMapOf<String, String>()
+        for ((k, v) in env) {
+            val key = k.toString()
+            when {
+                ConfigRules.FORBIDDEN_PREFIXES.any { key.startsWith(it) } ->
+                    error(4, file, "env.$key is forbidden: SPRING_/LOGGING_/MANAGEMENT_/CONNECTOR_ settings belong in " +
+                        "YAML, secrets in the Secret mounted at /secrets/ (D5 §6.3, D2 §6.4)")
+                key !in ConfigRules.VALUES_ENV_ALLOWED ->
+                    error(4, file, "env.$key is not an app-facing variable (D5 §6.3; allowed: " +
+                        "${ConfigRules.VALUES_ENV_ALLOWED.sorted().joinToString()})")
+            }
+            when (v) {
+                null -> Unit
+                is Map<*, *>, is List<*> -> error(4, file, "env.$key must be a single value")
+                else -> result[key] = v.toString()
+            }
+        }
+        return result
+    }
+
+    /** app-common/values.yaml: shared values only — the tag and the identity belong to the instance. */
+    private fun checkCommonValues(file: File, values: Map<*, *>): Map<String, String> {
+        if ((values["image"] as? Map<*, *>)?.containsKey("tag") == true) {
+            error(10, file, "image.tag belongs in <AppInstance>/values.yaml (written back per instance with IMAGE_TAG, D5 §6.8)")
+        }
+        if (values.containsKey("identity")) error(4, file, "identity belongs in <AppInstance>/values.yaml (the instance's path)")
+        val env = valuesEnv(file, values)
+        if ("APP_INSTANCE" in env) error(4, file, "env.APP_INSTANCE belongs in <AppInstance>/values.yaml")
+        return env
+    }
+
+    private fun checkInstanceValues(
+        file: File, values: Map<*, *>, commonEnv: Map<String, String>, vars: Map<String, String>?,
+        env: String, flow: String, app: String, instance: String,
+    ) {
+        // Check 4: identity restated equals the path, in `identity` and in the APP_* variables.
+        val path = linkedMapOf("env" to env, "flow" to flow, "app" to app, "instance" to instance)
+        when (val identity = values["identity"]) {
+            null -> error(4, file, "identity missing: must restate the directory path { env: $env, flow: $flow, app: $app, instance: $instance }")
+            !is Map<*, *> -> error(4, file, "identity must be a map { env, flow, app, instance }")
+            else -> for ((key, want) in path) {
+                val got = identity[key]?.toString()
+                if (got == null) error(4, file, "identity.$key missing (must restate the directory path: $want)")
+                else if (got != want) error(4, file, "identity.$key=$got does not match the directory path ($want)")
+            }
+        }
+        val effective = commonEnv + valuesEnv(file, values)
+        for ((key, want) in ConfigRules.IDENTITY.zip(path.values)) {
+            val got = effective[key]
+            if (got == null) error(4, file, "env.$key missing (must restate the directory path: $want)")
+            else if (got != want) error(4, file, "env.$key=$got does not match the directory path ($want)")
+        }
+        // Check 4 (warning): compose and Kubernetes should run the instance with the same knobs.
+        if (vars != null) {
+            for (key in ConfigRules.SHARED_KNOBS) {
+                val composeValue = vars[key] ?: continue
+                val helmValue = effective[key]
+                if (helmValue == null) {
+                    warn(4, file, "$key is set in compose.env ($composeValue) but not in the values env (app-common or instance)")
+                } else if (helmValue != composeValue) {
+                    warn(4, file, "env.$key=$helmValue differs from $key=$composeValue in compose.env")
+                }
+            }
+        }
+        // Checks 10 and 4: image.tag obeys the tag policy and equals IMAGE_TAG (one record, D5 §6.8).
+        val image = values["image"]
+        val tag = (image as? Map<*, *>)?.get("tag")
+        when {
+            image != null && image !is Map<*, *> -> error(10, file, "image must be a map (image.tag, image.digest)")
+            tag == null -> error(10, file, "image.tag missing: the instance's image tag, equal to IMAGE_TAG in compose.env (D11 §6.2)")
+            tag !is String -> error(10, file, "image.tag must be a string: quote it (\"$tag\")")
+            else -> {
+                checkTag(file, "image.tag", tag, env)
+                val composeTag = vars?.get("IMAGE_TAG")
+                if (composeTag != null && composeTag != tag) {
+                    error(4, file, "image.tag '$tag' differs from IMAGE_TAG '$composeTag' in compose.env: both record " +
+                        "the deployed tag and are written back together (D5 §6.8)")
+                }
+            }
+        }
+        val digest = (image as? Map<*, *>)?.get("digest")?.toString()
+        if (!digest.isNullOrEmpty() && !ConfigRules.DIGEST.matches(digest)) {
+            error(10, file, "image.digest '$digest' must be sha256:<64 hex digits> (DL-20)")
         }
     }
 
@@ -368,6 +563,88 @@ class ConfigLinter(
                 result.output.lineSequence().filter { it.isNotBlank() }.joinToString("\n") { "      $it" })
         }
     }
+
+    // --- check 12: helm lint, helm template, kubeconform ------------------------------------------------
+
+    /** The tag check 12 renders with: the instance's image.tag, else IMAGE_TAG, when the deploy script accepts it. */
+    private fun renderTag(values: Map<*, *>?, vars: Map<String, String>?): String {
+        val fromValues = (values?.get("image") as? Map<*, *>)?.get("tag") as? String
+        return listOfNotNull(fromValues, vars?.get("IMAGE_TAG")).firstOrNull { ConfigRules.TAG_REFERENCE.matches(it) }
+            ?: "config-lint"
+    }
+
+    private fun indented(output: String): String =
+        output.lineSequence().filter { it.isNotBlank() }.joinToString("\n") { "      $it" }
+
+    /** No usable Helm: reported once for the whole run (the same cause for every instance). */
+    private fun helmUnavailable(dir: File, reason: String) {
+        if (helmSkipped) return
+        helmSkipped = true
+        val message = "helm lint / helm template skipped for every instance: $reason"
+        if (requireRender) error(12, dir, message) else warn(12, dir, message)
+    }
+
+    /**
+     * Check 12 (D5 §6.5, D11 §6.4): `helm lint` and `helm template` of one instance through
+     * scripts/helm-deploy-instance.sh — the flag list has one implementation — then kubeconform over the result.
+     * `helm lint` does not evaluate the chart's `fail` guards; `helm template` does.
+     */
+    private fun helmRender(dir: File, env: String, flow: String, app: String, instance: String, tag: String) {
+        val chart = charts[app] ?: return // reported once per app directory
+        if (helmSkipped) return
+        val runner = helm
+        if (runner == null) {
+            helmUnavailable(dir, "Helm is switched off (-PconfigLint.helm=none)")
+            return
+        }
+        fun run(mode: HelmMode, out: File?): CommandResult? {
+            val result = runner.run(HelmRequest(env, flow, app, instance, tag, chart, mode, out))
+            when {
+                result == null -> helmUnavailable(dir, "Helm is switched off (-PconfigLint.helm=none)")
+                result.exitCode == ConfigRules.EXIT_TOOL ->
+                    helmUnavailable(dir, "no usable Helm 4 (-PconfigLint.helm=auto|none|<path>):\n${indented(result.output)}")
+                result.exitCode != 0 -> error(12, dir, "helm ${mode.flag} failed (scripts/helm-deploy-instance.sh $env $flow $app " +
+                    "$instance --tag $tag --mode ${mode.flag}):\n${indented(result.output)}")
+                else -> return result
+            }
+            return null
+        }
+        run(HelmMode.LINT, null) ?: return
+        val out = renderDir?.let { File(it, "$env/$flow/$app/$instance.yaml") }
+            ?: File.createTempFile("config-lint-$app-$instance-", ".yaml").apply { deleteOnExit() }
+        out.parentFile.mkdirs()
+        run(HelmMode.TEMPLATE, out) ?: return
+        val result = validator?.validate(out)
+        if (result == null) {
+            unvalidated++
+            return
+        }
+        val summary = kubeconformSummary(result.output)
+        when {
+            result.exitCode != 0 -> error(12, dir, "kubeconform (-strict, Kubernetes ${ConfigRules.KUBERNETES_VERSION}) " +
+                "rejected ${rel(out)}:\n${indented(kubeconformProblems(result.output) ?: result.output)}")
+            summary != null && (summary["valid"] ?: 0) == 0 ->
+                warn(12, dir, "kubeconform validated no resource of ${rel(out)} (skipped: ${summary["skipped"]}; no schemas " +
+                    "for Kubernetes ${ConfigRules.KUBERNETES_VERSION}?)")
+        }
+    }
+
+    /** `{"resources": [...], "summary": {"valid": n, ...}}` of `kubeconform -output json -summary`, when it parses. */
+    private fun kubeconformJson(output: String): Map<*, *>? {
+        val json = output.substring(output.indexOf('{').takeIf { it >= 0 } ?: return null)
+        return try { yaml.load<Any?>(json) as? Map<*, *> } catch (e: Exception) { null }
+    }
+
+    private fun kubeconformSummary(output: String): Map<String, Int>? =
+        (kubeconformJson(output)?.get("summary") as? Map<*, *>)?.entries
+            ?.associate { (k, v) -> k.toString() to ((v as? Number)?.toInt() ?: 0) }
+
+    private fun kubeconformProblems(output: String): String? =
+        (kubeconformJson(output)?.get("resources") as? List<*>)?.filterIsInstance<Map<*, *>>()?.joinToString("\n") { r ->
+            val errors = (r["validationErrors"] as? List<*>)?.filterIsInstance<Map<*, *>>()
+                ?.joinToString("; ") { "${it["path"]}: ${it["msg"]}" }
+            "${r["kind"]} ${r["name"]}: ${r["status"]} ${errors ?: r["msg"] ?: ""}".trimEnd()
+        }?.takeIf { it.isNotBlank() }
 
     // --- check 9: secret scan ---------------------------------------------------------------------------
 

@@ -1,0 +1,15 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+{{- /* Only with more than one replica: with one, a PDB would block node drains for ever (D6 §6.10). */}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "connector.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "connector.selectorLabels" . | nindent 6 }}
+{{- end }}

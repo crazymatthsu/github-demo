@@ -1,0 +1,12 @@
+# Patterns to ignore when packaging the chart (helm package); the directory is used unpackaged by
+# scripts/helm-deploy-instance.sh and config-lint.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/

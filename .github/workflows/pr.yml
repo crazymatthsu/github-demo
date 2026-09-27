@@ -3,6 +3,9 @@
 #   push to a branch            fast tier: affected build + unit tests + lint + config-lint (no images, no containers)
 #   pull_request / merge_group  fast tier + images pr-<n>-<sha7> + component ITs of the affected projects
 #                               (all projects when shared code changed, on the merge queue, or with label ci:full)
+#                               + kind-deploy (demo step 2: Helm releases of us-dev/*/source-database in a
+#                               throwaway kind cluster) when detect-affected reports deploy-test and the
+#                               source-database image was pushed
 #   docs-only changes           everything skipped; pr-gate passes with a docs-only summary
 # `pr-gate` fans everything in and is the ONLY required status check on `main` (D7 §5.6).
 name: pr
@@ -33,6 +36,7 @@ jobs:
       full: ${{ steps.affected.outputs.full }}
       docs-only: ${{ steps.affected.outputs.docs-only }}
       base-changed: ${{ steps.affected.outputs.base-changed }}
+      deploy-test: ${{ steps.affected.outputs.deploy-test }}
       reason: ${{ steps.affected.outputs.reason }}
     steps:
       - uses: actions/checkout@v7
@@ -125,12 +129,33 @@ jobs:
       ci-build-image: ${{ needs.build.outputs.ci-build-image }}
       retention-days: 7
 
+  kind-deploy:
+    # Demo step 2 (D10 §5.9, D11 §6.4): one Helm release per us-dev instance of source-database in a kind
+    # cluster, readiness, helm test, smoke diff, cluster deleted. Needs the source-database image this run
+    # pushed (same-repo PRs and the merge queue); a config-only change builds no image, so there the
+    # per-instance helm lint / template of config-lint is the PR check and main.yml's kind-deploy runs
+    # before deploy-dev.
+    needs: [detect-affected, build]
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      && needs.detect-affected.outputs.deploy-test == 'true'
+      && contains(needs.build.outputs.images, '":deephaven-connectors:source-database"')
+    uses: ./.github/workflows/_kind-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      env: us-dev
+      app: source-database
+      images: ${{ needs.build.outputs.images }}
+      retention-days: 7
+
   pr-gate:
     # A plain branch push reports `push-gate`: its fast-tier result lands on the same head SHA as the
     # PR run and must never satisfy (or mask) the required `pr-gate` check.
     name: ${{ github.event_name == 'push' && 'push-gate' || 'pr-gate' }}
     if: always()
-    needs: [detect-affected, lint, build, config-lint, integration-test]
+    needs: [detect-affected, lint, build, config-lint, integration-test, kind-deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -142,6 +167,9 @@ jobs:
           DOCS_ONLY: ${{ needs.detect-affected.outputs.docs-only }}
           MATRIX: ${{ needs.detect-affected.outputs.matrix }}
           IMAGES: ${{ needs.build.outputs.images }}
+          DEPLOY_TEST: ${{ needs.detect-affected.outputs.deploy-test }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          KIND_RESULT: ${{ needs.kind-deploy.result }}
         run: |
           set -euo pipefail
           {
@@ -169,6 +197,15 @@ jobs:
             else
               echo "::warning::images not pushed (fork PR), component ITs skipped — the merge queue and main.yml run them"
               echo "- **component ITs skipped**: fork PR without registry write access" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          # kind-deploy (demo step 2) is skipped when no source-database image was pushed in this run.
+          if [[ $DOCS_ONLY != true && ($EVENT == pull_request || $EVENT == merge_group) && $DEPLOY_TEST == true &&
+                $KIND_RESULT == skipped && ($BUILD_RESULT == success || $BUILD_RESULT == skipped) ]]; then
+            if [[ $EVENT == merge_group ]]; then
+              echo "::error::merge queue: the kind deploy test did not run (no source-database image in this run)"; fail=1
+            else
+              echo "- **kind deploy skipped**: no source-database image was pushed in this run (fork PR, or a change that builds none, e.g. config-only). config-lint rendered every release; main.yml runs the kind deploy before deploy-dev." >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
           exit "$fail"

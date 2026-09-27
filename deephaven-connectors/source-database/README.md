@@ -25,6 +25,24 @@ scripts/run-compose.sh local cash source-database positions-db-to-deephaven down
 command, `--dry-run` shows what would run. Configuration lives in `config/<env>/cash/source-database/`
 (instances `trades-db-to-amps`, `positions-db-to-deephaven`), never in this directory (D5).
 
+## Helm (demo step 2)
+
+The chart is [`helm/source-database/`](helm/source-database/README.md): one release `source-database-<AppInstance>` per
+instance directory, in the namespace of its flow, with the values layers chart `values.yaml` →
+`config/<env>/<flow>/source-database/app-common/values.yaml` → `<AppInstance>/values.yaml` (`image.tag`,
+identity, `env`) and the `application.yml` layers as file values (D11). One script builds the flag list for
+every caller — config-lint, the kind deploy test and deploy-dev; run it from the repository root:
+
+```bash
+scripts/helm-deploy-instance.sh us-dev cash source-database trades-db-to-amps --tag 0.1.0-rc.39 --mode template   # or --mode lint
+scripts/helm-deploy-instance.sh local cash source-database positions-db-to-deephaven --tag local \
+  --secret-user sa --secret-password "$SA_PASSWORD"   # namespace, Secret, upgrade --install, rollout, helm test
+scripts/helm-smoke-diff.sh -n cash source-database-trades-db-to-amps source-database-positions-db-to-deephaven   # once both are deployed
+```
+
+`--help` lists the options and exit codes, `--dry-run` prints the commands; `./gradlew configLint` lints and
+renders every instance (D5 check 12). A local kind cluster to deploy into: `test-infra/kind/`.
+
 ## Configuration keys
 
 | Key | Meaning |

@@ -1,0 +1,14 @@
+{{ .Release.Name }} ({{ include "connector.tuple" . }}) in namespace {{ .Release.Namespace }}
+image {{ include "connector.image" . }}
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "connector.fullname" . }}
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "connector.fullname" . }} -- curl -fsS localhost:8080/actuator/connectorconfig
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "connector.fullname" . }} 8080:{{ .Values.service.port }}
+
+The pod mounts the Secret {{ include "connector.secretName" . }} at /secrets/ (keys = Spring
+property names, e.g. spring.datasource.password).
+{{- if .Values.secrets.externalSecret.enabled }} The chart's ExternalSecret writes it from Vault.
+{{- else }} The Secret is not part of this release:
+scripts/helm-deploy-instance.sh creates it, and the pod waits until it exists.
+{{- end }}

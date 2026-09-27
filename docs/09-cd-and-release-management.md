@@ -33,7 +33,7 @@ config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
 | Production on Kubernetes on EKS; compose only for local dev, CI stacks and the dev compose hosts of Demo step 1 | DL-02, §5.8 | qa and prod are Kubernetes-only from the first design; the compose path exists for one demo step |
 | Merge to `main` auto-deploys to the dev targets; qa and prod stay PR-gated | §2.2, §4, §5.12 (decided v0.7) | `deploy-dev` job under GitHub Environment `dev` with no reviewers; never touches qa / prod |
 | Config in this monorepo under `config/<env>/...`, `targets.yml` per env | DL-06, §5.7 (decided) | the config tree is the deployment record; write-backs land in the same repository, hence the loop guard (DL-36) |
-| Helm chart per app; one release `<app>-<instance>` per AppInstance, `replicas: 1` | DL-29, DL-33 (decided) | promotion and rollback are per instance; `helm upgrade --install ... --atomic` is the unit of deploy |
+| Helm chart per app; one release `<app>-<instance>` per AppInstance, `replicas: 1` | DL-29, DL-33 (decided) | promotion and rollback are per instance; `helm upgrade --install ... --rollback-on-failure --wait` is the unit of deploy |
 | Same digest promoted across `docker-dev-local → docker-qa-local → docker-prod-local`, never rebuilt | §5.4, §5.12 | the qa and prod bump PRs change a tag (and pin a digest, DL-20) — no build step in promotion |
 | Deployment windows per region and flow (trading hours); region ordering | §2.1, §5.12 | enforced in the cluster by controller sync windows, not only in the pipeline |
 | No production cluster credentials in GitHub; the controller pulls | §5.12 | Phase 3 replaces CI push with Argo CD reconciliation (DL-30 leaning) |
@@ -45,7 +45,7 @@ config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
 |---|---|
 | Environment model `<region>-<stage>` × flow × instance; GitHub Environments with protection rules (reviewers for qa / prod, deployment branches limited to release tags) | §6.1, §6.2 |
 | Promotion flow: build once → dev auto on `main` → qa on release tag (bump PR + approval) → prod on approved PR + change ticket; same digest, no rebuild | §6.3, §7.2 |
-| Auto-deploy to dev on merge to `main`: `deploy-dev` job, `targets.yml`, compose adapter (DL-35), Helm adapter (`--atomic --timeout 5m`), Argo CD hand-over, tag write-back with loop guard (DL-36), record, failure behaviour | §4.1, §4.2, §6.4–§6.6 |
+| Auto-deploy to dev on merge to `main`: `deploy-dev` job, `targets.yml`, compose adapter (DL-35), Helm adapter (`--rollback-on-failure --wait --timeout 5m`), Argo CD hand-over, tag write-back with loop guard (DL-36), record, failure behaviour | §4.1, §4.2, §6.4–§6.6 |
 | Deploy mechanics on EKS: controller reconciles a merged bump into a rolling update; probes gate; `maxUnavailable` / `maxSurge` per instance; PDB; progressive delivery where replicas exist; post-sync smoke test | §6.7, §7.4 (details in D6, D11) |
 | Deployment windows per region and flow, region ordering, enforced by sync windows | §6.8 |
 | Rollback: revert the bump PR, time-to-rollback target, schema compatibility | §6.9, §7.4 |
@@ -190,11 +190,11 @@ reaches prod.
 | Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
 | Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `kind: compose` or `kind: helm` (schema in D5 §6.6) |
 | Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back. **Demo placeholder (brief v1.1):** no dev host exists, so the step runs `run-compose.sh ... start --dry-run` on the runner (validates the target and prints the compose command) and echoes the SSH command it would run, next to a `TODO(DL-35)` comment describing the transport (§6.6) |
-| Helm adapter (Demo step 2) | per target: `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <flow> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml --atomic --timeout 5m`; kind created in the job and deleted at the end until a dev cluster exists (DL-32) |
-| Health gate | compose: `health` exit code; Helm: `--atomic` plus `kubectl rollout status` and the smoke test (two instances differ in effective config, §7 of the brief) |
+| Helm adapter (Demo step 2) | per `kind: helm` target: `scripts/helm-deploy-instance.sh us-dev <flow> <app> <inst> --tag <tag> --namespace <ns>` (D11 §8.3) = `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <ns> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml [--set-file appConfig.platform=... appConfig.env=...] --rollback-on-failure --wait --timeout 5m`, then `rollout status` and `helm test`. Targets of `cluster: kind-ci` go into a kind cluster `deploy-<run_id>-<attempt>` created in the job and deleted in `always()` until a dev cluster exists (DL-32); any other cluster fails with `TODO(Phase 3)` (kubeconfig from the Environment `dev` secrets) |
+| Health gate | compose: `health` exit code; Helm: `--rollback-on-failure --wait` plus `kubectl rollout status` and `helm test` (the kind deploy test adds the smoke diff: two instances differ in effective config, §7 of the brief) |
 | Write-back | commit `chore(config): us-dev deployed <tag> [skip ci]` by the bot identity (GitHub App token, DL-09 / §5.5) touching only `image.tag` / `IMAGE_TAG` of the deployed instances; pushed to `main` directly (branch protection allows the App) |
 | Record | `GitHub Deployment` (environment `dev`, ref, sha, payload `{instance, tag, digest, target}`) and a job summary table per instance |
-| Failure | job red; compose: `pull` failure changes nothing, a `health` failure re-runs `start` with the previous `IMAGE_TAG` (image still in the local cache); Helm: `--atomic` rolled back, previous release keeps running; no write-back for failed instances |
+| Failure | job red; compose: `pull` failure changes nothing, a `health` failure re-runs `start` with the previous `IMAGE_TAG` (image still in the local cache); Helm: `--rollback-on-failure` restored the previous revision (a failed `rollout status` or `helm test` afterwards runs `helm rollback`; a failed first install stays in place for diagnostics), previous release keeps running; no write-back for failed instances |
 | Never | touches `config/*-qa/**` or `config/*-prod/**`; the adapter refuses any env other than `*-dev` (and `run-compose.sh` enforces the same allow-list, D6) |
 | Phase 3 | the adapters are replaced by Argo CD auto-sync on `config/<region>-dev/**`; the job shrinks to "wait for Application health, smoke test, write-back" |
 
@@ -242,17 +242,17 @@ deploy-dev:
           deephaven-connectors/${args#* * }/scripts/run-compose.sh $args start --dry-run   # placeholder: validate + print
           echo "would run: ssh deploy@$host 'IMAGE_TAG=$IMAGE_TAG run-compose.sh $args pull && ... start && ... health'"
         done
+    # Demo step 2: kind: helm targets of cluster kind-ci go into a kind cluster created here (deploy-<run_id>-<attempt>);
+    # setup-kube-tools, kind-cluster up + load precede this step, kind-cluster down + leak-check follow it in always().
     - name: Deploy helm targets (Demo step 2)
-      run: |
-        for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select((.kind // "helm")=="helm")'); do
-          IFS=/ read -r flow app inst <<<"$(jq -r .instance <<<"$t")"
-          cfg="config/us-dev/$flow/$app"
-          helm upgrade --install "$app-$inst" "deephaven-connectors/$app/helm/$app" -n "$flow" --create-namespace \
-            -f "$cfg/app-common/values.yaml" -f "$cfg/$inst/values.yaml" \
-            --set image.tag="${{ needs.publish.outputs.tag }}" \
-            --set-file appConfig.common="$cfg/app-common/application.yml" \
-            --set-file appConfig.instance="$cfg/$inst/application.yml" --atomic --timeout 5m
-        done
+      id: helm
+      uses: ./.github/actions/helm-deploy-instance      # runs scripts/helm-deploy-instance.sh per target (D11 §8.3):
+      with:                                              # namespace + PSS labels, Secret, helm lint, upgrade --install
+        env: us-dev                                      # --rollback-on-failure --wait --timeout 5m, rollout status, helm test
+        targets: ${{ steps.targets.outputs.helm }}      # [{instance: "<flow>/<app>/<inst>", namespace: "<ns>"}]
+        tag: ${{ needs.publish.outputs.tag }}
+        loaded-images: ${{ steps.load.outputs.loaded }}
+        fail-on-error: 'false'                           # the successful instances are written back first
     - name: Write back deployed tag
       run: scripts/ci/write-back-tag.sh us-dev "${{ needs.publish.outputs.tag }}"   # commits "[skip ci]" as the bot
     - name: Record deployment
@@ -288,7 +288,7 @@ is the enforcement point.
 
 | Situation | Mechanism | Target time | Record |
 |---|---|---|---|
-| `deploy-dev` Helm upgrade fails | `--atomic` restores the previous release automatically; job red; no write-back | immediate | job summary, Deployment `failure` |
+| `deploy-dev` Helm upgrade fails | `--rollback-on-failure` restores the previous revision automatically (a failed `rollout status` or `helm test` afterwards runs `helm rollback`; a failed first install has nothing to restore and stays in place for diagnostics); job red; no write-back | immediate | job summary, Deployment `failure` |
 | `deploy-dev` compose `health` fails | adapter re-runs `start` with the previous `IMAGE_TAG` (from the checked-out `compose.env`, image still cached on the host); job red | < 2 min | job summary |
 | Bad release in qa or prod, cluster healthy but behaviour wrong | **revert the bump PR** (same gates, expedited approvals); Argo CD syncs the previous manifest; the previous digest is still in the prod repo (never deleted, D4) | ≤ 15 min from decision to sync (to confirm with change management) | revert PR + Deployment |
 | Prod incident needing seconds, not minutes | ops runs `argocd app rollback <app>-<inst>` (or `helm rollback` with break-glass credentials); auto-sync is disabled on that Application until the revert PR merges — otherwise `selfHeal` would re-apply the bad version | minutes | Argo CD history + follow-up revert PR within the same day |
@@ -397,7 +397,7 @@ tightens per stage while the artefact — the image digest recorded in dev — n
 flowchart LR
   A["PR merged to main"] --> B["main.yml: build, ITs,<br/>publish 1.5.0-rc.n"]
   B --> C["deploy-dev job<br/>(Environment dev)"]
-  C --> D["run-compose.sh pull/start/health<br/>or helm upgrade --atomic"]
+  C --> D["run-compose.sh pull/start/health<br/>or helm upgrade --rollback-on-failure --wait"]
   D --> E["write-back tag [skip ci]"]
   E -. "loop guard: no redeploy" .-> C
   F["tag v1.5.0"] --> G["release.yml: retag 1.5.0 + sha-,<br/>GitHub Release"]
@@ -513,7 +513,7 @@ branches exist.
 | Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
 | Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof) and a dev bump PR so dev runs the release tag |
 | Demo step 1 (compose) | GitHub Environment `dev` settings; branch protection on `main`; `CODEOWNERS` with `config/**` rules | gates as in §6.2 |
-| Demo step 2 (kind + Helm) | `deploy-dev` Helm adapter: kind cluster in the job, `helm upgrade --install ... --atomic --timeout 5m` per `type: helm` target, readiness wait, smoke test, cluster deleted | one release per AppInstance from the config tree; `--atomic` rollback on a failing release |
+| Demo step 2 (kind + Helm) | `_deploy-dev.yml` Helm adapter: kind cluster `deploy-<run_id>-<attempt>` in the job, `scripts/helm-deploy-instance.sh` (`helm upgrade --install ... --rollback-on-failure --wait --timeout 5m`, `rollout status`, `helm test`) per `kind: helm` target of `cluster: kind-ci`, write-back of `image.tag` and `IMAGE_TAG`, cluster deleted and leak-checked in `always()` | one release per AppInstance from the config tree; `--rollback-on-failure` on a failing upgrade |
 | Demo step 2 (kind + Helm) | `helm lint` / `helm template` for every instance in the config-lint job | parity check of §6.14 |
 | Phase 3 (EKS + GitOps) | Argo CD `ApplicationSet` and `AppProject` with `syncWindows` per `<env>/<flow>` (D11); `promote` job under Environments `<region>-qa` / `<region>-prod`; Argo CD notifications | documented, not provisioned by the demo |
 

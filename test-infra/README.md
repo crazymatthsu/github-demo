@@ -3,8 +3,9 @@
 Dependency stacks, test data and the demo CA for the integration tests (D8, D10). One script,
 `compose/stack.sh`, drives the stacks for both callers: the CI workflow and Gradle's
 `composeUp` / `composeDown` / `devUp` / `devDown`. A laptop and a runner therefore run the same
-commands against the same files. Docker compose is the only stack mechanism in the demo (no
-Testcontainers, DL-15, DL-24).
+commands against the same files. Docker compose is the only stack mechanism of the integration tests
+(no Testcontainers, DL-15, DL-24). Demo step 2 adds `kind/`, a throwaway Kubernetes cluster for the Helm
+deployment test (DL-32), which is not an integration-test stack.
 
 ```
 test-infra/
@@ -19,6 +20,10 @@ test-infra/
 │   ├── versions.env          image references, tag + digest, one line each
 │   ├── stacks.yml            which stacks each Gradle subproject declares
 │   └── stack.sh              up | diagnostics | down | leak-check
+├── kind/                     demo step 2: the kind cluster of the Helm deployment test (README inside)
+│   ├── versions.env          pinned kind, kubectl, helm, kubeconform (= the ci-build image pins)
+│   ├── cluster.yaml          one control-plane node, no port mappings
+│   └── kind.sh               up | load | diagnostics | down | leak-check
 ├── seed/sqlserver/           generic SQL helpers (databases) + apply.sh, run inside the container
 └── testdata/<connector>/<case>/{manifest.yml,input/,expected/}   (D8 §6.5)
 ```
@@ -187,6 +192,24 @@ test-infra/compose/stack.sh up --project :deephaven-connectors:source-database
 test-infra/compose/stack.sh down
 ```
 
+## kind (demo step 2, D10 §5.9)
+
+`kind/kind.sh` is the kind counterpart of `compose/stack.sh`. It uses the same exit codes (0 / 1 / 2 /
+5), runs teardown in `down` and proves it with `leak-check` (DL-27). The workflows call it through
+`.github/actions/kind-cluster`:
+
+- The `kind-deploy` job (`.github/workflows/_kind-deploy.yml`, in `pr.yml` and `main.yml`) creates
+  the cluster `ci-<run_id>-<attempt>`. It loads the app image built in the run, digest in and
+  `<repo>:<tag>` on the node, and installs one Helm release per instance of
+  `config/us-dev/*/source-database/`. Each release goes through `scripts/helm-deploy-instance.sh`:
+  readiness, then `helm test`. A smoke diff across the two releases follows, then `down` and
+  `leak-check` in `always()` steps.
+- `deploy-dev` runs the same up, load, deploy, down and leak-check steps, without the smoke diff, for
+  the `kind: helm` targets with `cluster: kind-ci`. Its cluster is named `deploy-<run_id>-<attempt>`.
+
+`kind/README.md` covers the commands, the image-loading rule, the teardown layers and the local flow:
+create, load, deploy both `local` instances, smoke diff, delete.
+
 ## Test data (D8 §5.4, §5.5, §6.5)
 
 `testdata/<connector>/<case>/` holds `manifest.yml` (instance, dataset version, input database and
@@ -205,4 +228,6 @@ no Docker daemon in the authoring environment. The first real runs have to confi
 Deephaven 42.5 reaches healthy within the start period on a GitHub-hosted runner; SQL Server starts
 with the chosen memory settings; Kafka's dual listeners work; the whole stack fits the runner's
 memory (D10 §5.8, measure with `docker stats`); and the teardown drill (passing, failing and
-cancelled runs) leaves nothing behind.
+cancelled runs) leaves nothing behind. `kind/kind.sh` is likewise tested against a stub engine only.
+The cluster start, image load, rollout, `helm test`, smoke diff and kind teardown are proven by the
+first `kind-deploy` runs.

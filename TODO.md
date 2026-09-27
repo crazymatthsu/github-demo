@@ -967,13 +967,13 @@ Tasks
   validates the target and the exact SSH command is printed, with a `TODO(DL-35)` comment block
   describing the implementation (D9 §6.6); demo step 2
   runs `helm upgrade --install <app>-<inst> helm/<app> -f <app-common>/values.yaml
-  -f <inst>/values.yaml --set image.tag=<tag> --set-file ... --atomic --timeout 5m` into the target
+  -f <inst>/values.yaml --set-string image.tag=<tag> --set-file ... --rollback-on-failure --wait --timeout 5m` into the target
   cluster (kind inside the workflow until a dev cluster exists; EKS later); Phase 3 hands this to
   Argo CD auto-sync. The job then **writes the deployed tag back** into the instance `values.yaml` /
   `compose.env` and commits with a **loop guard** (DL-36: skip bot-authored commits in the workflow
   `if:`, plus `[skip ci]`) so the write-back does not start another deploy. A config-only merge by a
   human still deploys. Record: GitHub Deployment + job summary. Failure: job red, previous release
-  keeps running (`--atomic` rolls back Helm; on the compose hosts `pull` runs first so a registry
+  keeps running (`--rollback-on-failure`, Helm 4's `--atomic`, rolls back Helm; on the compose hosts `pull` runs first so a registry
   failure changes nothing, and a failed `health` re-runs `start` with the previous tag — D9 §6.9). qa
   and prod are never touched by this job.
 - Deploy mechanics on EKS (v0.4, consistent with §5.7): a merged bump in the config repo is
@@ -1130,23 +1130,32 @@ Tasks
 
 **Demo step 2 — kind and Helm (§4)**
 
-- [ ] `helm lint` and `helm template` pass for every AppInstance in the config tree (config-lint job).
-- [ ] A CI job creates a kind cluster, loads the images built in the run, installs one Helm release
+- [x] `helm lint` and `helm template` pass for every AppInstance in the config tree (config-lint job) — check 12
+      through `scripts/helm-deploy-instance.sh --mode lint|template`, plus kubeconform on the rendered releases (v1.2).
+- [x] A CI job creates a kind cluster, loads the images built in the run, installs one Helm release
       per AppInstance for `us-dev/cash/source-database/{trades-db-to-amps,positions-db-to-deephaven}`
       with `replicas: 1`, waits
       for readiness, runs a smoke test proving the two instances differ in config, and deletes the
-      cluster.
+      cluster — `_kind-deploy.yml` (job `kind-deploy` in `pr.yml` and `main.yml`): `helm test` plus
+      `scripts/helm-smoke-diff.sh`, `kind.sh down` and `leak-check` in `always()` (v1.2).
 
 **CD on merge to `main` (§5.12)**
 
-- [ ] Merging a PR to `main` runs build → tests → publish → `deploy-dev` with no manual step: step 1
+- [x] Merging a PR to `main` runs build → tests → publish → `deploy-dev` with no manual step: step 1
       resolves the compose targets in `config/us-dev/targets.yml`, runs `run-compose.sh ... --dry-run`
       for each on the runner and prints the SSH command it would run (placeholder with a `TODO(DL-35)`
-      comment; no host needed in the demo); step 2 runs `helm upgrade --install` into the target cluster.
-- [ ] The deployed tag is written back to the instance config by the bot, and that commit does not
-      trigger another deploy (loop guard verified).
-- [ ] qa and prod are untouched by the `main` workflow; a failed deploy leaves the previous release
-      running and the job red.
+      comment; no host needed in the demo); step 2 runs `helm upgrade --install` into the target cluster
+      — step 1 proven by the first `main` runs (`0.1.0-rc.39` deployed); step 2's Helm adapter in
+      `_deploy-dev.yml` deploys the `kind: helm` targets of `cluster: kind-ci` into a kind cluster created
+      in the job, proven by the first `main` run after the step 2 merge (v1.2).
+- [x] The deployed tag is written back to the instance config by the bot, and that commit does not
+      trigger another deploy (loop guard verified) — `chore(config): us-dev deployed 0.1.0-rc.39 [skip ci]`
+      started no run; step 2 writes `IMAGE_TAG` and `image.tag` together (v1.2).
+- [x] qa and prod are untouched by the `main` workflow; a failed deploy leaves the previous release
+      running and the job red — `deploy-dev` reads only `config/us-dev/targets.yml`, `run-compose.sh` and
+      `helm-deploy-instance.sh` refuse any env other than `local` / `*-dev`; the Helm rollback path
+      (`--rollback-on-failure`, `helm rollback` after a failed `helm test`) is by construction and not yet
+      drilled (follow-up in §8) (v1.2).
 
 ---
 
@@ -1155,6 +1164,14 @@ Tasks
 Infrastructure and platform
 
 - [x] "Git subprojects" = Gradle subprojects in one git repository; no git submodules (decided v0.5).
+- [ ] *(Demo step 2 follow-up)* Teardown drill for the kind job: `nightly.yml` proves the compose teardown on a
+      failing and a cancelled run (DL-27); add the same two drills for `_kind-deploy.yml` (`kind.sh down` and
+      `leak-check` after a failing `helm upgrade` and after a cancel), and a rollback drill for the Helm adapter
+      (a deliberately failing upgrade over a deployed revision leaves the previous revision running).
+- [ ] *(Demo step 2 follow-up)* A config-only PR builds no image, so its kind deploy test cannot run on the PR
+      (config-lint's `helm lint` / `helm template` / kubeconform is the PR check; `main` runs `kind-deploy` before
+      `deploy-dev`). Decide whether a config-only PR should deploy the `main` image of the base commit into kind
+      instead (needs the digest of the last published `main` image).
 - [ ] *(Demo step 1 follow-up)* gRPC/Netty alignment: the Spring Boot 4.1.1 BOM raises gRPC to 1.83.1 (Netty 4.2, protobuf 4.35) while the Deephaven 42.5 Java client was built against gRPC 1.76.2; Arrow Flight's zero-copy read path breaks on the newer gRPC, so the reference IT sets `arrow.flight.enable_zero_copy_read=false`. Keep that switch, or pin gRPC/Netty to the client's versions in the version catalog for the test suites?
 - [ ] *(Phase 3 — not needed for the demo skeleton)* EKS topology: one cluster per `<region>-<stage>`, or shared clusters with a namespace per
       stage? Are dev and qa on EKS too? Which AWS regions serve `us` and `jp`?
@@ -1268,6 +1285,7 @@ Process
 | v0.9 | 2026-09-26 | Phase 1 design documents written: D0–D11 under `docs/` and one ADR per decision under `docs/adr/`, every Mermaid diagram parse-checked. Corrections surfaced by the documents: the config tree lives at the repository root; the release workflow opens the qa bump PR; pre-release form `rc.<n>`; `helm/<AppName>/` replaces `k8s/`; config-lint lives in this repository; component ITs run on compose; CI test stacks use the `local` env; test data root `test-infra/testdata/`; PR images pushed as `pr-<n>-<sha7>`; `<AppName>-<AppInstance>` ≤ 53 (Helm) with AppInstance ≤ 32; environment variables rank above imported config data; failed compose deploys re-run `start` with the previous tag; `down --volumes` rule; §3 tasks closed. |
 | v1.0 | 2026-09-26 | The eleven blocking decisions were walked through and decided, each as recommended: DL-03 hybrid scope, DL-04 Conventional Commits + release PR, DL-05 semver + sha tags, DL-07 explicit import list, DL-09 bot PRs for qa / prod, DL-13 company base JRE image, DL-14 Dockerfile with the Gradle-built jar, DL-27 layered teardown + leak check, DL-28 pinned `ci-build` image, DL-35 SSH from the runner (else self-hosted runner on the host), DL-36 bot-author check + `[skip ci]`. ADRs moved to Accepted; §5 tasks ticked; no blocking row remains open — the demo skeleton may start. |
 | v1.1 | 2026-09-26 | Demo simplifications for the skeleton: the `deploy-dev` compose adapter (SSH to the dev hosts, DL-35) is a placeholder — `run-compose.sh --dry-run` on the runner plus a `TODO(DL-35)` comment describing the transport; the dev-host question in §8 is closed for the demo. Deferred to Phase 3, not needed for the skeleton: Vault authentication and delivery (DL-11, DL-12, DL-31), namespace layout (DL-38, demo assumes namespace = `<flow>`), the EKS GitOps controller (DL-30) and the EKS registry (DL-34); the matching §8 platform questions are tagged Phase 3. |
+| v1.2 | 2026-09-27 | Demo step 2 (kind + Helm) implemented on top of the green step 1: a Helm chart per app (`deephaven-connectors/<AppName>/helm/<AppName>/`, three identical charts apart from name and `image.repository`), `values.yaml` layers for every app-common and instance directory in `local` and `us-dev`, `scripts/helm-deploy-instance.sh` as the one implementation of the Helm flag list (config-lint check 12, the kind deploy test and `deploy-dev` all call it), `scripts/helm-smoke-diff.sh`, `test-infra/kind/` (pinned kind v0.33.0 / kubectl v1.37.1 / Helm v4.3.0 / kubeconform v0.8.0, `kind.sh up|load|diagnostics|down|leak-check`), the reusable `_kind-deploy.yml` in `pr.yml` (when `deploy-test` matches) and `main.yml` (before `deploy-dev`), the `deploy-dev` Helm adapter for `cluster: kind-ci` with write-back of `image.tag` and `IMAGE_TAG` together, config-lint checks 3 / 4 / 10 / 12 with kubeconform. Corrections surfaced by the implementation: Helm 4 renamed `--atomic` to `--rollback-on-failure` (D6, D9, D10, D11, DL-29, DL-33 updated); `--set-string image.tag` (a numeric tag would become an integer); a first install runs without `--rollback-on-failure` so a failed one stays for diagnostics; Helm 4 prints Job test-hook logs only through `helm.sh/hook-output-log-policy`; `fsGroup: 10001` is needed to read the 0400 Secret files; `appFiles.<layer>.<file>` escapes `.` as `\\.`; a config-only PR builds no image, so its kind deploy runs on `main` (§8 follow-up). §7 step 2 and CD criteria ticked. |
 
 ---
 

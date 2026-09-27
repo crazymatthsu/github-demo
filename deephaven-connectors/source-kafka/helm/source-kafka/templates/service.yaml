@@ -1,0 +1,17 @@
+{{- /* ClusterIP for the actuator port only (health, metrics); connectors have no ingress (D11 §6.1). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "connector.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "connector.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

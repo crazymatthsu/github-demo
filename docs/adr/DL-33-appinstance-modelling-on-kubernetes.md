@@ -21,7 +21,7 @@ One Application / Helm release per AppInstance, generated from the config tree, 
 ## Alternatives considered
 
 - One release with N Deployments: fewer releases, but one upgrade touches every instance and a failed
-  `--atomic` rolls all of them back.
+  `--rollback-on-failure` (`--atomic`) upgrade rolls all of them back.
 - StatefulSet with one replica per instance: stable identities, but instances are not ordinal peers and
   cannot differ in configuration.
 

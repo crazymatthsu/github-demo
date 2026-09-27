@@ -10,8 +10,10 @@ import org.gradle.api.provider.Property
 import org.gradle.api.provider.SetProperty
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -23,7 +25,7 @@ import java.io.File
 import javax.inject.Inject
 
 /** Root task `configLint` (D5 §6.5): runs [ConfigLinter] and fails on any ERROR finding. */
-@DisableCachingByDefault(because = "Cheap, and check 6 depends on the local compose CLI")
+@DisableCachingByDefault(because = "Cheap, and checks 6 and 12 depend on the local compose CLI, Helm and kubeconform")
 abstract class ConfigLintTask : DefaultTask() {
     @get:InputDirectory
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -47,9 +49,30 @@ abstract class ConfigLintTask : DefaultTask() {
     @get:Input
     abstract val composeCli: Property<String>
 
-    /** Fail check 6 when no compose CLI exists (`-PconfigLint.requireRender`, default CI=true). */
+    /** Fail checks 6 / 12 when no compose CLI / Helm 4 exists (`-PconfigLint.requireRender`, default CI=true). */
     @get:Input
     abstract val requireRender: Property<Boolean>
+
+    /** Deployable AppName -> absolute path of its chart directory (`<subproject>/helm/<AppName>/`), check 12. */
+    @get:Internal
+    abstract val charts: MapProperty<String, String>
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val chartFiles: ConfigurableFileCollection
+
+    /** `auto` (helm on the PATH), `none` or the path of a Helm 4 binary (`-PconfigLint.helm`). */
+    @get:Input
+    abstract val helmCli: Property<String>
+
+    /** scripts/helm-deploy-instance.sh, the one implementation of the Helm flag list (D11 §8.3). */
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val helmScript: RegularFileProperty
+
+    /** Check 12's `helm template` output, `<env>/<flow>/<AppName>/<AppInstance>.yaml` (the config-lint job's artefact). */
+    @get:OutputDirectory
+    abstract val renderDir: DirectoryProperty
 
     @get:OutputFile
     abstract val reportFile: RegularFileProperty
@@ -83,6 +106,31 @@ abstract class ConfigLintTask : DefaultTask() {
         return candidates.firstOrNull { exec(it + "version").exitCode == 0 }
     }
 
+    /** The variables the deploy script and Helm may read; nothing else of the developer's shell leaks in. */
+    private fun helmEnvironment(configRoot: File): Map<String, String> {
+        val keys = listOf("PATH", "HOME", "TMPDIR", "LANG", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+            "HELM_CACHE_HOME", "HELM_CONFIG_HOME", "HELM_DATA_HOME")
+        val env = keys.mapNotNull { key -> System.getenv(key)?.let { key to it } }.toMap(LinkedHashMap())
+        env["CONFIG_ROOT"] = configRoot.absolutePath
+        helmCli.get().takeUnless { it == "auto" || it == "none" }?.let { env["HELM_BIN"] = it }
+        return env
+    }
+
+    /**
+     * An executable on the build's current PATH. A long-lived daemon resolves bare names with the PATH it was
+     * started with, so a tool installed since (kubeconform, helm) is looked up here instead.
+     */
+    private fun onPath(name: String): String? =
+        System.getenv("PATH").orEmpty().split(File.pathSeparator).filter { it.isNotEmpty() }
+            .map { File(it, name) }.firstOrNull { it.isFile && it.canExecute() }?.absolutePath
+
+    private fun helmVersion(): String? {
+        val choice = helmCli.get()
+        if (choice == "none") return null
+        val binary = (if (choice == "auto") onPath("helm") else choice) ?: return null
+        return exec(listOf(binary, "version", "--template", "{{.Version}}")).takeIf { it.exitCode == 0 }?.output?.trim()
+    }
+
     @TaskAction
     fun lint() {
         val compose = composeCommand()
@@ -97,18 +145,39 @@ abstract class ConfigLintTask : DefaultTask() {
                 )
             }
         }
+        // Check 12: helm lint / template through the deploy script, kubeconform when it is on the PATH.
+        val configRoot = configDir.get().asFile
+        val script = helmScript.get().asFile
+        val helmEnv = helmEnvironment(configRoot)
+        val helmRunner = if (helmCli.get() == "none") null else HelmRunner { r ->
+            exec(listOf("bash", script.path, r.env, r.flow, r.app, r.instance, "--tag", r.tag, "--mode", r.mode.flag,
+                "--chart", r.chart.path) + (r.renderOut?.let { listOf("--render-out", it.path) } ?: emptyList()), helmEnv)
+        }
+        val kubeconform = onPath("kubeconform")?.takeIf { exec(listOf(it, "-v")).exitCode == 0 }
+        val validator = kubeconform?.let { cmd ->
+            ManifestValidator { file ->
+                exec(listOf(cmd, "-strict", "-ignore-missing-schemas", "-kubernetes-version", ConfigRules.KUBERNETES_VERSION,
+                    "-summary", "-output", "json", file.path))
+            }
+        }
+        val rendered = renderDir.get().asFile.apply { deleteRecursively(); mkdirs() }
         val linter = ConfigLinter(
-            configRoot = configDir.get().asFile,
+            configRoot = configRoot,
             apps = apps.get().mapValues { File(it.value) },
             completeEnvs = completeEnvs.get(),
             renderer = renderer ?: ComposeRenderer { null },
             requireRender = requireRender.get(),
+            charts = charts.get().mapValues { File(it.value) },
+            helm = helmRunner,
+            validator = validator,
+            renderDir = rendered,
         )
         val findings = linter.lint()
         val errors = findings.count { it.severity == Severity.ERROR }
         val warnings = findings.count { it.severity == Severity.WARN }
         val header = "config-lint: ${findings.size} finding(s): $errors error(s), $warnings warning(s); " +
-            "render with ${compose?.joinToString(" ") ?: "no compose CLI"}"
+            "render with ${compose?.joinToString(" ") ?: "no compose CLI"}, helm ${helmVersion() ?: "none"}, " +
+            "kubeconform ${if (kubeconform != null) "yes" else "none"}"
         val report = (listOf(header) + findings.map { it.toString() }).joinToString("\n", postfix = "\n")
         reportFile.get().asFile.apply { parentFile.mkdirs() }.writeText(report)
         findings.forEach { if (it.severity == Severity.ERROR) logger.error(it.toString()) else logger.lifecycle(it.toString()) }

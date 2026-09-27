@@ -1,0 +1,16 @@
+# The Helm chart of source-amps (D11 §6.1, DL-29): one release per AppInstance, named
+# <AppName>-<AppInstance>, in the namespace of its flow (D11 §6.2, DL-33, DL-38). A copy of the
+# source-database chart that differs only in this file's name / description and image.repository.
+apiVersion: v2
+name: source-amps
+description: >-
+  source-amps connector (AMPS -> Deephaven): one release per AppInstance of the config tree, deployed by
+  scripts/helm-deploy-instance.sh (demo step 2) or Argo CD (Phase 3).
+type: application
+# Chart semver: bump when templates, values or the schema change. The running image is image.tag (the
+# instance values or --set-string image.tag=<tag>), never appVersion.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/crazymatthsu/github-demo
+sources:
+  - https://github.com/crazymatthsu/github-demo/tree/main/deephaven-connectors/source-amps

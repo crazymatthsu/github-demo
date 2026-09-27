@@ -1,0 +1,11 @@
+# Helm values layer 2 (D11 §6.2) — source-database in local / cash, shared by every instance: sizing and the
+# time zone (compose.env says MEM_LIMIT=768m and TZ=UTC for compose). Layer 1 is the chart
+# (deephaven-connectors/source-database/helm/source-database/values.yaml), layer 3 <AppInstance>/values.yaml.
+resources:
+  requests:
+    cpu: 250m
+    memory: 768Mi
+  limits:
+    memory: 768Mi
+env:
+  TZ: UTC

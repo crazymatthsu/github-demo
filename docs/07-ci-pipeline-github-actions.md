@@ -142,12 +142,12 @@ the runners to ARC on EKS.
 
 | Workflow | Trigger | Jobs | Publishes | Phase |
 |---|---|---|---|---|
-| `pr.yml` | `push` to any branch except `main`; `pull_request` (opened, synchronize, reopened, labeled); `merge_group` | `detect-affected`, `build` (compile, unit tests, static analysis, jars, images), `config-lint`, `integration-test` matrix (PR and merge queue only), `pr-gate` | images `pr-<n>-<sha7>` to the dev repository (GHCR in the demo); test reports | Demo step 1 (compose) |
-| `main.yml` | `push` to `main`; loop guard excludes bot write-backs (DL-36) | `build` (all), `integration-test` (all), `system-test`, `publish`, `deploy-dev`; Demo step 2 inserts `kind-deploy` before `deploy-dev` | pre-release image tags + `sha-<sha7>` (D4); `connectors-framework` jar to the Maven dev repository if consumed elsewhere (§8); SBOM + build-info; GitHub Deployment on `dev` | Demo step 1 / 2 |
+| `pr.yml` | `push` to any branch except `main`; `pull_request` (opened, synchronize, reopened, labeled); `merge_group` | `detect-affected`, `build` (compile, unit tests, static analysis, jars, images), `config-lint`, `integration-test` matrix (PR and merge queue only), `kind-deploy` (PR and merge queue, when the affected map's `deploy-test` matches and this run pushed the `source-database` image; Demo step 2), `pr-gate` | images `pr-<n>-<sha7>` to the dev repository (GHCR in the demo); test reports | Demo step 1 (compose) |
+| `main.yml` | `push` to `main`; loop guard excludes bot write-backs (DL-36) | `build` (all), `integration-test` (all), `system-test`, `publish`, `kind-deploy` (Demo step 2, `_kind-deploy.yml`), `deploy-dev` | pre-release image tags + `sha-<sha7>` (D4); `connectors-framework` jar to the Maven dev repository if consumed elsewhere (§8); SBOM + build-info; GitHub Deployment on `dev` | Demo step 1 / 2 |
 | `release.yml` | `push` of tag `v*` or `deephaven-server/v*`, plus `workflow_dispatch` from `release-please.yml` (a tag created with `GITHUB_TOKEN` starts no workflow, so release-please dispatches it explicitly); it waits for the `main.yml` run of the tagged commit and retags its tested digests | `resolve` (find the tested `main` run and its digests), `promote` (retag / promote), `release` (GitHub Release + changelog), `bump-qa` (bot PR), `smoke` (dev, then qa after the bump PR merges) | release tags `1.4.2`, promoted digests, GitHub Release, qa bump PR | Demo step 1 (compose) |
 | `nightly.yml` | `schedule` (one run per night) + `workflow_dispatch` | full IT matrix, Deephaven version matrix, AMPS suite, Podman parity, soak, security scans, image retention, teardown drill | scan reports, retention log, issue on failure | Demo step 1 (subset) |
 | `base-image.yml` | weekly `schedule`; `push` to the base-image Dockerfiles; `workflow_dispatch` with a CA-bundle version (rotation) | build, scan and push the company JRE base image (DL-13) and the `ci-build` image (DL-28) | base images to the tools repository | Demo step 1 (compose) |
-| `config-lint.yml` | `workflow_call` from `pr.yml` and `main.yml`; also `pull_request` on `config/**`, `**/helm/**`, `**/docker/docker-compose.yml` | render every instance (`docker compose config`; `helm lint` / `helm template` in step 2), naming regex / length / uniqueness, key-set parity dev vs qa vs prod (rules in D5) | lint report | Demo step 1 / 2 |
+| `config-lint.yml` | `workflow_call` from `pr.yml` and `main.yml`; also `pull_request` on `config/**`, `**/helm/**`, `**/docker/docker-compose.yml` | render every instance (`docker compose config`; `helm lint` / `helm template` per instance and kubeconform in step 2), naming regex / length / uniqueness, key-set parity dev vs qa vs prod (rules in D5) | lint report | Demo step 1 / 2 |
 
 The brief placed `config-lint.yml` "in the config repo". With DL-06 the config tree lives in this
 monorepo, so `config-lint.yml` is a reusable workflow here and moves with `config/` if the tree is
@@ -381,9 +381,12 @@ jobs:
     needs: [system-test, config-lint]
     uses: ./.github/workflows/_docker-publish.yml
     with: { digests: "${{ needs.build.outputs.images }}", tags: prerelease }   # tag scheme from D4
-  # kind-deploy:  Demo step 2 — needs: publish; helm lint, helm upgrade --install per AppInstance into kind, smoke, delete (D11)
+  kind-deploy:                                         # Demo step 2 (D11, D10 §5.9): kind up, load the image, one
+    needs: [build, publish]                            # release per instance, helm test, smoke diff, kind down
+    uses: ./.github/workflows/_kind-deploy.yml
+    with: { env: us-dev, app: source-database, images: "${{ needs.build.outputs.images }}", tag: "${{ needs.build.outputs.version }}" }
   deploy-dev:
-    needs: publish
+    needs: [build, publish, kind-deploy]
     uses: ./.github/workflows/_deploy-dev.yml           # content owned by D9
     with: { env: us-dev, tag: "${{ needs.publish.outputs.tag }}" }
     secrets: inherit
@@ -560,13 +563,13 @@ makes, and it is the one commit that does not trigger another run.
 | Item | Location | Phase |
 |---|---|---|
 | Entry workflows | `.github/workflows/pr.yml`, `main.yml`, `release.yml`, `nightly.yml`, `base-image.yml`, `config-lint.yml` | Demo step 1 (compose); `kind-deploy` job and Helm checks in Demo step 2 (kind + Helm) |
-| Reusable workflows | `.github/workflows/_gradle-build.yml`, `_integration-test.yml`, `_docker-publish.yml`, `_deploy-dev.yml` | Demo step 1 (compose) |
-| Composite actions | `.github/actions/{setup-build-env,registry-login,compose-stack,affected-matrix}/action.yml` | Demo step 1 (compose) |
+| Reusable workflows | `.github/workflows/_gradle-build.yml`, `_integration-test.yml`, `_docker-publish.yml`, `_deploy-dev.yml`, `_kind-deploy.yml` | Demo step 1 (compose); `_kind-deploy.yml` and the Helm adapter of `_deploy-dev.yml` in Demo step 2 (kind + Helm) |
+| Composite actions | `.github/actions/{setup-build-env,registry-login,compose-stack,affected-matrix}/action.yml`; `{setup-kube-tools,kind-cluster,helm-deploy-instance}/action.yml` | Demo step 1 (compose); the three Kubernetes actions in Demo step 2 (kind + Helm) |
 | Affected map | `.github/affected-map.yml` | Demo step 1 (compose) |
 | Ownership | `.github/CODEOWNERS` (`config/**` prod paths → ops; `build-logic/**`, `.github/**` → platform) | Demo step 1 (compose) |
 | Registry | GHCR via `GITHUB_TOKEN` (`packages: write`); `registry-login` has an `oidc` mode ready for Artifactory | Demo step 1 (compose); OIDC in the enterprise |
 | Build environment | `container: ghcr.io/<org>/base/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2; image content in D3 §6.10) | Demo step 1 (compose) |
-| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
+| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install --rollback-on-failure --wait` through `scripts/helm-deploy-instance.sh` into a kind cluster created in the job (`cluster: kind-ci`); Phase 3 (EKS + GitOps): Argo CD sync |
 | Retention | nightly job calling the GHCR package API (demo) / `jf` cleanup (enterprise), rules from D4 | Demo step 1 (compose) |
 
 ## 9. Open items

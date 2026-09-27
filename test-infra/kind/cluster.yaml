@@ -1,0 +1,16 @@
+# test-infra/kind/cluster.yaml: the kind cluster of the Helm deployment test (kind-deploy) and of the
+# deploy-dev Helm adapter while no dev cluster exists (D10 §5.9, D11 §6.4, DL-32). Created by
+# `test-infra/kind/kind.sh up`, which also supplies the cluster name (--name), so none is set here.
+#
+# - One control-plane node that also runs the workloads: kind removes the control-plane taint when a
+#   cluster has a single node. replicas: 1 per AppInstance (DL-33) fits comfortably.
+# - No extra port mappings: nothing is published on the runner (D10 §6.6). The smoke test runs inside the
+#   cluster (`helm test`) and scripts/helm-smoke-diff.sh uses `kubectl exec`.
+# - Pod Security admission is built in and enabled: the namespaces the deploy script creates carry
+#   pod-security.kubernetes.io/enforce=restricted (enforce-version=latest), which is enough to prove the
+#   chart's restricted pod spec (DL-32), so no kubeadmConfigPatches are needed.
+# - No node image: kind's default for KIND_VERSION (versions.env); KIND_NODE_IMAGE overrides it.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
