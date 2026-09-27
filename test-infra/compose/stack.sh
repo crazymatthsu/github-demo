@@ -265,6 +265,17 @@ short_sha() {
 }
 
 # The AppInstance the project's test cases run against (manifest key `instance`), when they agree.
+# The instance directories of config/<env>/<flow>/<app>: everything but the app-common layer, one per line.
+instance_dirs() {
+  local d name
+  for d in "$1"/*/; do
+    [[ -d $d ]] || continue
+    name=$(basename "$d")
+    [[ $name == app-common || $name == _* || $name == .* ]] && continue
+    printf '%s\n' "$name"
+  done
+}
+
 manifest_instance() {
   local f instance found=''
   for f in "$TEST_INFRA_DIR/testdata/$1"/*/manifest.yml; do
@@ -287,19 +298,31 @@ prepare_app() {
   # Absolute, or compose would read a relative layer path such as config/_common/<app> as a volume name.
   if [[ -d $config_root ]]; then config_root=$(cd "$config_root" && pwd -P); fi
   export APP_NAME=${APP_NAME:-$app} APP_ENV=${APP_ENV:-local} APP_FLOW=${APP_FLOW:-cash}
-  APP_INSTANCE=${APP_INSTANCE:-$(manifest_instance "$app")}
-  if [[ -n $APP_INSTANCE ]]; then
-    export APP_INSTANCE
-    base=$config_root/$APP_ENV/$APP_FLOW/$APP_NAME
-    export COMMON_DIR=${COMMON_DIR:-$base/app-common} CONFIG_DIR=${CONFIG_DIR:-$base/$APP_INSTANCE}
-    if [[ -f $CONFIG_DIR/compose.env ]]; then
-      compose_env=$CONFIG_DIR/compose.env
-      ENV_FILES+=("$compose_env")
-    else
-      warn "$(rel "$CONFIG_DIR")/compose.env not found; the app template gets no instance compose.env"
-    fi
+  base=$config_root/$APP_ENV/$APP_FLOW/$APP_NAME
+  # The instance whose config the app under test runs with (D8 §5.1): APP_INSTANCE, else the instance the
+  # app's test-case manifest names, else the app's only instance directory under config/<env>/<flow>/<app>
+  # (the hello-world apps have no test case yet). The app template requires it (${APP_INSTANCE:?}), so a
+  # missing instance fails here, with the remedy, rather than as a compose interpolation error.
+  if [[ -z ${APP_INSTANCE:-} ]]; then
+    APP_INSTANCE=$(manifest_instance "$app")
+  fi
+  if [[ -z $APP_INSTANCE ]]; then
+    local candidates
+    candidates=$(instance_dirs "$base")
+    case $(wc -w <<<"$candidates") in
+      0) usage_error "up: no instance for $app: $(rel "$base") has no instance directory. Add one (D5), set APP_INSTANCE, or add a test-infra/testdata/$app/<case>/manifest.yml that names one" ;;
+      1) APP_INSTANCE=$candidates ;;
+      *) usage_error "up: $app has several instances under $(rel "$base") ($(printf '%s' "$candidates" | tr '\n' ' ')); set APP_INSTANCE or add a test-infra/testdata/$app/<case>/manifest.yml that names one" ;;
+    esac
+  fi
+  export APP_INSTANCE
+  export COMMON_DIR=${COMMON_DIR:-$base/app-common} CONFIG_DIR=${CONFIG_DIR:-$base/$APP_INSTANCE}
+  [[ -d $CONFIG_DIR ]] || usage_error "up: the instance config $(rel "$CONFIG_DIR") does not exist (APP_INSTANCE=$APP_INSTANCE)"
+  if [[ -f $CONFIG_DIR/compose.env ]]; then
+    compose_env=$CONFIG_DIR/compose.env
+    ENV_FILES+=("$compose_env")
   else
-    warn "APP_INSTANCE is unset and no test-infra/testdata/$app manifest names one; CONFIG_DIR stays unset"
+    warn "$(rel "$CONFIG_DIR")/compose.env not found; the app template gets no instance compose.env"
   fi
   # The optional layers exactly as run-compose.sh mounts them (D5 §6.1, D6 §6.2): set when the directory
   # exists, unset otherwise (the template then mounts the empty-layer volume).

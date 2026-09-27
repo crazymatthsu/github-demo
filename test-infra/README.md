@@ -80,8 +80,10 @@ What `up` does:
    seeded. The app image is not pulled up front, because Gradle's `buildImage` produces it locally.
 
 When the app joins the stack, its template gets what `run-compose.sh` would export (D6 §6.2):
-`APP_ENV=local`, `APP_FLOW=cash`, `APP_NAME`, and `APP_INSTANCE` (default: the `instance:` of the
-project's testdata manifests, `positions-db-to-deephaven` for `source-database`). It also gets
+`APP_ENV=local`, `APP_FLOW=cash`, `APP_NAME`, and `APP_INSTANCE` (when unset: the `instance:` of the
+project's testdata manifests, `positions-db-to-deephaven` for `source-database`; else the app's only instance
+directory under `config/local/cash/<AppName>/`, as for `source-kafka` and `source-amps`; several candidates
+or none is a usage error). It also gets
 `COMMON_DIR`, `CONFIG_DIR`, `PROJECT` and `SPRING_DATASOURCE_USERNAME/PASSWORD`, plus `IMAGE_REPO`
 and `IMAGE_TAG` derived from `APP_IMAGE`, so a template written as
 `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` still runs the image under test (a digest-only reference
