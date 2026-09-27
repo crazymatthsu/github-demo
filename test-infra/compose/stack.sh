@@ -563,6 +563,15 @@ up_failed() {
   warn "$1. Stack state follows; 'stack.sh diagnostics <dir>' collects the full bundle."
   compose ps -a >&2 || true
   compose logs --no-color --timestamps --tail 50 >&2 || true
+  # The interleaved tail is dominated by the chatty services; show each failed container's own last lines.
+  local line service state health
+  while read -r service state health; do
+    [[ -n $service ]] || continue
+    if [[ $state != running || $health == unhealthy ]]; then
+      warn "last output of $service ($state${health:+, $health}):"
+      compose logs --no-color --no-log-prefix --tail 40 "$service" >&2 || true
+    fi
+  done < <(compose ps -a --format '{{.Service}} {{.State}} {{.Health}}' 2>/dev/null || true)
   die 1 "up failed for $COMPOSE_PROJECT_NAME: $1 (tear down with: test-infra/compose/stack.sh down)"
 }
 

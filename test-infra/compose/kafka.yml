@@ -34,12 +34,14 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
     mem_limit: ${KAFKA_MEM_LIMIT:-1g}
-    # The image declares these three paths as VOLUMEs. tmpfs mounts replace the anonymous volumes
-    # (nothing unlabelled is left behind) and keep test data in memory.
-    tmpfs:
-      - /var/lib/kafka/data
-      - /etc/kafka/secrets
-      - /mnt/shared/config
+    volumes:
+      # The image declares these three paths as VOLUMEs and runs as appuser (uid 1000). Named, labelled
+      # volumes replace the anonymous ones (the leak check sees them, `down -v` removes them) and take the
+      # image directories' ownership. A tmpfs mounted here was root-owned on the GitHub runner and
+      # `kafka-storage format` failed with AccessDeniedException on /var/lib/kafka/data.
+      - kafka-data:/var/lib/kafka/data
+      - kafka-secrets:/etc/kafka/secrets
+      - kafka-config:/mnt/shared/config
     healthcheck:
       # A broker API probe (D8 §6.4). The tool starts its own JVM, so its heap is kept small.
       test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx128m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
@@ -47,4 +49,12 @@ services:
       interval: 5s
       timeout: 20s
       retries: 20
+    labels: *ci-labels
+
+volumes:
+  kafka-data:
+    labels: *ci-labels
+  kafka-secrets:
+    labels: *ci-labels
+  kafka-config:
     labels: *ci-labels
