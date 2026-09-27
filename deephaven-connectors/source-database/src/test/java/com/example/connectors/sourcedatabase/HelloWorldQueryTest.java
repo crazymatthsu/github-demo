@@ -43,6 +43,10 @@ class HelloWorldQueryTest {
         assertThat(result.state()).isEqualTo(HelloWorldQuery.QueryResult.State.SUCCEEDED);
         assertThat(result.selectOne()).isEqualTo(1);
         assertThat(result.rowCount()).isEqualTo(42L);
+    }
+
+    @Test
+    void beforeTheQueryRanTheHealthIsUnknown() {
         assertThat(new SourceDatabaseHealthIndicator(query("dbo.positions")).health().getStatus().getCode()).isEqualTo("UNKNOWN");
     }
 
