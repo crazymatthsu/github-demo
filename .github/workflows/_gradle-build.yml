@@ -185,6 +185,11 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --group-add ${{ needs.probe.outputs.docker-gid }}
+    # A job container gets `sh` as its default shell (the runner cannot probe the image for bash); the run
+    # steps below use bash syntax, and both the ci-build image (Ubuntu) and the runner host have bash.
+    defaults:
+      run:
+        shell: bash
     env:
       # Read by buildlogic.git-version (pull requests are also detected from GITHUB_REF).
       PR_NUMBER: ${{ github.event.pull_request.number }}
