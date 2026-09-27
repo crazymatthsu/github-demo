@@ -292,7 +292,7 @@ and are confirmed in §8; the `<group>/<AppName>` part is fixed by D1 §6.1.
 ARG BASE_IMAGE=artifactory.<company>.com/docker-base-local/<company>/jre21:20260926-1
 FROM ${BASE_IMAGE} AS layers
 WORKDIR /build
-COPY build/libs/source-database-*.jar app.jar
+COPY build/libs/source-database.jar app.jar          # version-less boot jar name (D1) keeps the COPY deterministic
 RUN java -Djarmode=tools -jar app.jar extract --layers --destination extracted   # Boot 4.1 syntax: verify
 
 FROM ${BASE_IMAGE} AS runtime
@@ -420,7 +420,7 @@ laggard.
 |---|---|---|
 | `.github/workflows/base-image.yml` | builds `ghcr.io/<org>/base/jre21` and `ghcr.io/<org>/base/ci-build` from upstream Temurin (no JFrog on GitHub-hosted runners), injects the demo CA bundle, runs the `keytool` / `curl` verification, pushes with `<yyyymmdd>-<n>` tags | Demo step 1 (compose) |
 | `docker/base/jre21/Dockerfile`, `docker/base/ci-build/Dockerfile` | the two company base images of §6.1; `base-image.yml` triggers on changes under `docker/base/**` (D7 §6.1); D10 runs the `build` job in `ci-build` | Demo step 1 (compose) |
-| `test-infra/ca/demo-root-ca.pem` | a self-signed **public** root certificate standing in for the enterprise bundle (no private key in the repository); a TLS-enabled test service in `test-infra/compose/` presents a leaf signed by it so the trust path is exercised end to end | Demo step 1 (compose) |
+| `test-infra/ca/demo-root-ca.pem` | a self-signed **public** root certificate standing in for the enterprise bundle; its private key is destroyed after generation, so no leaf can ever be signed by it. The trust path is verified by `keytool -list -cacerts` and `update-ca-certificates` in the base-image build; an end-to-end TLS test would need a throwaway CA generated per run (follow-up, not in the demo) | Demo step 1 (compose) |
 | `deephaven-connectors/<AppName>/docker/Dockerfile`, `scripts/entrypoint.sh`, `.dockerignore` (subproject root) | the §6.11 skeleton per app; `JAVA_OPTS`, non-root, `HEALTHCHECK`, labels | Demo step 1 (compose) |
 | `build-logic/src/main/kotlin/buildlogic.docker-image.gradle.kts` | engine detection (Docker → `buildx`, Podman → `--format docker`), staged context `build/docker/`, `--label` and `--build-arg` values from `project.version` and git (D1) | Demo step 1 (compose) |
 | `deephaven-server/docker/Dockerfile` | overlay on the pinned upstream server image with the CA imported into its JVM, `/plugins`, start script | Demo step 1 (compose) |
@@ -431,6 +431,9 @@ laggard.
 | `imagePullSecrets` via ESO, ECR replication job | documented in §6.9, not provisioned | Phase 3 (EKS + GitOps) |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-13, DL-14, DL-28 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | DL | Topic | This document's recommendation |
 |---|---|---|

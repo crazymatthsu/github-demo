@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Dependency updates (D1 §6.3, D3 §6.3, D10 §6.10). Conventional Commit messages size the next release for release-please and buildlogic.git-version: fix(deps) → patch release; ci(deps) for CI-only updates releases nothing.",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "fix",
+  "semanticCommitScope": "deps",
+  "packageRules": [
+    {
+      "description": "Spring Boot plugin and BOM move together (DL-23: 4.x minors tracked, majors by decision).",
+      "matchPackageNames": ["org.springframework.boot", "org.springframework.boot:**"],
+      "groupName": "Spring Boot"
+    },
+    {
+      "description": "The Deephaven server image pinned for the ITs and the Deephaven Java client stay on one version (test-infra/compose/versions.env, gradle/libs.versions.toml).",
+      "matchPackageNames": ["io.deephaven:**", "ghcr.io/deephaven/server"],
+      "groupName": "Deephaven"
+    },
+    {
+      "description": "Company base images are tagged <yyyymmdd>-<n> by base-image.yml (D3 §6.1).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/crazymatthsu/base/**"],
+      "versioning": "regex:^(?<major>\\d{4})(?<minor>\\d{2})(?<patch>\\d{2})-(?<build>\\d+)$"
+    },
+    {
+      "description": "Workflow actions (majors pinned) are CI-only changes.",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "semanticCommitType": "ci"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Test-infra images pinned as <image>:<tag>@sha256:<digest> in test-infra/compose/versions.env (D10 §6.10).",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)test-infra/compose/versions\\.env$/"],
+      "matchStrings": ["=(?<depName>[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9._/-]+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

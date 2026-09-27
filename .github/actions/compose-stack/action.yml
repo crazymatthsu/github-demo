@@ -1,0 +1,72 @@
+name: compose-stack
+description: >-
+  Thin wrapper around test-infra/compose/stack.sh (D10 §6.2) so workflows and laptops run the same
+  commands. The calling job sets COMPOSE_PROJECT_NAME (ci-<run_id>-<attempt>), CI_RUN_ID,
+  CI_RUN_ATTEMPT and, for `up`, the image variables (APP_IMAGE, optional DEEPHAVEN_IMAGE,
+  CI_BUILD_IMAGE). `up` exports COMPOSE_FILE / COMPOSE_PROJECT_NAME to GITHUB_ENV for later steps.
+  Use `if: always()` on `down` and `leak-check` so they run on success, failure and cancel (DL-27).
+inputs:
+  command:
+    description: up | diagnostics | down | leak-check
+    required: true
+  project:
+    description: Gradle project path whose declared stacks `up` starts (e.g. :deephaven-connectors:source-database).
+    required: false
+    default: ''
+  diagnostics-dir:
+    description: Directory `diagnostics` writes into (D10 §6.5).
+    required: false
+    default: build/ci-logs
+  local:
+    description: "'true' adds --local (published localhost ports; developer mode, never in CI)."
+    required: false
+    default: 'false'
+  warn-only:
+    description: "'true' makes leak-check report without failing (the first weeks, DL-27)."
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        STACK_COMMAND: ${{ inputs.command }}
+        STACK_PROJECT: ${{ inputs.project }}
+        STACK_DIAG_DIR: ${{ inputs.diagnostics-dir }}
+        STACK_LOCAL: ${{ inputs.local }}
+        STACK_WARN_ONLY: ${{ inputs.warn-only }}
+      run: |
+        set -euo pipefail
+        script="${GITHUB_WORKSPACE}/test-infra/compose/stack.sh"
+        [[ -f $script ]] || { echo "::error title=compose-stack::$script is missing"; exit 1; }
+        : "${COMPOSE_PROJECT_NAME:?the calling job must set COMPOSE_PROJECT_NAME (ci-<run_id>-<attempt>)}"
+        args=()
+        case "$STACK_COMMAND" in
+          up)
+            [[ -n $STACK_PROJECT ]] || { echo "::error title=compose-stack::'up' needs the project input"; exit 2; }
+            args=(up --project "$STACK_PROJECT")
+            [[ $STACK_LOCAL == true ]] && args+=(--local)
+            ;;
+          diagnostics)
+            args=(diagnostics "$STACK_DIAG_DIR")
+            ;;
+          down)
+            args=(down)
+            ;;
+          leak-check)
+            args=(leak-check)
+            [[ $STACK_WARN_ONLY == true ]] && args+=(--warn-only)
+            ;;
+          *)
+            echo "::error title=compose-stack::unknown command '$STACK_COMMAND' (up | diagnostics | down | leak-check)"
+            exit 2
+            ;;
+        esac
+        echo "::group::stack.sh ${args[*]} (project ${COMPOSE_PROJECT_NAME})"
+        status=0
+        bash "$script" "${args[@]}" || status=$?
+        echo "::endgroup::"
+        if [[ $status -ne 0 ]]; then
+          echo "::error title=compose-stack::stack.sh ${args[*]} exited with $status"
+        fi
+        exit "$status"

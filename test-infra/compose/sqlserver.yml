@@ -1,0 +1,38 @@
+# test-infra/compose/sqlserver.yml: SQL Server for the source-database stacks (D8 §5.3, §6.4; D3 §6.10).
+#
+# Developer edition, test-only: the EULA is accepted here and nowhere else. The image is amd64 only,
+# about 2 GB, and needs 30-60 s to start, so it is pre-pulled (stack.sh pull) and its health check gates
+# everything that needs it. Port 1433 is published only by local-ports.yml.
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+services:
+  sqlserver:
+    image: ${MSSQL_IMAGE:?MSSQL_IMAGE is not set - see test-infra/compose/versions.env}
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      # Generated per run by stack.sh (D2 §6.4). The same value reaches the app and the tests as
+      # SPRING_DATASOURCE_PASSWORD and is never stored in git.
+      MSSQL_SA_PASSWORD: ${IT_SA_PASSWORD:?IT_SA_PASSWORD is not set - test-infra/compose/stack.sh up generates one}
+      MSSQL_PID: Developer
+      # SQL Server refuses to start with less than about 2000 MB visible. mem_limit leaves headroom above
+      # the engine's own limit so the container is not OOM-killed (D10 §6.8, measure and adjust).
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+    mem_limit: ${MSSQL_MEM_LIMIT:-2560m}
+    volumes:
+      # Read-only seed material. /seed holds the generic helpers that stack.sh applies after start
+      # (bash /seed/apply.sh). /testdata holds the cases, so a case can be applied with sqlcmd from the
+      # host too. `z` relabels for SELinux hosts (Podman machine, Fedora); Docker elsewhere ignores it.
+      - ../seed/sqlserver:/seed:ro,z
+      - ../testdata:/testdata:ro,z
+    healthcheck:
+      # mssql-tools18 path verified in mcr.microsoft.com/mssql/server:2022-latest (CU27); the legacy
+      # /opt/mssql-tools path no longer exists. -C trusts the self-signed server certificate.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\""]
+      start_period: 20s
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    labels: *ci-labels

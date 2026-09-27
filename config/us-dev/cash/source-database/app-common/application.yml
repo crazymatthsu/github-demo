@@ -1,0 +1,16 @@
+# Layer 4 — source-database in us-dev / cash, shared by every instance (D5 §6.3 worked example):
+# the AMPS and Deephaven endpoints of the flow and the SQL Server port. Hosts are demo placeholders.
+connector:
+  source:
+    port: 1433
+    poll-interval: 5s
+  sink:
+    amps:
+      host: amps-cash.us-dev.example.com
+      port: 9007
+    deephaven:
+      host: deephaven-cash.us-dev.example.com
+      port: 10000
+logging:
+  level:
+    root: "${LOG_LEVEL_ROOT:INFO}"

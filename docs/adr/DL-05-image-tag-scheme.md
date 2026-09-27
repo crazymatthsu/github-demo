@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -15,8 +15,8 @@ promoted between registry repositories rather than rebuilt.
 
 ## Decision
 
-Proposed: semantic version tags plus an immutable `sha-<sha7>` tag on every published image; the
-`main` pre-release form to be fixed in D4 (`1.5.0-rc.<n>` or `1.5.0-SNAPSHOT.<yyyymmdd>.<sha7>`);
+Decided (v1.0, as recommended): semantic version tags plus an immutable `sha-<sha7>` tag on every published image; the
+`main` pre-release form is `1.5.0-rc.<n>` (D4 §4.3);
 no floating tags beyond dev; qa and prod never reference a mutable tag.
 
 ## Alternatives considered

@@ -200,7 +200,7 @@ Both are paired with `sha-<sha7>` on the same digest, so the exact commit is alw
 |---|---|---|
 | Release tag (family) | `v<major>.<minor>.<patch>` annotated, on `main` or a `hotfix/*` branch | `v1.4.2` |
 | Release tag (server) | `deephaven-server/v<major>.<minor>.<patch>` | `deephaven-server/v0.3.0` |
-| Bump size | commits since the last tag of that line: `feat!:` or `BREAKING CHANGE:` → major; `feat:` → minor; `fix:`, `perf:`, `deps:` → patch; `chore:`, `docs:`, `ci:` → no release | `feat(source-kafka): …` after `v1.4.2` → next `1.5.0` |
+| Bump size | commits since the last tag of that line: `feat!:` or `BREAKING CHANGE:` → major; `feat:` → minor; `fix:`, `perf:`, `deps:` → patch; `chore:`, `docs:`, `ci:` → no release (the skeleton's git-version plugin currently bumps the patch for any other type — align when the release tool is wired) | `feat(source-kafka): …` after `v1.4.2` → next `1.5.0` |
 | Pre-release on `main` | `<next>-rc.<n>`, `<n>` = commits since the last tag of the line | `1.5.0-rc.7` |
 | PR build | `<next>-pr.<number>.<sha7>` — never published to Maven, image tag is `pr-<number>-<sha7>` | `1.5.0-pr.123.1a2b3c4` |
 | Local build | `<next>-local.<n>.<sha7>[.dirty]` | `1.5.0-local.7.1a2b3c4.dirty` |
@@ -268,7 +268,7 @@ Bump conventions:
 
 | Item | Convention | Example |
 |---|---|---|
-| Write-back commit (dev) | author = GitHub App bot; message `chore(deploy): us-dev source-database → 1.5.0-rc.7 [skip ci]`; touches only `config/us-dev/**` | loop guard: `if: github.actor != 'platform-bot[bot]'` on the `main` workflow + `[skip ci]` (DL-36) |
+| Write-back commit (dev) | author = GitHub App bot; message `chore(deploy): us-dev source-database → 1.5.0-rc.7 [skip ci]`; touches only `config/us-dev/**` | loop guard: `if: github.actor != '<bot>'` (`github-actions[bot]` in the demo, a GitHub App in the enterprise) on the `main` workflow + `[skip ci]` (DL-36) |
 | qa bump PR | branch `bump/us-qa/source-database/1.5.0`; title `chore(release): bump source-database to 1.5.0 in us-qa/*`; body lists digest, changelog link, scan result, source run URL | opened by `release.yml`; reviewed by flow owners (CODEOWNERS `config/us-qa/**`) |
 | prod bump PR | branch `bump/us-prod/…`; body adds the change-ticket reference; label `deploy:prod` | opened by the `promote` workflow on approver request; approvals per D9 |
 | Config-lint on bump PRs | digest resolves to the tag in the stage's repo; tag not floating; every instance of the app in the env bumped together unless the PR says otherwise | D5 |
@@ -281,7 +281,7 @@ Bump conventions:
 |---|---|---|---|
 | `pr-*` tags deleted when the PR is closed + 7 days | dev repo | `pr.yml` on `closed` schedules deletion; nightly sweep catches leftovers | none needed |
 | Keep the last 20 `*-rc.*` per subproject, and everything younger than 30 days | dev repo | nightly `jf rt search` (AQL by name pattern and `created`) → delete | **in-use protection**: any tag or digest present in `config/**/compose.env` or `values.yaml` on `main` is never deleted (job greps the config tree) |
-| Untagged manifests older than 7 days | dev repo | Artifactory policy or nightly AQL | referenced digests from in-use list kept |
+| Untagged manifests older than 7 days | dev repo (Artifactory) | Artifactory policy or nightly AQL | referenced digests from in-use list kept; **GHCR (demo): never deleted**, because untagged versions there include the platform manifests of tagged images |
 | Convenience tags (`main`, `1.5`, `1`, `latest`) | dev repo only | moved, never deleted; absent in qa / prod repos | config-lint forbids them outside `*-dev` / `local` |
 | Release versions | all repos | never deleted while a git tag references them; prod repo never touched by any job | job hard-codes `docker-prod-local` as excluded |
 | Base images | base repo | keep last 10 per name | any base referenced by a `FROM` on `main` kept |
@@ -414,7 +414,9 @@ sequenceDiagram
 The workflow asserts that Gradle's git-derived version equals the tag before anything is pushed, so
 a mis-tagged commit fails early. The `alt` branch on the scan gate shows that a failing image never
 reaches qa and never produces a bump PR; the previous release keeps running because nothing in
-`config/` changed.
+`config/` changed. In the demo pipeline `release.yml` retags the digests of the tested `main` run for every app
+and rebuilds nothing (D7 §4.8); the `app changed` branch above applies only when the tagged commit has no
+tested `main` run, such as a hotfix branch.
 
 ## 8. How the demo skeleton implements it
 
@@ -432,6 +434,9 @@ reaches qa and never produces a bump PR; the previous release keeps running beca
 | Artifactory promotion, per-stage virtual repos, prod `promote` workflow, Argo CD Image Updater evaluation | documented in §6.3 / §4.8, not built | Phase 3 (EKS + GitOps) |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-09, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | DL | Topic | This document's recommendation |
 |---|---|---|

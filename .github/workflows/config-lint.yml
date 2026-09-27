@@ -1,0 +1,50 @@
+# Config lint (D5 §6.5, D7 §5.1): naming, required files, identity, allowed compose.env variables,
+# compose rendering, merged-config validation, parity and tag policy — all in `./gradlew configLint`
+# (buildlogic.config-lint), so a laptop runs the same check. Called by pr.yml and main.yml, and runs
+# on its own for pull requests that touch the config tree (config lives in this repo, DL-06).
+# Demo step 2 adds `helm lint` / `helm template` per instance to the same task.
+name: config-lint
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'config/**'
+      - '**/helm/**'
+      - '**/docker/docker-compose.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  config-lint:
+    name: config-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the build's git-version plugin reads tags and history
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          java: 'true'
+
+      - name: ./gradlew configLint
+        run: ./gradlew configLint --continue
+
+      - name: Report in the job summary
+        if: always()
+        run: |
+          report=build/reports/config-lint/config-lint.txt
+          [[ -f $report ]] || exit 0
+          { echo "### config-lint"; echo ""; echo '```'; head -n 200 "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the config-lint report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: config-lint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/reports/config-lint/**
+          if-no-files-found: ignore
+          retention-days: 7

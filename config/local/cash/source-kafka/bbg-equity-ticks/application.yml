@@ -1,0 +1,8 @@
+# Layer 5 — Bloomberg equity ticks from Kafka into Deephaven (connector.source.table is the topic).
+connector:
+  source:
+    table: bbg.equity.ticks
+  sink:
+    type: deephaven
+    deephaven:
+      table: ${IT_TABLE_PREFIX:}bbg_equity_ticks

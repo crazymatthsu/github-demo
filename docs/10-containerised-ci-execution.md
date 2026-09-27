@@ -166,9 +166,9 @@ system test runs exactly the images `build` produced.
 - **Assertions**: the test opens a session with the Deephaven Java client and takes a snapshot of the
   target table; D8 §6.6 owns the comparison rules.
 - **Isolation**: one Deephaven per compose project, so matrix jobs never share a server; within a
-  suite every class writes under its own prefix `it_<sha7>_<class>_` (passed to the connector as
-  `IT_TABLE_PREFIX`), releases its tables in `@AfterAll`, and classes run sequentially against the
-  shared server.
+  suite the classes write under the build's prefix `it_<sha7>_` (passed to the connector as
+  `IT_TABLE_PREFIX`; a per-class part is a later refinement), release their tables in `@AfterAll`, and run
+  sequentially against the shared server.
 
 ### 5.4 Layered teardown guarantee
 
@@ -247,7 +247,9 @@ CI shape is one command away (§6.9).
 
 Mounting the container socket into a job container is root-equivalent on the runner: acceptable on
 ephemeral runners only (GitHub-hosted, ARC ephemeral pods), never on a persistent self-hosted runner;
-a rootless Podman socket is the alternative where the Docker socket is refused (§8). The `ci-build`
+a rootless Podman socket is the alternative where the Docker socket is refused (§8). In the demo the
+`build` job container runs as the image's user 1001 with `--group-add <docker GID of the runner>` (the probe
+job reads it with `stat -c %g /var/run/docker.sock`) rather than as root. The `ci-build`
 image runs as a non-root user; job containers are never `privileged`; the workflow `permissions:`
 block grants the minimum (`contents: read`, `packages: write`, `id-token: write` where OIDC is used);
 licensed images (AMPS) receive their licence from a masked secret, never from a compose file.
@@ -295,7 +297,7 @@ services:
       START_OPTS: "-Xmx1536m ${DEEPHAVEN_AUTH_OPTS}"   # anonymous handler in CI (verify property names)
     mem_limit: 2g
     healthcheck:
-      test: ["CMD-SHELL", "<probe on http://localhost:10000/ (verify tool in image)>"]
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:10000"]   # ships in the server image (42.5); bash /dev/tcp probe is the fallback
       start_period: 30s
       interval: 5s
       retries: 24
@@ -351,11 +353,11 @@ home bind-mounted, `IT_DEEPHAVEN_HOST=deephaven`, `IT_SQLSERVER_HOST=sqlserver`,
 | Component | Memory | Setting |
 |---|---|---|
 | Deephaven | heap 1.5 GB, limit 2 GB | `START_OPTS=-Xmx1536m`, `mem_limit: 2g` |
-| SQL Server | limit 2 GB (its documented minimum, verify) | `MSSQL_MEMORYLIMIT_MB`, `mem_limit` |
+| SQL Server | limit 2.5 GB — it refuses to start with less than about 2 GB visible (verified against `mssql/server:2022`) | `MSSQL_MEMORY_LIMIT_MB=2048`, `mem_limit: 2560m` |
 | Connector under test | limit 768 MB | `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60`, `mem_limit: 768m` |
 | `it-runner` | limit 1.2 GB | Gradle `-Xmx1g`, `--no-daemon` |
 | Runner OS + Docker | about 1 GB | — |
-| **Total** | about 6.5–7 GB | at the limit of the standard class; §5.8 fallbacks |
+| **Total** | about 7–7.5 GB | at or above the standard class — measure on the first run; §5.8 fallbacks |
 
 ### 6.9 Local parity commands
 
@@ -580,6 +582,9 @@ are the same `always()` steps on every path. A cancel interrupts the test step, 
 | Ephemeral EKS namespace, ARC runners | documented here, not provisioned | Phase 3 (EKS + GitOps) |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-13, DL-27, DL-28 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Depends on |
 |---|---|

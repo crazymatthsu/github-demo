@@ -1,0 +1,81 @@
+name: affected-matrix
+description: >-
+  Affected-subproject detection (D7 §5.4, §6.2): diffs the change against its base, maps the changed
+  paths onto Gradle projects with .github/affected-map.yml (scripts/ci/affected.py) and returns the
+  build list, the integration-test matrix and the full / docs-only flags. Needs a checkout with
+  history (fetch-depth: 0).
+inputs:
+  base-ref:
+    description: >-
+      Diff base (commit or ref). Empty: the merge-base with `default-branch` (plain branch pushes).
+      pull_request passes the PR base SHA, merge_group the queue base SHA.
+    required: false
+    default: ''
+  head-ref:
+    description: Head commit or ref of the change.
+    required: false
+    default: HEAD
+  default-branch:
+    description: Ref used for the merge-base when base-ref is empty.
+    required: false
+    default: origin/main
+  force-full:
+    description: "'true' selects every project (label ci:full, merge queue, main)."
+    required: false
+    default: 'false'
+  force-full-reason:
+    description: Shown in the job summary when force-full is true.
+    required: false
+    default: ''
+  map:
+    description: Path of the affected map.
+    required: false
+    default: .github/affected-map.yml
+outputs:
+  projects:
+    description: JSON list of Gradle projects to build (all of them when full).
+    value: ${{ steps.detect.outputs.projects }}
+  image-projects:
+    description: JSON list of the selected projects that produce images.
+    value: ${{ steps.detect.outputs.image-projects }}
+  matrix:
+    description: JSON list of the selected projects with integration tests (the component IT matrix).
+    value: ${{ steps.detect.outputs.matrix }}
+  full:
+    description: "'true' when shared inputs or unmapped paths changed, or force-full was set."
+    value: ${{ steps.detect.outputs.full }}
+  docs-only:
+    description: "'true' when nothing build-relevant changed; build and test jobs are skipped."
+    value: ${{ steps.detect.outputs.docs-only }}
+  config-changed:
+    description: "'true' when config/** changed."
+    value: ${{ steps.detect.outputs.config-changed }}
+  base-changed:
+    description: "'true' when docker/base/** changed; the build rebuilds the base images locally."
+    value: ${{ steps.detect.outputs.base-changed }}
+  reason:
+    description: One-line explanation of the decision.
+    value: ${{ steps.detect.outputs.reason }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        FORCE_FULL: ${{ inputs.force-full }}
+        FORCE_FULL_REASON: ${{ inputs.force-full-reason }}
+        MAP: ${{ inputs.map }}
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_WORKSPACE}/scripts/ci/affected.py" \
+          --map "$MAP" \
+          --base "$BASE_REF" \
+          --head "$HEAD_REF" \
+          --default-branch "$DEFAULT_BRANCH" \
+          --full "$FORCE_FULL" \
+          --reason "$FORCE_FULL_REASON" \
+          --github-output "$GITHUB_OUTPUT" \
+          --summary "$GITHUB_STEP_SUMMARY"

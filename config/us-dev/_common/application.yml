@@ -1,0 +1,6 @@
+# Layer 3 — env-wide settings for every app in us-dev (D5 §6.1): JSON logs on stdout for the dev hosts
+# (D6 §6.9); the identity fields come from the jar defaults (logging.structured.json.add.*).
+logging:
+  structured:
+    format:
+      console: ecs

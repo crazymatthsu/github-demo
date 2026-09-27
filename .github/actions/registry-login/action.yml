@@ -1,0 +1,54 @@
+name: registry-login
+description: >-
+  Logs the container engine in to the image registry (D7 §6.2). Demo: GHCR with the workflow's
+  GITHUB_TOKEN (the calling job needs `packages: read` to pull, `packages: write` to push).
+  Enterprise: JFrog Artifactory through GitHub OIDC (DL-18) — stubbed below.
+inputs:
+  registry:
+    description: Registry host (ghcr.io in the demo; artifactory.<company>.com in the enterprise).
+    required: false
+    default: ghcr.io
+  mode:
+    description: "'token' (username + password/token) or 'oidc' (GitHub OIDC → registry identity; not implemented)."
+    required: false
+    default: token
+  username:
+    description: User name for token mode.
+    required: false
+    default: ${{ github.actor }}
+  password:
+    description: Password or token for token mode.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: OIDC login (stub)
+      if: inputs.mode == 'oidc'
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        # TODO(DL-18): enterprise path, not built in the demo. The calling job grants `id-token: write`;
+        # this step requests the job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL / _TOKEN, audience set by
+        # the JFrog OIDC integration), exchanges it at the Artifactory token endpoint for a short-lived
+        # access token scoped by the claims (repository, ref, environment) and logs in with it:
+        #   jf config add --url "https://$REGISTRY" --oidc-provider-name github --oidc-audience ... ;
+        #   docker login "$REGISTRY" --username <identity> --password-stdin <<<"$ACCESS_TOKEN"
+        echo "::error title=registry-login::mode 'oidc' is a stub (TODO(DL-18)); use mode 'token' for $REGISTRY"
+        exit 1
+    - name: Unknown mode
+      if: inputs.mode != 'oidc' && inputs.mode != 'token'
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        echo "::error title=registry-login::unknown mode '$MODE' (expected token or oidc)"
+        exit 1
+    - name: Token login
+      if: inputs.mode == 'token'
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}

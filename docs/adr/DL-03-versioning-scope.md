@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -15,7 +15,7 @@ upstream packaging with a different cadence.
 
 ## Decision
 
-Proposed: hybrid versioning — the connector family (`connectors-framework`, `source-kafka`,
+Decided (v1.0, as recommended): hybrid versioning — the connector family (`connectors-framework`, `source-kafka`,
 `source-amps`, `source-database`) in lockstep under `v<major>.<minor>.<patch>` tags;
 `deephaven-server` versioned independently under `deephaven-server/v*` tags.
 

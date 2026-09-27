@@ -1,0 +1,356 @@
+# Reusable: Gradle build, unit tests, quality gates and images (D7 §6.2, D10 §5.2, DL-28).
+#
+#   probe    (runner host)  is ghcr.io/crazymatthsu/base/ci-build:latest published? plan the Gradle tasks
+#   build    (ci-build container when published, else the runner host with setup-java — first-run
+#             bootstrap)  ./gradlew build → printVersion → buildImages → pushImages (tags from Gradle, D4)
+#   collect  (runner host)  resolve the pushed tags to digests → `images` output for the IT matrix
+#
+# Image tags are computed by the buildlogic.git-version / buildlogic.docker-image plugins (D4 §6.2):
+# pull request / merge queue → pr-<n>-<sha7>; main → <next>-rc.<n>, sha-<sha7>, main; hotfix/* →
+# <next-patch>-rc.<n>, sha-<sha7>. The callers need `packages: write` for pushes.
+name: _gradle-build
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: "'all' or a JSON list of Gradle project paths (affected-matrix output `projects`)."
+        type: string
+        default: all
+      build-images:
+        description: Build the images of the selected projects that have one.
+        type: boolean
+        default: true
+      push-images:
+        description: "Push them to GHCR (the caller grants `packages: write`); required for the integration-test jobs."
+        type: boolean
+        default: false
+      ignore-head-tags:
+        description: >-
+          Delete local tags pointing at HEAD before Gradle computes the version, so main.yml always
+          produces the pre-release form even when release-please tagged the commit meanwhile
+          (release.yml promotes the tested digest to the release tag; nothing is rebuilt).
+        type: boolean
+        default: false
+      rebuild-base:
+        description: Build the company base images locally even when GHCR has them (the change touches docker/base/**).
+        type: boolean
+        default: false
+    outputs:
+      projects:
+        description: JSON list of the Gradle projects built.
+        value: ${{ jobs.probe.outputs.projects }}
+      it-projects:
+        description: JSON list of the built projects that have integration tests (the IT matrix).
+        value: ${{ jobs.probe.outputs.it-projects }}
+      version:
+        description: The connector-family version (./gradlew printVersion).
+        value: ${{ jobs.build.outputs.version }}
+      images:
+        description: "JSON object Gradle project → pushed image, repository:tag@sha256:digest ({} when nothing was pushed)."
+        value: ${{ jobs.collect.outputs.images || '{}' }}
+      image-tags:
+        description: JSON object Gradle project → D4 tag set of this build ({} when nothing was pushed).
+        value: ${{ jobs.collect.outputs.image-tags || '{}' }}
+      ci-build-image:
+        description: The ci-build image the build ran in, pinned by digest ('' when it ran on the host).
+        value: ${{ jobs.probe.outputs.ci-build-image }}
+
+permissions:
+  contents: read
+
+env:
+  # Registry namespace of every image in the demo; must match the buildlogic.docker-image default.
+  IMAGE_NAMESPACE: ghcr.io/crazymatthsu
+
+jobs:
+  probe:
+    name: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      ci-build-image: ${{ steps.base.outputs.ci-build }}
+      jre21-image: ${{ steps.base.outputs.jre21 }}
+      docker-gid: ${{ steps.socket.outputs.gid }}
+      projects: ${{ steps.plan.outputs.projects }}
+      image-projects: ${{ steps.plan.outputs.image-projects }}
+      it-projects: ${{ steps.plan.outputs.it-projects }}
+      build-tasks: ${{ steps.plan.outputs.build-tasks }}
+      image-build-tasks: ${{ steps.plan.outputs.image-build-tasks }}
+      image-push-tasks: ${{ steps.plan.outputs.image-push-tasks }}
+      image-ref-tasks: ${{ steps.plan.outputs.image-ref-tasks }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github
+            scripts/ci
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Probe the published base images
+        id: base
+        env:
+          REBUILD: ${{ inputs.rebuild-base }}
+        run: |
+          set -euo pipefail
+          # ci-build decides where the build job runs (DL-28); jre21 is handed to the build job so it
+          # does not probe again. Missing images are the first-run bootstrap: the build job then runs on
+          # the host and builds jre21 locally.
+          for name in ci-build jre21; do
+            ref=""
+            if [[ $REBUILD != true ]]; then
+              ref=$(scripts/ci/resolve-image.sh "$IMAGE_NAMESPACE/base/$name:latest") || ref=""
+            fi
+            echo "$name=$ref" >> "$GITHUB_OUTPUT"
+            echo "- base/$name: ${ref:-not used (not published yet, or rebuilt from this change)}" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Docker socket group of this runner image
+        id: socket
+        run: |
+          set -euo pipefail
+          # The GID of the host's docker group differs between runner images; the build job's container
+          # joins it (--group-add) to use the socket the runner mounts into job containers.
+          gid=$(stat -c %g /var/run/docker.sock)
+          [[ $gid =~ ^[0-9]+$ ]] || { echo "::error::cannot read the group of /var/run/docker.sock"; exit 1; }
+          echo "gid=$gid" >> "$GITHUB_OUTPUT"
+
+      - name: Plan the Gradle tasks
+        id: plan
+        env:
+          PROJECTS: ${{ inputs.projects }}
+          BUILD_IMAGES: ${{ inputs.build-images }}
+        run: |
+          set -euo pipefail
+          meta=$(yq -o=json -I=0 '.projects' .github/affected-map.yml)
+          all=$(jq -c 'keys_unsorted' <<<"$meta")
+          if [[ $PROJECTS == all ]]; then
+            selected=$all
+          else
+            selected=$(jq -c --argjson known "$all" '
+              if type == "array" and length > 0 and all(.[]; . as $p | type == "string" and ($known | index($p)) != null)
+              then . else error("projects must be a non-empty JSON list of Gradle paths from .github/affected-map.yml") end
+            ' <<<"$PROJECTS")
+          fi
+          images=$(jq -c --argjson meta "$meta" '[.[] | select($meta[.].image == true)]' <<<"$selected")
+          its=$(jq -c --argjson meta "$meta" '[.[] | select($meta[.].it == true)]' <<<"$selected")
+          if [[ $(jq -r --argjson all "$all" 'sort == ($all | sort)' <<<"$selected") == true ]]; then
+            build_tasks=build image_build=buildImages image_push=pushImages       # root aggregates (D1 §6.2)
+          else
+            build_tasks=$(jq -r 'map(. + ":build") | join(" ")' <<<"$selected")
+            image_build=$(jq -r 'map(. + ":buildImage") | join(" ")' <<<"$images")
+            image_push=$(jq -r 'map(. + ":pushImage") | join(" ")' <<<"$images")
+          fi
+          image_ref=$(jq -r 'map(. + ":printImageRef") | join(" ")' <<<"$images")
+          if [[ $BUILD_IMAGES != true || $images == '[]' ]]; then
+            image_build="" image_push="" image_ref=""
+          fi
+          {
+            echo "projects=$selected"
+            echo "image-projects=$images"
+            echo "it-projects=$its"
+            echo "build-tasks=$build_tasks"
+            echo "image-build-tasks=$image_build"
+            echo "image-push-tasks=$image_push"
+            echo "image-ref-tasks=$image_ref"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "- Gradle: \`./gradlew $build_tasks\`"
+            echo "- images: \`${image_build:-none}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: gradle
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    # In the ci-build image when it is published (DL-28, D10 §5.2); an empty image runs the job on the
+    # runner host instead — the first-run bootstrap, until base-image.yml has published ci-build.
+    # The image's user `runner` (1001) is the GitHub-hosted runner's UID, so the mounted workspace,
+    # RUNNER_TEMP and HOME keep their owner. The runner also mounts /var/run/docker.sock (owned by the
+    # host's docker group), so the container joins that group: builds and pushes go through the host
+    # engine without running the job as root. Socket access is root-equivalent on the runner —
+    # acceptable on ephemeral GitHub-hosted runners only, never on a persistent self-hosted one
+    # (D10 §5.11). On a runner whose user is not 1001, use `--user root` instead.
+    container:
+      image: ${{ needs.probe.outputs.ci-build-image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --group-add ${{ needs.probe.outputs.docker-gid }}
+    env:
+      # Read by buildlogic.git-version (pull requests are also detected from GITHUB_REF).
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BUILD_TASKS: ${{ needs.probe.outputs.build-tasks }}
+      IMAGE_BUILD_TASKS: ${{ needs.probe.outputs.image-build-tasks }}
+      IMAGE_PUSH_TASKS: ${{ needs.probe.outputs.image-push-tasks }}
+      IMAGE_REF_TASKS: ${{ needs.probe.outputs.image-ref-tasks }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image-refs: ${{ steps.refs.outputs.refs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags and history: the version is derived from git (D4 §6.1)
+
+      - name: Pre-release version even if HEAD is already tagged
+        if: inputs.ignore-head-tags
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mapfile -t head_tags < <(git tag --points-at HEAD)
+          if [[ ${#head_tags[@]} -gt 0 ]]; then
+            echo "::notice::ignoring tags on HEAD for the version (${head_tags[*]}); release.yml promotes this build's digests"
+            git tag -d "${head_tags[@]}"
+          fi
+
+      - uses: ./.github/actions/registry-login
+        if: env.IMAGE_BUILD_TASKS != ''
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          java: ${{ needs.probe.outputs.ci-build-image == '' }}
+          ensure-base: ${{ env.IMAGE_BUILD_TASKS != '' && 'jre21' || '' }}
+          jre21-image: ${{ needs.probe.outputs.jre21-image }}
+          rebuild-base: ${{ inputs.rebuild-base }}
+
+      - name: Build environment
+        env:
+          CI_BUILD: ${{ needs.probe.outputs.ci-build-image }}
+        run: |
+          {
+            echo "### Build environment"
+            echo ""
+            if [[ -n $CI_BUILD ]]; then
+              echo "Job container \`$CI_BUILD\` (DL-28)."
+            else
+              echo "Runner host with Temurin 21 — \`base/ci-build\` is not published yet (bootstrap); run base-image.yml."
+            fi
+            echo ""
+            java -version 2>&1 | head -n 1 | sed 's/^/- /'
+            docker version --format '- docker client {{.Client.Version}}, engine {{.Server.Version}}' 2>/dev/null || echo "- docker: not available"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build, unit tests, quality gates
+        run: |
+          read -r -a tasks <<<"$BUILD_TASKS"
+          ./gradlew "${tasks[@]}" --continue
+
+      - name: Version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(./gradlew -q printVersion | tr -d '\r' | sed '/^[[:space:]]*$/d' | tail -n 1)
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::printVersion returned '$version', not a version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "- version \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build images
+        if: env.IMAGE_BUILD_TASKS != ''
+        # BASE_IMAGE (exported by setup-build-env) is the jre21 base: GHCR digest, or the local bootstrap build.
+        run: |
+          read -r -a tasks <<<"$IMAGE_BUILD_TASKS"
+          ./gradlew "${tasks[@]}"
+
+      - name: Push images
+        if: env.IMAGE_PUSH_TASKS != '' && inputs.push-images
+        run: |
+          read -r -a tasks <<<"$IMAGE_PUSH_TASKS"
+          ./gradlew "${tasks[@]}"
+
+      - name: Image references
+        id: refs
+        if: env.IMAGE_PUSH_TASKS != '' && inputs.push-images
+        run: |
+          set -euo pipefail
+          read -r -a tasks <<<"$IMAGE_REF_TASKS"
+          refs=$(./gradlew -q "${tasks[@]}" | tr -d '\r' | grep -E '^[a-z0-9.-]+(:[0-9]+)?/[^ ]+:[^ /]+$' | tr '\n' ' ')
+          [[ -n $refs ]] || { echo "::error::printImageRef printed no image references"; exit 1; }
+          echo "refs=${refs% }" >> "$GITHUB_OUTPUT"
+
+      - name: Test summary
+        if: always()
+        run: scripts/ci/junit-summary.sh "Unit tests"
+
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+  collect:
+    name: image digests
+    needs: [probe, build]
+    if: needs.build.outputs.image-refs != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      images: ${{ steps.collect.outputs.images }}
+      image-tags: ${{ steps.collect.outputs.image-tags }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github
+            scripts/ci
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Resolve digests and the D4 tag set
+        id: collect
+        env:
+          REFS: ${{ needs.build.outputs.image-refs }}
+          IMAGE_PROJECTS: ${{ needs.probe.outputs.image-projects }}
+        run: |
+          set -euo pipefail
+          sha7=${GITHUB_SHA::7}
+          images='{}' tags='{}'
+          {
+            echo "### Images"
+            echo ""
+            echo "| project | image (digest) | tags |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for project in $(jq -r '.[]' <<<"$IMAGE_PROJECTS"); do
+            name=${project##*:}
+            ref=$(tr ' ' '\n' <<<"$REFS" | grep -E "/${name}:[^/]+$" | tail -n 1 || true)
+            [[ -n $ref ]] || { echo "::error::no image reference printed for $project"; exit 1; }
+            pinned=$(scripts/ci/resolve-image.sh "$ref")   # repository@sha256:...
+            primary=${ref##*:}
+            # repository:tag@sha256:... — pinned by digest, still readable, and test-infra/compose/stack.sh
+            # derives IMAGE_REPO / IMAGE_TAG for the app's compose template from it.
+            pinned="${ref}@${pinned#*@}"
+            # D4 §6.2 tag set of this build (what Gradle pushed; _docker-publish.yml re-asserts it later).
+            case "$GITHUB_REF" in
+              refs/heads/main)
+                [[ $primary == *-rc.* ]] || { echo "::error::$project: expected a pre-release tag on main, got $primary"; exit 1; }
+                set_json=$(jq -cn --arg a "$primary" --arg b "sha-$sha7" '[$a, $b, "main"]') ;;
+              refs/heads/hotfix/*)
+                set_json=$(jq -cn --arg a "$primary" --arg b "sha-$sha7" '[$a, $b]') ;;
+              *)
+                set_json=$(jq -cn --arg a "$primary" '[$a]') ;;
+            esac
+            images=$(jq -c --arg p "$project" --arg r "$pinned" '. + {($p): $r}' <<<"$images")
+            tags=$(jq -c --arg p "$project" --argjson t "$set_json" '. + {($p): $t}' <<<"$tags")
+            echo "| \`$project\` | \`$pinned\` | $(jq -r 'map("`" + . + "`") | join(", ")' <<<"$set_json") |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          echo "image-tags=$tags" >> "$GITHUB_OUTPUT"

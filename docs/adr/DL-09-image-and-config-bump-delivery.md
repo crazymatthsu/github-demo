@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted for dev (v0.7); Proposed for qa / prod |
+| Status | Accepted (dev v0.7; qa / prod v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -15,7 +15,7 @@ an operator edit, or an image updater writing back to git. v0.7 decided the dev 
 ## Decision
 
 Dev: merge to `main` deploys via the `deploy-dev` job, which then writes the deployed tag back into the
-instance `values.yaml` / `compose.env` with a loop guard (DL-36). Proposed for qa and prod: a bot PR
+instance `values.yaml` / `compose.env` with a loop guard (DL-36). Decided (v1.0) for qa and prod: a bot PR
 (GitHub App identity) against `config/<region>-qa/**` and `config/<region>-prod/**`, approved under
 CODEOWNERS; merge is the deploy intent.
 

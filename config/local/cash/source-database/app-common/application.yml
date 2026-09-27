@@ -1,0 +1,19 @@
+# Layer 4 — source-database on a laptop and in CI test stacks (D6 §6.12, D8 §5.2): endpoints are the compose
+# service names of the dependency stack (test-infra/compose, ./gradlew devUp), reached through DEPS_NETWORK.
+connector:
+  source:
+    host: sqlserver
+    port: 1433
+    poll-interval: 5s
+  sink:
+    amps:
+      # AMPS is licensed and absent from the demo stack (D3 §6.10): instances aiming at it use the stub sink.
+      host: amps
+      port: 9007
+    deephaven:
+      host: deephaven
+      port: 10000
+spring:
+  datasource:
+    # The SQL Server test container presents a self-signed certificate: trusted here, and only here.
+    url: jdbc:sqlserver://${connector.source.host}:${connector.source.port};databaseName=${connector.source.database:master};encrypt=true;trustServerCertificate=true

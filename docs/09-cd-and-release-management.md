@@ -189,7 +189,7 @@ reaches prod.
 | Position | last job of `main.yml`, `needs: [publish]`, `environment: dev`, `concurrency: deploy-dev` (no parallel deploys, `cancel-in-progress: false`) |
 | Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
 | Input | `config/us-dev/targets.yml` (and `jp-dev/targets.yml` when jp targets exist): every `<flow>/<app>/<instance>` with `kind: compose` or `kind: helm` (schema in D5 §6.6) |
-| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back |
+| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start`, then persisted by the write-back. **Demo placeholder (brief v1.1):** no dev host exists, so the step runs `run-compose.sh ... start --dry-run` on the runner (validates the target and prints the compose command) and echoes the SSH command it would run, next to a `TODO(DL-35)` comment describing the transport (§6.6) |
 | Helm adapter (Demo step 2) | per target: `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <flow> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml --atomic --timeout 5m`; kind created in the job and deleted at the end until a dev cluster exists (DL-32) |
 | Health gate | compose: `health` exit code; Helm: `--atomic` plus `kubectl rollout status` and the smoke test (two instances differ in effective config, §7 of the brief) |
 | Write-back | commit `chore(config): us-dev deployed <tag> [skip ci]` by the bot identity (GitHub App token, DL-09 / §5.5) touching only `image.tag` / `IMAGE_TAG` of the deployed instances; pushed to `main` directly (branch protection allows the App) |
@@ -221,7 +221,7 @@ targets:
 # illustrative — real job in .github/workflows/main.yml (D7 owns the workflow set)
 deploy-dev:
   needs: [publish]
-  if: github.actor != 'platform-bot[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
+  if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')   # demo bot identity; a GitHub App in the enterprise
   runs-on: ubuntu-latest
   environment: dev
   concurrency: { group: deploy-dev, cancel-in-progress: false }
@@ -235,9 +235,12 @@ deploy-dev:
       run: |
         for t in $(echo '${{ steps.targets.outputs.list }}' | jq -c '.[] | select(.kind=="compose")'); do
           host=$(jq -r .host <<<"$t"); args="us-dev $(jq -r '.instance | split("/") | join(" ")' <<<"$t")"
-          for cmd in pull start health; do
-            ssh deploy@"$host" "IMAGE_TAG=$IMAGE_TAG run-compose.sh $args $cmd"
-          done
+          # TODO(DL-35): real transport, not in the demo. Later: load a deploy key from the Environment `dev`
+          #   secret into ssh-agent, pin the host key from a checked-in known_hosts, then for cmd in pull start health:
+          #   ssh deploy@"$host" "IMAGE_TAG=$IMAGE_TAG run-compose.sh $args $cmd"   (forced command = run-compose.sh only;
+          #   fall back to a self-hosted runner on the host when SSH is not reachable)
+          deephaven-connectors/${args#* * }/scripts/run-compose.sh $args start --dry-run   # placeholder: validate + print
+          echo "would run: ssh deploy@$host 'IMAGE_TAG=$IMAGE_TAG run-compose.sh $args pull && ... start && ... health'"
         done
     - name: Deploy helm targets (Demo step 2)
       run: |
@@ -505,7 +508,7 @@ branches exist.
 
 | Phase | File / path | What it proves |
 |---|---|---|
-| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` deploys to the hosts in `config/us-dev/targets.yml` without a manual step |
+| Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` resolves the targets in `config/us-dev/targets.yml` and runs the placeholder adapter (`--dry-run` + printed SSH command, `TODO(DL-35)`) without a manual step; the real SSH transport is a later implementation |
 | Demo step 1 (compose) | `config/us-dev/targets.yml` (§6.5) | inventory of dev targets; `kind: compose` entries |
 | Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
 | Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof) and a dev bump PR so dev runs the release tag |
@@ -515,6 +518,9 @@ branches exist.
 | Phase 3 (EKS + GitOps) | Argo CD `ApplicationSet` and `AppProject` with `syncWindows` per `<env>/<flow>` (D11); `promote` job under Environments `<region>-qa` / `<region>-prod`; Argo CD notifications | documented, not provisioned by the demo |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-09, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Status | Effect here |
 |---|---|---|

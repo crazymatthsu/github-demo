@@ -1,0 +1,10 @@
+# Layer 5 — instance trades-db-to-amps: trades from its SQL Server into AMPS (D5 §6.3).
+connector:
+  source:
+    host: sql-trades.us-dev.example.com
+    database: trades
+    table: dbo.trades
+  sink:
+    type: amps
+    amps:
+      topic: cash.trades

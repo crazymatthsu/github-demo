@@ -9,18 +9,18 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 |---|---|---|---|
 | DL-01 | Repository model | Accepted | [DL-01-repository-model.md](DL-01-repository-model.md) |
 | DL-02 | Deployment platform | Accepted | [DL-02-deployment-platform.md](DL-02-deployment-platform.md) |
-| DL-03 | Versioning scope | Proposed | [DL-03-versioning-scope.md](DL-03-versioning-scope.md) |
-| DL-04 | Version computation | Proposed | [DL-04-version-computation.md](DL-04-version-computation.md) |
-| DL-05 | Image tag scheme | Proposed | [DL-05-image-tag-scheme.md](DL-05-image-tag-scheme.md) |
+| DL-03 | Versioning scope | Accepted (v1.0) | [DL-03-versioning-scope.md](DL-03-versioning-scope.md) |
+| DL-04 | Version computation | Accepted (v1.0) | [DL-04-version-computation.md](DL-04-version-computation.md) |
+| DL-05 | Image tag scheme | Accepted (v1.0) | [DL-05-image-tag-scheme.md](DL-05-image-tag-scheme.md) |
 | DL-06 | Config location | Accepted | [DL-06-config-location.md](DL-06-config-location.md) |
-| DL-07 | Config layering mechanism | Proposed | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
+| DL-07 | Config layering mechanism | Accepted (v1.0) | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
 | DL-08 | Env vars vs YAML | Proposed | [DL-08-env-vars-vs-yaml.md](DL-08-env-vars-vs-yaml.md) |
-| DL-09 | Image and config bump delivery | Accepted for dev; Proposed for qa / prod | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
+| DL-09 | Image and config bump delivery | Accepted (dev v0.7; qa / prod v1.0) | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
 | DL-10 | Config sync to target VMs | Closed (superseded by DL-30) | [DL-10-config-sync-to-target-vms.md](DL-10-config-sync-to-target-vms.md) |
-| DL-11 | Vault authentication | Proposed | [DL-11-vault-authentication.md](DL-11-vault-authentication.md) |
-| DL-12 | DB credentials | Proposed | [DL-12-db-credentials.md](DL-12-db-credentials.md) |
-| DL-13 | Enterprise CA injection | Proposed | [DL-13-enterprise-ca-injection.md](DL-13-enterprise-ca-injection.md) |
-| DL-14 | Image build tool | Proposed | [DL-14-image-build-tool.md](DL-14-image-build-tool.md) |
+| DL-11 | Vault authentication | Proposed — deferred to Phase 3 | [DL-11-vault-authentication.md](DL-11-vault-authentication.md) |
+| DL-12 | DB credentials | Proposed — deferred to Phase 3 | [DL-12-db-credentials.md](DL-12-db-credentials.md) |
+| DL-13 | Enterprise CA injection | Accepted (v1.0) | [DL-13-enterprise-ca-injection.md](DL-13-enterprise-ca-injection.md) |
+| DL-14 | Image build tool | Accepted (v1.0) | [DL-14-image-build-tool.md](DL-14-image-build-tool.md) |
 | DL-15 | IT harness | Accepted for the demo; Proposed for later | [DL-15-it-harness.md](DL-15-it-harness.md) |
 | DL-16 | Test-data distribution | Proposed | [DL-16-test-data-distribution.md](DL-16-test-data-distribution.md) |
 | DL-17 | CI runners | Accepted for the demo; Proposed for the enterprise pipeline | [DL-17-ci-runners.md](DL-17-ci-runners.md) |
@@ -33,15 +33,15 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-24 | CI test execution model | Accepted for the demo | [DL-24-ci-test-execution-model.md](DL-24-ci-test-execution-model.md) |
 | DL-25 | Runner lifecycle | Accepted for the demo; Proposed for later | [DL-25-runner-lifecycle.md](DL-25-runner-lifecycle.md) |
 | DL-26 | Deephaven image under test in CI | Proposed | [DL-26-deephaven-image-under-test-in-ci.md](DL-26-deephaven-image-under-test-in-ci.md) |
-| DL-27 | Teardown guarantee | Proposed | [DL-27-teardown-guarantee.md](DL-27-teardown-guarantee.md) |
-| DL-28 | CI build environment | Proposed | [DL-28-ci-build-environment.md](DL-28-ci-build-environment.md) |
+| DL-27 | Teardown guarantee | Accepted (v1.0) | [DL-27-teardown-guarantee.md](DL-27-teardown-guarantee.md) |
+| DL-28 | CI build environment | Accepted (v1.0) | [DL-28-ci-build-environment.md](DL-28-ci-build-environment.md) |
 | DL-29 | Kubernetes packaging | Accepted | [DL-29-kubernetes-packaging.md](DL-29-kubernetes-packaging.md) |
-| DL-30 | GitOps controller | Accepted for the demo; Proposed for EKS | [DL-30-gitops-controller.md](DL-30-gitops-controller.md) |
-| DL-31 | Secrets delivery in Kubernetes | Proposed | [DL-31-secrets-delivery-in-kubernetes.md](DL-31-secrets-delivery-in-kubernetes.md) |
+| DL-30 | GitOps controller | Accepted for the demo; EKS part deferred to Phase 3 | [DL-30-gitops-controller.md](DL-30-gitops-controller.md) |
+| DL-31 | Secrets delivery in Kubernetes | Proposed — deferred to Phase 3 | [DL-31-secrets-delivery-in-kubernetes.md](DL-31-secrets-delivery-in-kubernetes.md) |
 | DL-32 | Kubernetes test tier | Accepted for the demo; Proposed for Phase 3 | [DL-32-kubernetes-test-tier.md](DL-32-kubernetes-test-tier.md) |
 | DL-33 | AppInstance modelling on Kubernetes | Accepted | [DL-33-appinstance-modelling-on-kubernetes.md](DL-33-appinstance-modelling-on-kubernetes.md) |
-| DL-34 | Registry for EKS | Proposed | [DL-34-registry-for-eks.md](DL-34-registry-for-eks.md) |
-| DL-35 | Reaching the dev compose hosts from CI (demo step 1) | Proposed | [DL-35-reaching-the-dev-compose-hosts-from-ci.md](DL-35-reaching-the-dev-compose-hosts-from-ci.md) |
-| DL-36 | Loop guard for bot write-backs in the same repo | Proposed | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
+| DL-34 | Registry for EKS | Proposed — deferred to Phase 3 | [DL-34-registry-for-eks.md](DL-34-registry-for-eks.md) |
+| DL-35 | Reaching the dev compose hosts from CI (demo step 1) | Accepted (v1.0); demo placeholder with TODO | [DL-35-reaching-the-dev-compose-hosts-from-ci.md](DL-35-reaching-the-dev-compose-hosts-from-ci.md) |
+| DL-36 | Loop guard for bot write-backs in the same repo | Accepted (v1.0) | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
 | DL-37 | AppInstance naming | Accepted | [DL-37-appinstance-naming.md](DL-37-appinstance-naming.md) |
-| DL-38 | Kubernetes namespace layout | Proposed | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |
+| DL-38 | Kubernetes namespace layout | Proposed — deferred to Phase 3 | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Proposed |
+| Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 
@@ -14,7 +14,7 @@ hand or by a release PR, with release notes generated. `project.version` must be
 
 ## Decision
 
-Proposed: Conventional Commits with a release PR tool (release-please leaning) that computes the next
+Decided (v1.0, as recommended): Conventional Commits with a release PR tool (release-please leaning) that computes the next
 semantic version, maintains the changelog and creates the tag; the tag triggers `release.yml`; every
 `main` push produces a pre-release version derived from the last tag and the commit.
 

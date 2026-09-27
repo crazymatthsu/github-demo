@@ -1,0 +1,8 @@
+# Layer 5 — Reuters FX rates from AMPS into Deephaven (connector.source.table is the AMPS topic).
+connector:
+  source:
+    table: reuters.fx
+  sink:
+    type: deephaven
+    deephaven:
+      table: ${IT_TABLE_PREFIX:}reuters_fx

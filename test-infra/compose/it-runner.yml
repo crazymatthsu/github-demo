@@ -1,0 +1,56 @@
+# test-infra/compose/it-runner.yml: the test JVM as a compose service (D10 §4.2, §6.3).
+#
+# CI runs the integration tests inside the ci-build image on the stack network, so no port is published:
+#   docker compose run --rm it-runner ./gradlew <project>:integrationTest -Pcompose.managed=false --no-daemon
+# (COMPOSE_FILE, COMPOSE_PROJECT_NAME, COMPOSE_ENV_FILES and the IT_* values come from $GITHUB_ENV,
+# written by `stack.sh up`.) The `tools` profile keeps `up --wait` from ever starting it.
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+services:
+  it-runner:
+    image: ${CI_BUILD_IMAGE:?CI_BUILD_IMAGE is not set - see test-infra/compose/versions.env}
+    profiles: [tools]
+    # The caller's UID/GID (stack.sh exports them): files the build writes into the bind-mounted
+    # workspace stay owned by the runner user (UID 1001 on GitHub-hosted runners, as in the image).
+    user: "${IT_RUNNER_UID:-1001}:${IT_RUNNER_GID:-1001}"
+    init: true
+    working_dir: /workspace
+    environment:
+      HOME: /tmp
+      GRADLE_USER_HOME: /gradle-home
+      # Endpoints on the compose network (D8 §6.2, D10 §6.6). A host JVM uses localhost instead.
+      IT_DEEPHAVEN_HOST: deephaven
+      IT_DEEPHAVEN_PORT: "10000"
+      IT_SQLSERVER_HOST: sqlserver
+      IT_SQLSERVER_PORT: "1433"
+      IT_TABLE_PREFIX: ${IT_TABLE_PREFIX:-}
+      # The app under test when the stack includes it (D8 §5.1): stack.sh up exports APP_IMAGE and APP_NAME,
+      # the compose service name. Both stay empty for a stack without an app, and the actuator check skips.
+      APP_IMAGE: ${APP_IMAGE:-}
+      IT_APP_HOST: ${APP_NAME:-}
+      IT_APP_PORT: "8080"
+      # The SQL Server login the tests use: the same Spring property names the app binds (D2 §6.4).
+      SPRING_DATASOURCE_USERNAME: sa
+      SPRING_DATASOURCE_PASSWORD: ${IT_SA_PASSWORD:?IT_SA_PASSWORD is not set - run test-infra/compose/stack.sh up first}
+      # CI context passed through when set (version computation in build-logic, CI-only guards).
+      CI:
+      GITHUB_ACTIONS:
+      GITHUB_REF:
+      GITHUB_REF_NAME:
+      GITHUB_HEAD_REF:
+      GITHUB_SHA:
+      GITHUB_RUN_ID:
+      GITHUB_RUN_ATTEMPT:
+      GITHUB_SERVER_URL:
+      GITHUB_REPOSITORY:
+      PR_NUMBER:
+    volumes:
+      - ${IT_WORKSPACE:-../..}:/workspace
+      # Host Gradle home restored by setup-gradle, mounted read-write (D10 §6.7).
+      - ${IT_GRADLE_HOME:-~/.gradle}:/gradle-home
+    # Above D10 §6.8's 1.2 GB: gradle.properties gives the Gradle daemon -Xmx1536m, and the test JVM
+    # and any Kotlin compile of build-logic come on top of that. Measure in CI and adjust.
+    mem_limit: ${IT_RUNNER_MEM_LIMIT:-2g}
+    labels: *ci-labels

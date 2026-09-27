@@ -426,8 +426,8 @@ Illustrative — `docker/docker-compose.yml` fragment (Demo step 1):
 
 ```yaml
 services:
-  app:
-    image: ${IMAGE_REPO}/source-database:${IMAGE_TAG}
+  source-database:                                   # the service is named after the AppName (D6)
+    image: ${APP_IMAGE:-${IMAGE_REPO}/source-database:${IMAGE_TAG}}
     env_file: [ "${CONFIG_DIR}/compose.env" ]     # non-secret knobs only
     environment:
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?set in the shell, never in git}
@@ -500,6 +500,9 @@ is met by rule 1 above: the skeleton's `source-database` hello-world query reads
 | `docs/adr/` | ADRs for DL-11, DL-12, DL-31 once confirmed | phase 1 review |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-35 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Status | Needed for |
 |---|---|---|

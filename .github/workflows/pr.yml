@@ -1,0 +1,174 @@
+# Pull-request pipeline (D7 §5.1, §5.3, §5.4, §6.1; D10 §5.2).
+#
+#   push to a branch            fast tier: affected build + unit tests + lint + config-lint (no images, no containers)
+#   pull_request / merge_group  fast tier + images pr-<n>-<sha7> + component ITs of the affected projects
+#                               (all projects when shared code changed, on the merge queue, or with label ci:full)
+#   docs-only changes           everything skipped; pr-gate passes with a docs-only summary
+# `pr-gate` fans everything in and is the ONLY required status check on `main` (D7 §5.6).
+name: pr
+
+on:
+  push:
+    # main and hotfix/* run main.yml; merge-queue branches run here through merge_group.
+    branches-ignore: [main, 'hotfix/**', 'gh-readonly-queue/**']
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect-affected:
+    name: detect affected
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      projects: ${{ steps.affected.outputs.projects }}
+      matrix: ${{ steps.affected.outputs.matrix }}
+      full: ${{ steps.affected.outputs.full }}
+      docs-only: ${{ steps.affected.outputs.docs-only }}
+      base-changed: ${{ steps.affected.outputs.base-changed }}
+      reason: ${{ steps.affected.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: affected
+        uses: ./.github/actions/affected-matrix
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          # The merge queue proves the actual merge result with every component IT (D7 §4.6).
+          force-full: ${{ github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          force-full-reason: ${{ github.event_name == 'merge_group' && 'merge queue' || 'label ci:full' }}
+
+  lint:
+    name: lint
+    needs: detect-affected
+    if: needs.detect-affected.outputs.docs-only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install linters (pinned)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/lint"
+          "$RUNNER_TEMP/lint/bin/pip" install --quiet --disable-pip-version-check \
+            hadolint-bin==2.15.1 shellcheck-py==0.11.0.1 actionlint-py==1.7.12.25
+          echo "$RUNNER_TEMP/lint/bin" >> "$GITHUB_PATH"
+
+      - name: hadolint (Dockerfiles, .hadolint.yaml)
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files -- 'Dockerfile' '**/Dockerfile')
+          if [[ ${#files[@]} -eq 0 ]]; then echo "no Dockerfiles"; exit 0; fi
+          hadolint --config .hadolint.yaml "${files[@]}"
+
+      - name: ShellCheck (shell scripts)
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files -- '*.sh')
+          if [[ ${#files[@]} -eq 0 ]]; then echo "no shell scripts"; exit 0; fi
+          shellcheck --severity=warning "${files[@]}"
+
+      - name: actionlint (workflows, with ShellCheck on run blocks)
+        run: actionlint -no-color
+
+  build:
+    needs: detect-affected
+    if: needs.detect-affected.outputs.docs-only != 'true' && needs.detect-affected.outputs.projects != '[]'
+    uses: ./.github/workflows/_gradle-build.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      projects: ${{ needs.detect-affected.outputs.projects }}
+      # Plain branch pushes stay in the container-free fast tier (D7 §5.3).
+      build-images: ${{ github.event_name != 'push' }}
+      # Fork PRs get a read-only token: they build images but cannot push them, so their ITs are skipped.
+      push-images: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+      rebuild-base: ${{ needs.detect-affected.outputs.base-changed == 'true' }}
+
+  config-lint:
+    needs: detect-affected
+    if: needs.detect-affected.outputs.docs-only != 'true'
+    uses: ./.github/workflows/config-lint.yml
+    permissions:
+      contents: read
+
+  integration-test:
+    needs: [detect-affected, build]
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      && needs.detect-affected.outputs.matrix != '[]'
+      && needs.build.outputs.images != '{}'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect-affected.outputs.matrix) }}
+    uses: ./.github/workflows/_integration-test.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      project: ${{ matrix.project }}
+      images: ${{ needs.build.outputs.images }}
+      level: component
+      ci-build-image: ${{ needs.build.outputs.ci-build-image }}
+      retention-days: 7
+
+  pr-gate:
+    # A plain branch push reports `push-gate`: its fast-tier result lands on the same head SHA as the
+    # PR run and must never satisfy (or mask) the required `pr-gate` check.
+    name: ${{ github.event_name == 'push' && 'push-gate' || 'pr-gate' }}
+    if: always()
+    needs: [detect-affected, lint, build, config-lint, integration-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+          REASON: ${{ needs.detect-affected.outputs.reason }}
+          DOCS_ONLY: ${{ needs.detect-affected.outputs.docs-only }}
+          MATRIX: ${{ needs.detect-affected.outputs.matrix }}
+          IMAGES: ${{ needs.build.outputs.images }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### pr-gate"
+            echo ""
+            echo "Affected: ${REASON:-unknown}"
+            echo ""
+            echo "| job | result |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          if [[ $(jq -r '."detect-affected".result' <<<"$NEEDS") != success ]]; then
+            echo "::error::detect-affected did not succeed"; fail=1
+          fi
+          bad=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<<"$NEEDS")
+          if [[ -n $bad ]]; then
+            echo "::error::failed or cancelled: $bad"; fail=1
+          fi
+          if [[ $DOCS_ONLY == true ]]; then
+            echo "- docs-only change: build and tests skipped" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ ($EVENT == pull_request || $EVENT == merge_group) && $MATRIX != '[]' && ${IMAGES:-'{}'} == '{}' ]]; then
+            if [[ $EVENT == merge_group ]]; then
+              echo "::error::merge queue: images were not pushed, so the component ITs could not run"; fail=1
+            else
+              echo "::warning::images not pushed (fork PR), component ITs skipped — the merge queue and main.yml run them"
+              echo "- **component ITs skipped**: fork PR without registry write access" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          exit "$fail"

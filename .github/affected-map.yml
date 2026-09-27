@@ -1,0 +1,70 @@
+# Affected-subproject detection map (D7 §5.4, §6.3; D1 §6.9).
+#
+# Read by .github/actions/affected-matrix through scripts/ci/affected.py; run the script locally to see
+# what CI will build and test for your branch:  python3 scripts/ci/affected.py --base origin/main
+#
+# Glob syntax: `**` spans directories (also zero of them), `*` and `?` stay inside one path segment.
+# Every changed path is classified by the FIRST section that matches, in this order:
+#   docs → config → shared → paths → (no match: treated as shared, so an unmapped file can never
+#   silently skip the tests it affects). Keep this file in step with the repository tree.
+schema: 1
+
+# Every Gradle project CI knows. `image`: has buildImage / pushImage / printImageRef (D1 §6.2).
+# `it`: has an integrationTest task, so it joins the component IT matrix (D8 §6.2).
+projects:
+  ":deephaven-connectors:connectors-framework": { image: false, it: false }
+  ":deephaven-connectors:source-kafka": { image: true, it: true }
+  ":deephaven-connectors:source-amps": { image: true, it: true }
+  ":deephaven-connectors:source-database": { image: true, it: true }
+  ":deephaven-server": { image: true, it: false }
+
+# Nothing to build or test: when every changed path is here, the run is "docs-only" (D7 §5.4 rule 4).
+docs:
+  - "docs/**"
+  - "**/*.md"
+  - "LICENSE"
+  - ".gitignore"
+  - ".gitattributes"
+  - ".editorconfig"
+  - "renovate.json"
+  - "release-please-config.json"
+  - ".release-please-manifest.json"
+
+# Config tree: config-lint only — no Gradle build, no image (D7 §5.4 rule 5, DL-06).
+# On main a config-only merge still runs the whole pipeline and deploy-dev (D9).
+config:
+  - "config/**"
+
+# Shared inputs: any change here means "everything" (full=true, D7 §5.4 rule 2).
+shared:
+  - "deephaven-connectors/connectors-framework/**"
+  - "deephaven-connectors/*.gradle.kts"
+  - "build-logic/**"
+  - "gradle/**"
+  - "gradlew"
+  - "gradlew.bat"
+  - "*.gradle.kts"
+  - "gradle.properties"
+  - "**/Dockerfile"
+  - "**/.dockerignore"
+  - "docker/**"
+  - "test-infra/**"
+  - "scripts/**"
+  - ".github/**"
+  - ".hadolint.yaml"
+
+# Changes confined to one project.
+paths:
+  - glob: "deephaven-connectors/source-kafka/**"
+    projects: [":deephaven-connectors:source-kafka"]
+  - glob: "deephaven-connectors/source-amps/**"
+    projects: [":deephaven-connectors:source-amps"]
+  - glob: "deephaven-connectors/source-database/**"
+    projects: [":deephaven-connectors:source-database"]
+  - glob: "deephaven-server/**"
+    projects: [":deephaven-server"]
+
+# Company base images (D3 §6.1): when changed, the PR build rebuilds them locally instead of pulling
+# the published ones from GHCR, so the change is tested before base-image.yml publishes it.
+base-images:
+  - "docker/base/**"

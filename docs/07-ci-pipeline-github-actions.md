@@ -144,7 +144,7 @@ the runners to ARC on EKS.
 |---|---|---|---|---|
 | `pr.yml` | `push` to any branch except `main`; `pull_request` (opened, synchronize, reopened, labeled); `merge_group` | `detect-affected`, `build` (compile, unit tests, static analysis, jars, images), `config-lint`, `integration-test` matrix (PR and merge queue only), `pr-gate` | images `pr-<n>-<sha7>` to the dev repository (GHCR in the demo); test reports | Demo step 1 (compose) |
 | `main.yml` | `push` to `main`; loop guard excludes bot write-backs (DL-36) | `build` (all), `integration-test` (all), `system-test`, `publish`, `deploy-dev`; Demo step 2 inserts `kind-deploy` before `deploy-dev` | pre-release image tags + `sha-<sha7>` (D4); `connectors-framework` jar to the Maven dev repository if consumed elsewhere (§8); SBOM + build-info; GitHub Deployment on `dev` | Demo step 1 / 2 |
-| `release.yml` | `push` of tag `v*` (lockstep) or `<subproject>/v*` (independent) — format follows D4 / DL-03 | `resolve` (find the tested `main` run and its digests), `promote` (retag / promote), `release` (GitHub Release + changelog), `bump-qa` (bot PR), `smoke` (dev, then qa after the bump PR merges) | release tags `1.4.2`, promoted digests, GitHub Release, qa bump PR | Demo step 1 (compose) |
+| `release.yml` | `push` of tag `v*` or `deephaven-server/v*`, plus `workflow_dispatch` from `release-please.yml` (a tag created with `GITHUB_TOKEN` starts no workflow, so release-please dispatches it explicitly); it waits for the `main.yml` run of the tagged commit and retags its tested digests | `resolve` (find the tested `main` run and its digests), `promote` (retag / promote), `release` (GitHub Release + changelog), `bump-qa` (bot PR), `smoke` (dev, then qa after the bump PR merges) | release tags `1.4.2`, promoted digests, GitHub Release, qa bump PR | Demo step 1 (compose) |
 | `nightly.yml` | `schedule` (one run per night) + `workflow_dispatch` | full IT matrix, Deephaven version matrix, AMPS suite, Podman parity, soak, security scans, image retention, teardown drill | scan reports, retention log, issue on failure | Demo step 1 (subset) |
 | `base-image.yml` | weekly `schedule`; `push` to the base-image Dockerfiles; `workflow_dispatch` with a CA-bundle version (rotation) | build, scan and push the company JRE base image (DL-13) and the `ci-build` image (DL-28) | base images to the tools repository | Demo step 1 (compose) |
 | `config-lint.yml` | `workflow_call` from `pr.yml` and `main.yml`; also `pull_request` on `config/**`, `**/helm/**`, `**/docker/docker-compose.yml` | render every instance (`docker compose config`; `helm lint` / `helm template` in step 2), naming regex / length / uniqueness, key-set parity dev vs qa vs prod (rules in D5) | lint report | Demo step 1 / 2 |
@@ -255,7 +255,7 @@ not network reach, is the limit.
 
 | File | `on:` (illustrative) | Concurrency group | `timeout-minutes` |
 |---|---|---|---|
-| `.github/workflows/pr.yml` | `push: branches-ignore: [main]`; `pull_request: types: [opened, synchronize, reopened, labeled]`; `merge_group` | `pr-${{ github.event.pull_request.number \|\| github.ref }}`, cancel-in-progress `true` | build 20, IT 30 |
+| `.github/workflows/pr.yml` | `push: branches-ignore: [main, 'hotfix/**', 'gh-readonly-queue/**']`; `pull_request: types: [opened, synchronize, reopened, labeled]`; `merge_group` | `pr-${{ github.event.pull_request.number \|\| github.ref }}`, cancel-in-progress `true` | build 25, IT 30 |
 | `.github/workflows/main.yml` | `push: branches: [main]` | `main`, cancel-in-progress `false` | build 25, system-test 45, deploy-dev 20 |
 | `.github/workflows/release.yml` | `push: tags: ['v*', '*/v*']` | `release-${{ github.ref }}` | 30 |
 | `.github/workflows/nightly.yml` | `schedule: [{cron: ...}]`, `workflow_dispatch` | `nightly` | per job, at most 120 |
@@ -312,6 +312,7 @@ not network reach, is the limit.
 | `config-lint` | `config lint` | no (covered by the gate) |
 | `integration-test` | `it (source-database)` | no (covered by the gate) |
 | `pr-gate` | `pr gate` | **yes — the only required check** |
+| `push-gate` | `push gate` | no — the fan-in of a plain branch push; deliberately a different name so a push result can never satisfy or hide `pr-gate` |
 
 ### 6.6 Concurrency and environments
 
@@ -362,7 +363,7 @@ concurrency: { group: main, cancel-in-progress: false }
 permissions: { contents: read, packages: write, id-token: write }
 jobs:
   build:
-    if: github.actor != 'platform-bot[bot]'          # loop guard; the write-back also carries [skip ci] (DL-36)
+    if: github.actor != 'github-actions[bot]'        # loop guard — demo bot identity (a GitHub App in the enterprise); the write-back also carries [skip ci] (DL-36)
     uses: ./.github/workflows/_gradle-build.yml
     with: { projects: all, publish-images: true, tag-kind: prerelease }
   config-lint:
@@ -565,10 +566,13 @@ makes, and it is the one commit that does not trigger another run.
 | Ownership | `.github/CODEOWNERS` (`config/**` prod paths → ops; `build-logic/**`, `.github/**` → platform) | Demo step 1 (compose) |
 | Registry | GHCR via `GITHUB_TOKEN` (`packages: write`); `registry-login` has an `oidc` mode ready for Artifactory | Demo step 1 (compose); OIDC in the enterprise |
 | Build environment | `container: ghcr.io/<org>/base/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2; image content in D3 §6.10) | Demo step 1 (compose) |
-| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts; Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
+| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install`; Phase 3 (EKS + GitOps): Argo CD sync |
 | Retention | nightly job calling the GHCR package API (demo) / `jf` cleanup (enterprise), rules from D4 | Demo step 1 (compose) |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-03, DL-04, DL-05, DL-14, DL-27, DL-28, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Depends on |
 |---|---|

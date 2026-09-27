@@ -211,7 +211,7 @@ two differ only in values layer 3 and the instance `application.yml` (D5 §6.3).
 |---|---|---|
 | Lint per instance | `helm lint helm/source-database -f <app-common>/values.yaml -f <inst>/values.yaml --set-file appConfig.common=... --set-file appConfig.instance=...` | in config-lint (D5 check 12) |
 | Render | `helm template source-database-trades-db-to-amps helm/source-database -n cash ...same flags...` | diffed in PRs; used by the parity check |
-| Install / upgrade | `helm upgrade --install source-database-trades-db-to-amps helm/source-database -n cash --create-namespace ...values and files... --set image.tag=<tag> --atomic --timeout 5m` | `--atomic` implies `--wait`; on failure the previous revision is restored (a failed first install is removed) |
+| Install / upgrade | `helm upgrade --install source-database-trades-db-to-amps helm/source-database -n cash --create-namespace ...values and files... --set image.tag=<tag> --atomic --timeout 5m` | `--atomic` implies `--wait`; on failure the previous revision is restored (a failed first install is removed). Helm 4 may have renamed or changed `--atomic` — verify against the pinned Helm before demo step 2 |
 | Readiness | `kubectl -n cash rollout status deployment/source-database-trades-db-to-amps --timeout=5m` | redundant with `--wait`, kept for the job log |
 | Smoke test | `helm test source-database-trades-db-to-amps -n cash` | proves the two instances differ (§7 acceptance) |
 | History / rollback | `helm history <release> -n cash`; `helm rollback <release> <revision> -n cash --wait` | emergency only; the normal rollback is a git revert redeployed by `deploy-dev` |
@@ -485,6 +485,9 @@ loaded with `kind load docker-image`, D10); the `deploy-dev` job runs it against
 `targets.yml`; in Phase 3 (EKS + GitOps) the ApplicationSet of §6.6 renders the same flags.
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-09 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Status | Needed for |
 |---|---|---|

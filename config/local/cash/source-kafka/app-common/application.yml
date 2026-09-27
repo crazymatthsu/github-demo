@@ -1,0 +1,10 @@
+# Layer 4 — source-kafka on a laptop / in CI test stacks: the kafka and deephaven services of the dependency stack.
+connector:
+  source:
+    host: kafka
+    port: 9092
+    poll-interval: 1s
+  sink:
+    deephaven:
+      host: deephaven
+      port: 10000

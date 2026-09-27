@@ -280,7 +280,8 @@ Every file in a layer directory is shipped to the same mount path, so a referenc
 
 Required files per instance (`config/<env>/<flow>/<AppName>/<AppInstance>/`): `compose.env`,
 `application.yml`, `values.yaml` (from Demo step 2). Required per `app-common/`: `application.yml`,
-`values.yaml`. Required per env: `targets.yml` (until ApplicationSets). Optional: `_common` layers,
+`values.yaml`. Required per `*-dev` env: `targets.yml` (only dev envs are auto-deployed; retired by
+ApplicationSets). Optional: `_common` layers,
 `logback.xml`, client properties. Forbidden: anything matching a secret pattern; `.env` files other
 than `compose.env`.
 
@@ -314,6 +315,7 @@ targets:
   - instance: cash/source-database/trades-db-to-amps
     kind: compose               # Demo step 1
     host: dev-compose-01.<company>.com
+    user: deploy                # optional: SSH user for the compose adapter (validated by config-lint)
   - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
 ```
 
@@ -497,6 +499,9 @@ unavailable, which the sync window confines to the deployment window.
 | Rendered-config test (`integrationTest` of `source-database`) | asserts the precedence order of §6.1 (R2) | Demo step 1 (compose) |
 
 ## 9. Open items
+
+> **Update 2026-09-26 (brief v1.0):** DL-07, DL-09, DL-35, DL-36 referenced below were decided as recommended in this
+> document; their ADRs in `docs/adr/` are now Accepted. The remaining rows are unchanged.
 
 | Item | Status | Needed for |
 |---|---|---|

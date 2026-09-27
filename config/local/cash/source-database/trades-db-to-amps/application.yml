@@ -1,0 +1,9 @@
+# Layer 5 — trades from SQL Server towards AMPS; the stub sink stands in for AMPS until it is licensed (D8 §5.2).
+connector:
+  source:
+    database: trades
+    table: dbo.trades
+  sink:
+    type: stub
+    amps:
+      topic: cash.trades

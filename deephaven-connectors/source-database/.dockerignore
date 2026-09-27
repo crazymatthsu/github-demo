@@ -1,0 +1,5 @@
+# Build context = this subproject (by hand) or the staged build/docker/ (buildImage): only these enter it.
+*
+!build/libs/*.jar
+!docker/**
+!scripts/entrypoint.sh

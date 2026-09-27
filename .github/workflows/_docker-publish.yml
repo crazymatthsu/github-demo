@@ -1,0 +1,85 @@
+# Reusable: point the D4 tag set at digests that were already built and tested (D7 §5.7, D4 §6.2).
+#
+# "Promote, never rebuild": tags are written inside GHCR by digest (scripts/ci/retag-image.sh →
+# `docker buildx imagetools create --prefer-index=false`), every write is verified, version tags are
+# immutable and only the convenience tags (main, latest, <major>, <major>.<minor>) may move.
+# main.yml calls it after the system test (pre-release set + `main`); release.yml calls it with the
+# release set. Enterprise: `jf rt docker-promote` between docker-dev-local → docker-qa-local (D4 §6.3).
+name: _docker-publish
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: JSON object Gradle project → image pinned by digest (repository[:tag]@sha256:...).
+        type: string
+        required: true
+      tags:
+        description: JSON object Gradle project → list of tags to point at that digest.
+        type: string
+        required: true
+    outputs:
+      published:
+        description: JSON object Gradle project → list of published references (repository:tag).
+        value: ${{ jobs.publish.outputs.published }}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: retag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      published: ${{ steps.retag.outputs.published }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github
+            scripts/ci
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Retag by digest
+        id: retag
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          jq -e 'type == "object" and length > 0' <<<"$IMAGES" >/dev/null ||
+            { echo "::error::images must be a non-empty JSON object"; exit 2; }
+          jq -e 'type == "object"' <<<"$TAGS" >/dev/null || { echo "::error::tags must be a JSON object"; exit 2; }
+          published='{}'
+          {
+            echo "### Published"
+            echo ""
+            echo "| project | digest | tag | action |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r project pinned; do
+            mapfile -t wanted < <(jq -r --arg p "$project" '.[$p] // [] | .[]' <<<"$TAGS")
+            if [[ ${#wanted[@]} -eq 0 ]]; then
+              echo "::error::no tags given for $project"
+              exit 2
+            fi
+            repo=${pinned%@*}
+            [[ ${repo##*/} != *:* ]] || repo=${repo%:*}   # repository:tag@digest → repository
+            status=0
+            result=$(scripts/ci/retag-image.sh "$pinned" "${wanted[@]}") || status=$?
+            while IFS=$'\t' read -r tag action; do
+              [[ -n $tag ]] || continue
+              echo "| \`$project\` | \`${pinned#*@}\` | \`$tag\` | $action |" >> "$GITHUB_STEP_SUMMARY"
+              published=$(jq -c --arg p "$project" --arg r "$repo:$tag" '.[$p] += [$r]' <<<"$published")
+            done <<<"$result"
+            if [[ $status -ne 0 ]]; then
+              echo "::error::retagging $project failed (exit $status; exit 3 = an immutable tag already points elsewhere)"
+              exit "$status"
+            fi
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$IMAGES")
+          echo "published=$published" >> "$GITHUB_OUTPUT"

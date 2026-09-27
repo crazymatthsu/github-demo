@@ -1,0 +1,42 @@
+# CODEOWNERS (D5 §6.7, D7 §5.6, D9 §6.1, §6.13). Branch protection on main requires a CODEOWNER review.
+#
+# Demo: @crazymatthsu stands in for every team. The comment above each rule names the team that owns
+# the path in the enterprise (organisation placeholder: @example). The LAST matching pattern wins, so
+# the general rules come first and the qa / prod config rules last.
+
+# Everything else — code of the connector family and the server: connectors team (@example/connectors-team)
+*                       @crazymatthsu
+
+# Build platform: convention plugins, wrapper, version catalog, root build — platform team (@example/platform-team)
+/build-logic/           @crazymatthsu
+/gradle/                @crazymatthsu
+/gradlew                @crazymatthsu
+/gradlew.bat            @crazymatthsu
+/settings.gradle.kts    @crazymatthsu
+/build.gradle.kts       @crazymatthsu
+/gradle.properties      @crazymatthsu
+
+# CI/CD: workflows, composite actions, affected map, CI scripts, release tooling — platform team (@example/platform-team)
+/.github/               @crazymatthsu
+/scripts/ci/            @crazymatthsu
+/release-please-config.json     @crazymatthsu
+/.release-please-manifest.json  @crazymatthsu
+/renovate.json          @crazymatthsu
+/.hadolint.yaml         @crazymatthsu
+
+# Company base images and the CA bundle — platform team + security (@example/platform-team @example/security)
+/docker/base/           @crazymatthsu
+/test-infra/ca/         @crazymatthsu
+
+# Test infrastructure — platform team with the connectors team (@example/platform-team @example/connectors-team)
+/test-infra/            @crazymatthsu
+
+# Config tree (DL-06): dev and shared layers — connectors team (@example/connectors-team)
+/config/                @crazymatthsu
+
+# qa: bump PRs are the deploy intent — connectors ops (@example/connectors-ops)
+/config/*-qa/           @crazymatthsu
+
+# prod: two approvals, change ticket in the PR — connectors ops + change approvers
+# (@example/connectors-ops @example/change-approvers)
+/config/*-prod/         @crazymatthsu

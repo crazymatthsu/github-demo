@@ -1,0 +1,8 @@
+{"account":"ACC-001","as_of":"2026-09-25T20:00:00.000Z","instrument":"AAPL","qty":100}
+{"account":"ACC-001","as_of":"2026-09-25T20:00:00.000Z","instrument":"MSFT","qty":250.5}
+{"account":"ACC-001","as_of":"2026-09-25T15:30:00.000Z","instrument":"VOD.L","qty":-300}
+{"account":"ACC-002","as_of":"2026-09-25T20:00:00.000Z","instrument":"AAPL","qty":1000000}
+{"account":"ACC-002","as_of":"2026-09-25T15:30:00.000Z","instrument":"SAP.DE","qty":0.25}
+{"account":"ACC-003","as_of":"2026-09-25T06:00:00.000Z","instrument":"7203.T","qty":1250.75}
+{"account":"ACC-003","as_of":"2026-09-25T15:30:00.000Z","instrument":"NESN.SW","qty":-42}
+{"account":"ACC-004","as_of":"2026-09-25T20:00:00.123Z","instrument":"MSFT","qty":0.125}

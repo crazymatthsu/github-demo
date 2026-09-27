@@ -1,0 +1,20 @@
+# hadolint configuration (D3 §6.4, D7 §6.4). Runs in the pr.yml `lint` job on every tracked Dockerfile:
+#   hadolint --config .hadolint.yaml $(git ls-files 'Dockerfile' '**/Dockerfile')
+# Warnings fail the job; info-level findings are reported only.
+failure-threshold: warning
+
+# Registries a FROM may name. Demo: the public upstreams and GHCR; enterprise: only the JFrog remotes
+# (artifactory.<company>.com), so an image that bypasses JFrog fails the lint (D3 §6.6, D10 §5.12).
+# FROM ${BASE_IMAGE}-style references are resolved at build time and not checked here.
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+  - gcr.io
+  - mcr.microsoft.com
+
+override:
+  info:
+    # Pin versions in apt-get install: relaxed. Only the company base images install OS packages, they
+    # are rebuilt weekly to pick up patches (D3 §6.1), and pinned Ubuntu package versions disappear from
+    # the archive. App Dockerfiles install nothing.
+    - DL3008

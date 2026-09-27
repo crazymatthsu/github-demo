@@ -1,0 +1,5 @@
+# Layer 2 — platform-wide defaults of source-database, the same in every env (D5 §6.1).
+# app-common overrides it per env and flow (the us-dev worked example polls every 5s).
+connector:
+  source:
+    poll-interval: 15s
