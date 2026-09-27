@@ -100,6 +100,21 @@ object ConfigRules {
     /** The Kubernetes version the rendered manifests are validated against (kubeconform, check 12). */
     const val KUBERNETES_VERSION = "1.37.0"
 
+    /** Check 11: a compose host, also every box of a host pool (DL-39) — a lower-case DNS name or an IPv4 address. */
+    val HOST_NAME = Regex("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+    /** Check 11: the SSH user of a compose host or pool (DL-35: `deploy`, whose forced command is run-compose.sh). */
+    val LOGIN = Regex("^[a-z_][a-z0-9_-]{0,31}$")
+    /**
+     * Check 11: a pool's install root — absolute, plain path segments only (it appears in rsync targets and SSH
+     * command lines), never `.` or `..`.
+     */
+    val POOL_ROOT = Regex("^(/[A-Za-z0-9._-]+)+/?$")
+    const val POOL_USER = "deploy"
+    const val POOL_ROOT_DEFAULT = "/opt/platform"
+    /** `config/<env>/known_hosts`: `[@marker] <host patterns> <key type> <base64 key> [comment]` (ssh-keyscan format). */
+    val SSH_KEY_TYPE = Regex("^(ssh|ecdsa|sk)-[A-Za-z0-9@._-]+$")
+    val BASE64 = Regex("^[A-Za-z0-9+/]+={0,3}$")
+
     val SECRET_VALUE_PATTERNS = listOf(
         Regex("-----BEGIN [A-Z ]*PRIVATE KEY-----") to "PEM private key",
         Regex("\\bAKIA[0-9A-Z]{16}\\b") to "AWS access key id",
@@ -204,10 +219,11 @@ class ConfigLinter(
             when {
                 child.isFile && child.name == "targets.yml" -> Unit
                 child.isFile && child.name == "README.md" -> Unit
+                child.isFile && child.name == "known_hosts" -> lintKnownHosts(child)
                 child.isDirectory && child.name == ConfigRules.COMMON -> lintLayerFiles(child, allowComposeEnv = false)
                 child.isDirectory && child.name in ConfigRules.FLOWS -> lintFlow(child, env, instances, appsSeen)
                 child.isDirectory -> error(1, child, "flow '${child.name}' must be one of ${ConfigRules.FLOWS.sorted()}")
-                else -> error(1, child, "unexpected file in config/$env/ (expected targets.yml, _common/, <flow>/)")
+                else -> error(1, child, "unexpected file in config/$env/ (expected targets.yml, known_hosts, _common/, <flow>/)")
             }
         }
         if (env in completeEnvs) {
@@ -659,7 +675,10 @@ class ConfigLinter(
         }
     }
 
-    // --- check 11: targets.yml --------------------------------------------------------------------------
+    // --- check 11: targets.yml (D5 §6.6) and the host pools of DL-39 ----------------------------------
+
+    /** One `pools.<flow>` entry: the boxes of `<env>/<flow>`, reached as [user], the bundle under [root]. */
+    private data class Pool(val hosts: List<String>, val user: String, val root: String)
 
     private fun lintTargets(file: File, env: String, instances: List<Triple<String, String, String>>) {
         val doc = try {
@@ -669,13 +688,14 @@ class ConfigLinter(
             return
         }
         if (doc !is Map<*, *>) {
-            error(11, file, "must be a mapping with env, defaults, targets")
+            error(11, file, "must be a mapping with env, pools, defaults, targets")
             return
         }
-        (doc.keys.map { it.toString() } - setOf("env", "defaults", "targets")).forEach {
-            error(11, file, "unknown top-level key '$it' (allowed: env, defaults, targets)")
+        (doc.keys.map { it.toString() } - setOf("env", "pools", "defaults", "targets")).forEach {
+            error(11, file, "unknown top-level key '$it' (allowed: env, pools, defaults, targets)")
         }
         if (doc["env"]?.toString() != env) error(11, file, "env: must be '$env' (was '${doc["env"]}')")
+        val pools = lintPools(file, doc["pools"])
         // `user`: the SSH user of a compose host (DL-35: `deploy`, the default of the deploy-dev job).
         val entryKeys = setOf("kind", "host", "user", "cluster", "namespace")
         val defaults = doc["defaults"] ?: emptyMap<String, Any>()
@@ -691,6 +711,7 @@ class ConfigLinter(
         }
         val known = instances.map { (f, a, i) -> "$f/$a/$i" }.toSet()
         val listed = mutableSetOf<String>()
+        val composeFlows = mutableSetOf<String>()
         targets.forEachIndexed { index, entry ->
             val where = "targets[$index]"
             if (entry !is Map<*, *>) {
@@ -707,10 +728,15 @@ class ConfigLinter(
             if (instance !in known) error(11, file, "$where: $instance has no directory config/$env/$instance/")
             val effective = defaults.entries.associate { it.key.toString() to it.value } + entry.entries.associate { it.key.toString() to it.value }
             effective["user"]?.toString()?.let { user ->
-                if (!Regex("^[a-z_][a-z0-9_-]{0,31}$").matches(user)) error(11, file, "$where: user '$user' is not a valid login name")
+                if (!ConfigRules.LOGIN.matches(user)) error(11, file, "$where: user '$user' is not a valid login name")
             }
             when (val kind = effective["kind"]?.toString()) {
-                "compose" -> if (effective["host"]?.toString().isNullOrBlank()) error(11, file, "$where: kind compose needs host")
+                "compose" -> {
+                    val flow = instance.substringBefore('/')
+                    composeFlows += flow
+                    lintComposePlacement(file, where, flow, effective["host"]?.toString()?.takeIf { it.isNotBlank() },
+                        entry["user"]?.toString(), pools[flow])
+                }
                 "helm" -> listOf("cluster", "namespace").forEach {
                     if (effective[it]?.toString().isNullOrBlank()) error(11, file, "$where: kind helm needs $it")
                 }
@@ -718,5 +744,94 @@ class ConfigLinter(
             }
         }
         (known - listed).sorted().forEach { error(11, file, "instance $it has no target (inventory drift)") }
+        (pools.keys - composeFlows).sorted().forEach {
+            warn(11, file, "pools.$it: flow '$it' has no compose target, so nothing is deployed to this pool")
+        }
+    }
+
+    /**
+     * A compose target runs on its own `host` (or `defaults.host`), or on a box of its flow's pool (DL-39): there
+     * `host` is the recorded placement — optional, and when present one of the pool's boxes.
+     */
+    private fun lintComposePlacement(file: File, where: String, flow: String, host: String?, ownUser: String?, pool: Pool?) {
+        when {
+            host == null && pool == null ->
+                error(11, file, "$where: kind compose needs host, or a pool for its flow (pools.$flow)")
+            host != null && !ConfigRules.HOST_NAME.matches(host) ->
+                error(11, file, "$where: host '$host' is not a lower-case DNS name or IPv4 address")
+            host != null && pool != null && pool.hosts.isNotEmpty() && host !in pool.hosts ->
+                error(11, file, "$where: host '$host' is not a box of pools.$flow (${pool.hosts.joinToString()}); " +
+                    "a pooled instance runs on one of its flow's boxes")
+        }
+        if (pool != null && ownUser != null && ownUser != pool.user) {
+            warn(11, file, "$where: user '$ownUser' is ignored: every box of pools.$flow is reached as '${pool.user}'")
+        }
+    }
+
+    /** `pools`: flow -> {hosts, user?, root?} (DL-39). Returns every declared pool of a known flow, by flow. */
+    private fun lintPools(file: File, node: Any?): Map<String, Pool> {
+        if (node == null) return emptyMap()
+        if (node !is Map<*, *>) {
+            error(11, file, "pools: must be a mapping <flow>: {hosts, user, root}")
+            return emptyMap()
+        }
+        val pools = linkedMapOf<String, Pool>()
+        val poolOf = mutableMapOf<String, String>()
+        for ((key, value) in node) {
+            val flow = key.toString()
+            val where = "pools.$flow"
+            if (flow !in ConfigRules.FLOWS) {
+                error(11, file, "$where: flow '$flow' must be one of ${ConfigRules.FLOWS.sorted()}")
+                continue
+            }
+            if (value !is Map<*, *>) {
+                error(11, file, "$where must be a mapping with hosts, user, root")
+                continue
+            }
+            (value.keys.map { it.toString() } - setOf("hosts", "user", "root")).forEach {
+                error(11, file, "$where: unknown key '$it' (allowed: hosts, user, root)")
+            }
+            val hosts = mutableListOf<String>()
+            val list = value["hosts"]
+            if (list !is List<*> || list.isEmpty()) {
+                error(11, file, "$where.hosts must be a non-empty list of host names (the boxes of $flow)")
+            } else {
+                list.forEachIndexed { i, item ->
+                    val name = item?.toString().orEmpty()
+                    when {
+                        item !is String || !ConfigRules.HOST_NAME.matches(name) ->
+                            error(11, file, "$where.hosts[$i]: '$name' is not a lower-case DNS name or IPv4 address")
+                        name in hosts -> error(11, file, "$where.hosts[$i]: $name is listed twice")
+                        name in poolOf -> error(11, file, "$where.hosts[$i]: $name is already a box of pools.${poolOf[name]} " +
+                            "(a box belongs to one pool)")
+                        else -> {
+                            hosts += name
+                            poolOf[name] = flow
+                        }
+                    }
+                }
+            }
+            val user = value["user"]?.toString() ?: ConfigRules.POOL_USER
+            if (!ConfigRules.LOGIN.matches(user)) error(11, file, "$where.user '$user' is not a valid login name")
+            val root = value["root"]?.toString() ?: ConfigRules.POOL_ROOT_DEFAULT
+            if (!ConfigRules.POOL_ROOT.matches(root) || root.split('/').any { it == "." || it == ".." }) {
+                error(11, file, "$where.root '$root' must be an absolute path of plain segments ([A-Za-z0-9._-], " +
+                    "no '.' or '..')")
+            }
+            pools[flow] = Pool(hosts, user, root)
+        }
+        return pools
+    }
+
+    /** `config/<env>/known_hosts` (DL-35, DL-39): the pinned host keys of the SSH transport — public keys only. */
+    private fun lintKnownHosts(file: File) {
+        file.readLines().forEachIndexed { index, raw ->
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) return@forEachIndexed
+            val fields = line.split(Regex("\\s+")).let { if (it.first().startsWith("@")) it.drop(1) else it }
+            if (fields.size < 3 || !ConfigRules.SSH_KEY_TYPE.matches(fields[1]) || !ConfigRules.BASE64.matches(fields[2])) {
+                error(11, file, "line ${index + 1}: expected '<host>[,<host>...] <key type> <base64 key>' (ssh-keyscan format)")
+            }
+        }
     }
 }

@@ -1,19 +1,32 @@
 # Deploy-dev inventory of us-dev (D5 §6.6, D9 §6.4–§6.5): one target per instance directory, checked by
 # configLint (check 11). kind, cluster and namespace come from the target, else from defaults.
-#   compose  demo step 1: run-compose.sh on `host` as `user` — in the demo a dry run on the runner only
-#            (TODO(DL-35): SSH as the `deploy` user, forced command run-compose.sh).
+#   pools    the bare-metal boxes of <env>/<flow> (DL-39): every box of pools.<flow> receives the flow's host
+#            bundle (the compose runtime plus every app, instance and layer of the flow) under `root`, so any
+#            instance of the flow can run on any box. `user` is the SSH user of DL-35 (forced command
+#            run-compose.sh). scripts/pool-deploy.sh syncs and deploys; the demo's runner plays every box
+#            (transport local) until the boxes exist and the Environment dev holds DEV_DEPLOY_SSH_KEY.
+#   compose  demo step 1: run-compose.sh pull / start / health on a box of the flow's pool. `host` is the
+#            recorded placement, not a fixed one: absent until the first deploy resolves it (pinned →
+#            discovered → assigned), then written back by deploy-dev with the tag; a PR that changes it
+#            moves the instance. A compose target of a flow without a pool needs its own `host`.
 #   helm     demo step 2: helm upgrade --install into `cluster`, namespace `namespace` ("{flow}" = the
 #            instance's flow, DL-38). cluster kind-ci = a throwaway kind cluster inside the deploy-dev job
 #            until a dev cluster exists (DL-32); any other cluster needs its kubeconfig from the Environment
 #            dev secrets (Phase 3) and fails the deploy until then.
+# Layout: yq v4's own (one space before a trailing comment), so the write-back's yq edit changes one line.
 env: us-dev
+pools: # optional; one pool per flow = the bare-metal boxes of <env>/<flow>
+  cash:
+    hosts: # non-empty, unique, lower-case DNS names (or IPv4)
+      - dev-cash-01.us-dev.example.com
+      - dev-cash-02.us-dev.example.com
+    user: deploy # SSH user on every box (default deploy; DL-35 forced command)
+    root: /opt/platform # install root of the bundle on every box (default /opt/platform, absolute)
 defaults:
   kind: helm
   cluster: kind-ci
   namespace: "{flow}"
 targets:
   - instance: cash/source-database/trades-db-to-amps
-    kind: compose
-    host: dev-compose-01.us-dev.example.com
-    user: deploy                  # DL-35: SSH user whose forced command is run-compose.sh
-  - instance: cash/source-database/positions-db-to-deephaven   # inherits the helm defaults
+    kind: compose # any box of pools.cash; `host` is the placement the write-back records
+  - instance: cash/source-database/positions-db-to-deephaven # inherits the helm defaults

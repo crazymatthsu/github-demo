@@ -303,4 +303,96 @@ class ConfigLinterTest {
         assertTrue(findings.all { it.message.contains("expected <subproject>/helm/source-database/Chart.yaml") })
         assertTrue(helmRequests.isEmpty(), "nothing to render without a chart: $helmRequests")
     }
+
+    // --- host pools (DL-39): check 11 ------------------------------------------------------------------------
+
+    private fun pooledTargets(pools: String, targets: String) = "env: us-dev\npools:\n$pools\ntargets:\n$targets"
+    private val cashPool = "  cash:\n    hosts: [dev-cash-01.example.com, dev-cash-02.example.com]\n"
+
+    @Test
+    fun `check 11 accepts a pool whose compose targets have no host or one of its boxes`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/targets.yml", pooledTargets(
+            "  cash:\n    hosts:\n      - dev-cash-01.example.com\n      - 10.0.0.2\n    user: deploy\n    root: /opt/platform\n",
+            "  - instance: cash/source-database/trades-db-to-amps\n    kind: compose\n" +
+                "  - instance: cash/source-database/positions-db-to-deephaven\n    kind: compose\n    host: 10.0.0.2\n"))
+        write("us-dev/known_hosts", "# pinned host keys\ndev-cash-01.example.com,10.0.0.2 ssh-ed25519 " +
+            "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n")
+        val findings = lint()
+        assertEquals(emptyList<Finding>(), findings.filter { it.check == 1 || it.check == 11 }, findings.text())
+    }
+
+    @Test
+    fun `check 11 rejects a host that is not a box of the flow's pool`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/targets.yml", pooledTargets(cashPool,
+            "  - instance: cash/source-database/trades-db-to-amps\n    kind: compose\n    host: dev-other-01.example.com\n"))
+        val findings = lint().filter { it.check == 11 }
+        assertEquals(1, findings.size, findings.text())
+        assertEquals(Severity.ERROR, findings[0].severity)
+        assertTrue(findings[0].message.contains("host 'dev-other-01.example.com' is not a box of pools.cash " +
+            "(dev-cash-01.example.com, dev-cash-02.example.com)"), findings.text())
+    }
+
+    @Test
+    fun `check 11 rejects bad host names, users, roots and flows in pools`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/targets.yml", pooledTargets(
+            "  cash:\n    hosts: [Dev_Cash_01.example.com, dev-cash-02.example.com., 42]\n    user: Root!\n" +
+                "    root: opt/platform\n  deriv:\n    hosts: []\n    root: /opt/../etc\n    port: 22\n  fx:\n    hosts: [h]\n",
+            "  - instance: cash/source-database/trades-db-to-amps\n    kind: compose\n"))
+        val messages = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        for (expected in listOf(
+            "pools.cash.hosts[0]: 'Dev_Cash_01.example.com' is not a lower-case DNS name or IPv4 address",
+            "pools.cash.hosts[1]: 'dev-cash-02.example.com.' is not a lower-case DNS name or IPv4 address",
+            "pools.cash.hosts[2]: '42' is not a lower-case DNS name or IPv4 address",
+            "pools.cash.user 'Root!' is not a valid login name",
+            "pools.cash.root 'opt/platform' must be an absolute path",
+            "pools.deriv.hosts must be a non-empty list",
+            "pools.deriv.root '/opt/../etc' must be an absolute path",
+            "pools.deriv: unknown key 'port'",
+            "pools.fx: flow 'fx' must be one of [cash, deriv, swap]",
+        )) {
+            assertTrue(messages.contains(expected), "missing '$expected' in:\n$messages")
+        }
+    }
+
+    @Test
+    fun `check 11 rejects a box listed twice, within one pool or across pools`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/targets.yml", pooledTargets(
+            "  cash:\n    hosts: [dev-01.example.com, dev-02.example.com, dev-01.example.com]\n" +
+                "  swap:\n    hosts: [dev-02.example.com, dev-03.example.com]\n",
+            "  - instance: cash/source-database/trades-db-to-amps\n    kind: compose\n"))
+        val messages = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        assertTrue(messages.contains("pools.cash.hosts[2]: dev-01.example.com is listed twice"), messages)
+        assertTrue(messages.contains("pools.swap.hosts[0]: dev-02.example.com is already a box of pools.cash " +
+            "(a box belongs to one pool)"), messages)
+    }
+
+    @Test
+    fun `check 11 needs a host or a pool for every compose target`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/targets.yml", "env: us-dev\npools:\n  deriv:\n    hosts: [dev-deriv-01.example.com]\n" +
+            "defaults:\n  kind: compose\ntargets:\n  - instance: cash/source-database/trades-db-to-amps\n" +
+            "  - instance: cash/source-database/positions-db-to-deephaven\n    host: Not_A_Host\n")
+        val messages = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        assertTrue(messages.contains("targets[0]: kind compose needs host, or a pool for its flow (pools.cash)"), messages)
+        assertTrue(messages.contains("targets[1]: host 'Not_A_Host' is not a lower-case DNS name or IPv4 address"), messages)
+    }
+
+    @Test
+    fun `check 11 warns about a pool whose flow has no compose target, and a malformed known_hosts fails`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/targets.yml", pooledTargets(cashPool,
+            "  - instance: cash/source-database/trades-db-to-amps\n    kind: helm\n    cluster: kind-ci\n    namespace: cash\n"))
+        write("us-dev/known_hosts", "dev-cash-01.example.com ssh-ed25519\n")
+        val findings = lint().filter { it.check == 11 }
+        val warning = findings.single { it.severity == Severity.WARN }
+        assertTrue(warning.message.contains("pools.cash: flow 'cash' has no compose target"), findings.text())
+        val error = findings.single { it.severity == Severity.ERROR }
+        assertTrue(error.path.endsWith("known_hosts") && error.message.contains("line 1: expected"), findings.text())
+    }
 }
