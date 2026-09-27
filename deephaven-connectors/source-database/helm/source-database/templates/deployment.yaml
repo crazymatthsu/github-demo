@@ -1,0 +1,129 @@
+{{- include "connector.validate" . }}
+{{- /*
+One Deployment per AppInstance, replicas 1 (DL-33). Everything the app reads at runtime is a read-only mount:
+the ConfigMap layers under /config/<layer>/, the Secret as a Spring config tree under /secrets/ (D2 §6.4);
+/tmp and /app/logs are the only writable paths (D6 §6.7). Probes, sizing and shutdown follow D6 §6.9–§6.11.
+*/}}
+{{- $items := include "connector.configItems" . | fromJsonArray }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "connector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "connector.labels" . | nindent 4 }}
+  {{- if .Values.reloader.enabled }}
+  annotations:
+    # Rolls the pod when the ESO-owned Secret rotates (not Helm-owned, so no checksum sees it; D5 §4.6).
+    secret.reloader.stakater.com/reload: {{ include "connector.secretName" . | quote }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "connector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "connector.labels" . | nindent 8 }}
+      annotations:
+        # A config change rolls exactly this instance (D11 §6.3, D5 §4.6).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        kubectl.kubernetes.io/default-container: app
+    spec:
+      serviceAccountName: {{ include "connector.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      # No *_SERVICE_HOST / *_PORT variables: Spring's relaxed binding would read them (SERVER_PORT, ...).
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - topologyKey: {{ .Values.topologySpread.topologyKey }}
+          maxSkew: {{ .Values.topologySpread.maxSkew }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/component: connector
+      {{- end }}
+      containers:
+        - name: app
+          image: {{ include "connector.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- with .Values.env }}
+          env:
+            {{- range $name, $value := . }}
+            - name: {{ $name }}
+              value: {{ toString $value | quote }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.probes.startup }}
+          startupProbe:
+            httpGet: { path: {{ .path | quote }}, port: http }
+            periodSeconds: {{ .periodSeconds | default 5 }}
+            failureThreshold: {{ .failureThreshold | default 24 }}
+            timeoutSeconds: {{ .timeoutSeconds | default 3 }}
+          {{- end }}
+          {{- with .Values.probes.readiness }}
+          readinessProbe:
+            httpGet: { path: {{ .path | quote }}, port: http }
+            periodSeconds: {{ .periodSeconds | default 10 }}
+            failureThreshold: {{ .failureThreshold | default 3 }}
+            timeoutSeconds: {{ .timeoutSeconds | default 3 }}
+          {{- end }}
+          {{- with .Values.probes.liveness }}
+          livenessProbe:
+            httpGet: { path: {{ .path | quote }}, port: http }
+            periodSeconds: {{ .periodSeconds | default 10 }}
+            failureThreshold: {{ .failureThreshold | default 3 }}
+            timeoutSeconds: {{ .timeoutSeconds | default 3 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /app/logs
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "connector.configMapName" . }}
+            {{- if $items }}
+            items:
+              {{- range $items }}
+              - key: {{ index . 0 | quote }}
+                path: {{ index . 1 | quote }}
+              {{- end }}
+            {{- end }}
+        - name: secrets
+          secret:
+            secretName: {{ include "connector.secretName" . }}
+            defaultMode: 256    # 0400: readable by the app through fsGroup only
+            optional: false     # a missing Secret blocks the pod visibly (D11 §6.3)
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmp.sizeLimit }}
+        - name: logs
+          emptyDir:
+            sizeLimit: {{ .Values.logs.sizeLimit }}

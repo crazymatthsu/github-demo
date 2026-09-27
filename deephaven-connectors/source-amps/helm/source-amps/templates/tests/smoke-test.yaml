@@ -1,0 +1,74 @@
+{{- /*
+helm test (D11 §6.1, D6 §8): a Job running the app image's curl against the release's Service — readiness UP,
+and the identity in /actuator/info equal to the identity values with complete=true. Helm 4 prints the Job's
+logs through the output-log policy (`helm test --logs` covers Pod hooks only). The Argo CD annotations make the
+same Job the PostSync smoke test in Phase 3 (D11 §6.6). Restricted Pod Security Standard like the app.
+*/}}
+{{- $url := printf "http://%s:%v" (include "connector.fullname" .) .Values.service.port }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "connector.fullname" . | trunc 52 | trimSuffix "-" }}-smoke-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "connector.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-output-log-policy: hook-succeeded,hook-failed
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        {{- include "connector.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: smoke-test
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "connector.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: smoke-test
+          image: {{ include "connector.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              fetch() { curl -fsS --max-time 5 --retry 10 --retry-delay 3 --retry-connrefused "$1"; }
+              readiness=$(fetch "$BASE_URL/actuator/health/readiness") || { echo "FAIL $BASE_URL/actuator/health/readiness did not answer 200"; exit 1; }
+              echo "readiness: $readiness"
+              case "$readiness" in *'"status":"UP"'*) ;; *) echo "FAIL readiness is not UP"; exit 1 ;; esac
+              info=$(fetch "$BASE_URL/actuator/info") || { echo "FAIL $BASE_URL/actuator/info did not answer"; exit 1; }
+              echo "info: $info"
+              case "$info" in *"\"tuple\":\"$EXPECTED_TUPLE\""*) ;; *) echo "FAIL identity is not $EXPECTED_TUPLE"; exit 1 ;; esac
+              case "$info" in *'"complete":true'*) ;; *) echo "FAIL identity is not complete"; exit 1 ;; esac
+              echo "OK $EXPECTED_TUPLE at $BASE_URL"
+          env:
+            - name: BASE_URL
+              value: {{ $url | quote }}
+            - name: EXPECTED_TUPLE
+              value: {{ include "connector.tuple" . | quote }}
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

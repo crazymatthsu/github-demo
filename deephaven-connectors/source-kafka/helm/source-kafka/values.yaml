@@ -1,0 +1,79 @@
+# Chart defaults = values layer 1 (D11 §6.2, skeleton §8.2). Layer 2 is
+# config/<env>/<flow>/<AppName>/app-common/values.yaml, layer 3 config/<env>/<flow>/<AppName>/<AppInstance>/values.yaml
+# (later -f wins; maps deep-merge, lists are replaced). The application.yml layers arrive as file values
+# (appConfig, appFiles). values.schema.json rejects unknown top-level keys and secret-bearing env names.
+# The one deployer is scripts/helm-deploy-instance.sh (README.md has the flag list).
+
+replicaCount: 1                       # DL-33: one replica per instance for now
+image:
+  repository: ghcr.io/crazymatthsu/deephaven-connectors/source-kafka   # JFrog or the ECR mirror on EKS (DL-34)
+  tag: ""                             # always set: instance values, --set-string image.tag=<tag> by the deployer
+  digest: ""                          # optional pin for qa / prod (DL-20): renders repository@digest
+  pullPolicy: IfNotPresent
+imagePullSecrets: []                  # [{ name: <secret> }] for a private registry (DL-34)
+serviceAccount:
+  create: true                        # ServiceAccount <release>: Vault Kubernetes auth / IRSA identity (D2 §6.6)
+  name: ""                            # used only when create is false (empty: the namespace's default)
+  annotations: {}                     # e.g. eks.amazonaws.com/role-arn (IRSA, Phase 3)
+  automountToken: false               # the connector never calls the Kubernetes API
+identity:                             # the instance values set all four (the config-tree path, D5 §6.2):
+  env: ""                             # rendered as platform.example.com/* labels, checked by the helm test;
+  flow: ""                            # APP_ENV / APP_FLOW / APP_NAME / APP_INSTANCE in env must equal it
+  app: ""                             # and app must be this chart's name
+  instance: ""
+env: {}                               # map -> container env (sorted by name); the instance values set APP_ENV,
+                                      # APP_FLOW, APP_NAME, APP_INSTANCE, JAVA_OPTS, LOG_LEVEL_ROOT, app-common TZ
+appConfig: {}                         # platform | env | common | instance -> /config/<layer>/application.yml (--set-file)
+appFiles: {}                          # <layer>: { <file name>: <content> } -> /config/<layer>/<file name> (--set-file)
+secrets:
+  existingSecret: ""                  # defaults to <release>-secrets; mounted at /secrets/ (D2 §6.4, §8.1)
+  externalSecret:                     # Phase 3 (DL-31): ESO renders the same Secret from Vault
+    enabled: false
+    storeRef: ""                      # default vault-<env>
+    storeKind: ClusterSecretStore
+    vaultPath: ""                     # default <env>/<flow>/<app>/<instance>
+    refreshInterval: 1m
+service:
+  port: 8080                          # HTTP / actuator port: health, metrics (D3 EXPOSE 8080, D6 §6.9)
+probes:                               # paths and timings from D6 §6.9
+  startup: { path: /actuator/health/liveness, periodSeconds: 5, failureThreshold: 24, timeoutSeconds: 3 }   # 2-minute budget
+  readiness: { path: /actuator/health/readiness, periodSeconds: 10, failureThreshold: 3, timeoutSeconds: 3 }
+  liveness: { path: /actuator/health/liveness, periodSeconds: 10, failureThreshold: 3, timeoutSeconds: 3 }
+resources:
+  requests: { cpu: 250m, memory: 1Gi }
+  limits: { memory: 1Gi }             # requests == limits; the JVM heap is a percentage (JAVA_OPTS, D3, D6 §6.10)
+strategy: { type: Recreate }          # single-consumer default; RollingUpdate only for idempotent pipelines (D6 §6.10)
+terminationGracePeriodSeconds: 30
+# Restricted Pod Security Standard (D6 §6.11). The image runs as 10001:10001 (D3); fsGroup lets that user read
+# the 0400 files of the /secrets/ volume.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: { type: RuntimeDefault }
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities: { drop: [ALL] }
+tmp: { sizeLimit: 256Mi }             # emptyDir /tmp (read-only root filesystem, D6 §6.7)
+logs: { sizeLimit: 256Mi }            # emptyDir /app/logs (optional file appenders; stdout is the log channel)
+topologySpread:                       # spread the instances of one app across zones (D6 §6.10)
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+reloader: { enabled: false }          # Reloader annotation for the ESO-owned Secret (D5 §4.6)
+serviceMonitor:                       # Prometheus Operator (D6 §6.9)
+  enabled: false
+  interval: 30s
+  path: /actuator/prometheus
+  labels: {}                          # extra labels the Prometheus serviceMonitorSelector expects
+podDisruptionBudget:                  # rendered only when replicaCount > 1 (D6 §6.10)
+  enabled: false
+  maxUnavailable: 1
+networkPolicy:                        # D6 §6.11; kind's default CNI does not enforce it, EKS does
+  enabled: false
+  ingressNamespaces: [monitoring]     # namespaces allowed to reach the http port (metrics scrape)
+  egress: []                          # extra NetworkPolicyEgressRules besides DNS, e.g.
+                                      # - { to: [{ ipBlock: { cidr: 10.20.0.0/16 } }], ports: [{ port: 1433 }] }

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Values of a deephaven-connectors chart (D11 §6.1, §8.2)",
+  "description": "Validated by helm lint / template / upgrade for every instance (config-lint check 12). Unknown top-level keys and secret-bearing env names are rejected: secrets arrive through the Secret mounted at /secrets/, never through values (D11 R4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "identity", "env", "appConfig", "secrets", "service", "probes", "resources"],
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-]+[a-z0-9]+)*)+$"
+        },
+        "tag": {
+          "description": "Set by the instance values and by the deployer (--set-string image.tag=<tag>).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?$"
+        },
+        "digest": { "type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "$ref": "#/$defs/stringMap" },
+        "automountToken": { "type": "boolean" }
+      }
+    },
+    "identity": {
+      "description": "The identity tuple of the instance (D5 §6.2): equal to the config-tree path.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["env", "flow", "app", "instance"],
+      "properties": {
+        "env": { "type": "string", "pattern": "^(local|[a-z]{2}-(dev|qa|prod))$" },
+        "flow": { "enum": ["cash", "deriv", "swap"] },
+        "app": { "$ref": "#/$defs/token", "maxLength": 20 },
+        "instance": { "$ref": "#/$defs/token", "maxLength": 32 }
+      }
+    },
+    "env": {
+      "description": "Container environment (map, sorted by name when rendered). Secret-bearing names are rejected (D2 §6.4, D11 §6.3).",
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "patternProperties": {
+        "^SPRING_|^CONNECTOR_.*_(PASSWORD|USERNAME|TOKEN)$|^CONNECTOR_KAFKA_SASL_|PASSWORD|SECRET|TOKEN|CREDENTIAL": false
+      },
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "appConfig": {
+      "description": "The application.yml layers as file values (--set-file appConfig.<layer>=<file>).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["common", "instance"],
+      "properties": {
+        "platform": { "type": "string" },
+        "env": { "type": "string" },
+        "common": { "type": "string" },
+        "instance": { "type": "string" }
+      }
+    },
+    "appFiles": {
+      "description": "Other files of a layer directory (logback.xml, *.properties): <layer>: { <file name>: <content> }.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platform": { "$ref": "#/$defs/layerFiles" },
+        "env": { "$ref": "#/$defs/layerFiles" },
+        "common": { "$ref": "#/$defs/layerFiles" },
+        "instance": { "$ref": "#/$defs/layerFiles" }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "externalSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "storeRef": { "type": "string" },
+            "storeKind": { "enum": ["SecretStore", "ClusterSecretStore"] },
+            "vaultPath": { "type": "string" },
+            "refreshInterval": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h))+$" }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startup", "readiness", "liveness"],
+      "properties": {
+        "startup": { "$ref": "#/$defs/probe" },
+        "readiness": { "$ref": "#/$defs/probe" },
+        "liveness": { "$ref": "#/$defs/probe" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/$defs/quantities" },
+        "limits": { "$ref": "#/$defs/quantities" }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["Recreate", "RollingUpdate"] },
+        "rollingUpdate": { "type": "object" }
+      }
+    },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "tmp": { "$ref": "#/$defs/emptyDir" },
+    "logs": { "$ref": "#/$defs/emptyDir" },
+    "topologySpread": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "topologyKey": { "type": "string", "minLength": 1 },
+        "maxSkew": { "type": "integer", "minimum": 1 },
+        "whenUnsatisfiable": { "enum": ["ScheduleAnyway", "DoNotSchedule"] }
+      }
+    },
+    "reloader": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h))+$" },
+        "path": { "type": "string", "pattern": "^/" },
+        "labels": { "$ref": "#/$defs/stringMap" }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressNamespaces": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "egress": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  },
+  "$defs": {
+    "token": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" },
+    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } },
+    "quantities": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number"] }
+    },
+    "emptyDir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sizeLimit"],
+      "properties": { "sizeLimit": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(Ki|Mi|Gi|K|M|G)?$" } }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "layerFiles": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+      "patternProperties": { "^(application\\.yml|values\\.yaml|compose\\.env)$": false },
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

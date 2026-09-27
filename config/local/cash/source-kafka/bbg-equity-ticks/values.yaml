@@ -1,0 +1,18 @@
+# Helm values layer 3 (D11 §6.2) of local/cash/source-kafka/bbg-equity-ticks.
+# image.tag equals IMAGE_TAG in the sibling compose.env (the deploy-dev write-back rewrites both, D5 §6.8);
+# identity and the APP_* variables restate the directory path (config-lint check 4); app-facing variables
+# only, never secrets (D5 §6.3).
+image:
+  tag: "local"
+identity:
+  env: local
+  flow: cash
+  app: source-kafka
+  instance: bbg-equity-ticks
+env:
+  APP_ENV: local
+  APP_FLOW: cash
+  APP_NAME: source-kafka
+  APP_INSTANCE: bbg-equity-ticks
+  JAVA_OPTS: "-XX:MaxRAMPercentage=60"
+  LOG_LEVEL_ROOT: INFO
