@@ -1,11 +1,14 @@
 # The ONE compose template of source-kafka for every env / flow / instance (D6 §6.3, §6.7): local development, CI
-# test stacks and the dev compose hosts of demo step 1 — never qa or prod. Always started through
-# scripts/run-compose.sh, which sets the identity (APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE from the
-# config-tree path), CONFIG_DIR, COMMON_DIR, the optional PLATFORM_DIR / ENV_COMMON_DIR layers, PROJECT,
-# the SELinux mount suffixes and DEPS_NETWORK, and passes <instance>/compose.env with --env-file.
+# test stacks and the dev compose hosts of demo step 1 — never qa or prod. Two callers set its variables:
+#  - scripts/run-compose.sh: identity (APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE from the config-tree path),
+#    CONFIG_DIR, COMMON_DIR, the optional PLATFORM_DIR / ENV_COMMON_DIR layers, PROJECT, the SELinux mount
+#    suffixes and DEPS_NETWORK; <instance>/compose.env arrives with --env-file.
+#  - test-infra/compose/stack.sh up (APP_IMAGE set): merges this file into the dependency stack, on the
+#    stack's default network, with the same variables (D8 §6.2, D10 §6.2).
+# The service is named after the AppName, like every service of the test stacks (D8 §6.2).
 services:
-  app:
-    image: ${IMAGE_REPO:?IMAGE_REPO is set in compose.env}/${APP_NAME:?run through run-compose.sh}:${IMAGE_TAG:?IMAGE_TAG is set in compose.env}
+  source-kafka:
+    image: ${APP_IMAGE:-${IMAGE_REPO:?IMAGE_REPO is set in compose.env}/${APP_NAME:?run through run-compose.sh}:${IMAGE_TAG:?IMAGE_TAG is set in compose.env}}
     env_file:
       - ${CONFIG_DIR:?run through run-compose.sh}/compose.env
     environment:
@@ -18,14 +21,14 @@ services:
       IT_TABLE_PREFIX: ${IT_TABLE_PREFIX:-}
     volumes:
       # Config layers, read-only (D5 §6.1). Shared layers get :z and the instance :Z on SELinux hosts
-      # (run-compose.sh sets the suffixes when getenforce reports Enforcing, D6 §6.6); missing optional
-      # layers fall back to the empty directory next to this file.
-      - ${PLATFORM_DIR:-./empty-layer}:/config/platform:ro${SELINUX_LABEL_SHARED:-}
-      - ${ENV_COMMON_DIR:-./empty-layer}:/config/env:ro${SELINUX_LABEL_SHARED:-}
+      # (run-compose.sh sets the suffixes when getenforce reports Enforcing, D6 §6.6). A missing optional
+      # layer gets the empty named volume `empty-layer`: no application.yml there, so the import skips it.
+      - ${PLATFORM_DIR:-empty-layer}:/config/platform:ro${SELINUX_LABEL_SHARED:-}
+      - ${ENV_COMMON_DIR:-empty-layer}:/config/env:ro${SELINUX_LABEL_SHARED:-}
       - ${COMMON_DIR:?run through run-compose.sh}:/config/common:ro${SELINUX_LABEL_SHARED:-}
       - ${CONFIG_DIR:?run through run-compose.sh}:/config/instance:ro${SELINUX_LABEL_PRIVATE:-}
       # Optional file appenders only; stdout is the log channel (D6 §6.9). LOGS_DIR binds a host path.
-      - ${LOGS_DIR:-logs}:/logs
+      - ${LOGS_DIR:-logs}:/app/logs
     read_only: true
     tmpfs:
       - /tmp
@@ -49,30 +52,31 @@ services:
       com.example.flow: ${APP_FLOW}
       com.example.app: ${APP_NAME}
       com.example.instance: ${APP_INSTANCE}
-      com.example.ci.run: ${CI_RUN_ID:-local}
-      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}
+      com.example.ci.run: "${CI_RUN_ID:-local}"
+      com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
-    networks:
-      default:
-        aliases:
-          - ${APP_NAME}
 
 volumes:
   logs:
     labels:
-      com.example.ci.run: ${CI_RUN_ID:-local}
-      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}
+      com.example.ci.run: "${CI_RUN_ID:-local}"
+      com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+  empty-layer:
+    labels:
+      com.example.ci.run: "${CI_RUN_ID:-local}"
+      com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
 
 networks:
-  # The project network, or — when DEPS_NETWORK names the dependency stack started by `./gradlew devUp`
-  # (or test-infra in CI) — that external network, so service names such as sqlserver and deephaven resolve.
+  # The project network (also the test stack's default network, which base.yml labels the same way), or,
+  # when DEPS_NETWORK names the network of a running dependency stack (./gradlew devUp), that external
+  # network, so service names such as sqlserver and deephaven resolve.
   default:
     name: ${DEPS_NETWORK:-${PROJECT:?run through run-compose.sh}_default}
     external: ${DEPS_NETWORK_EXTERNAL:-false}
     labels:
-      com.example.ci.run: ${CI_RUN_ID:-local}
-      com.example.ci.attempt: ${CI_RUN_ATTEMPT:-0}
+      com.example.ci.run: "${CI_RUN_ID:-local}"
+      com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"

@@ -1,0 +1,225 @@
+# Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-35, DL-36).
+#
+# Reads config/<env>/targets.yml (D5 §6.6): targets[].instance is <flow>/<AppName>/<AppInstance>,
+# kind is compose | helm (target value, else defaults.kind, else compose).
+#   compose (demo step 1)  PLACEHOLDER (brief v1.1): `run-compose.sh ... start --dry-run` on the runner
+#                          validates the target and prints the compose command; the job prints the
+#                          SSH command it would run on the host — see TODO(DL-35) below.
+#   helm    (demo step 2)  skipped with a notice until the chart exists.
+# Then the deployed tag is written back to the config tree by the bot with `[skip ci]` (loop guard,
+# DL-36) and the run is recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
+# touched: the job refuses any env that is not *-dev, and so do run-compose.sh and write-back-tag.sh.
+name: _deploy-dev
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: Config env to deploy (a *-dev env).
+        type: string
+        default: us-dev
+      tag:
+        description: Image tag to deploy (the connector-family pre-release tag published by main.yml).
+        type: string
+        required: true
+      images:
+        description: JSON object Gradle project → digest-pinned image, recorded in the deployment payload.
+        type: string
+        default: '{}'
+    outputs:
+      deployed:
+        description: JSON list of the instances deployed (<flow>/<AppName>/<AppInstance>).
+        value: ${{ jobs.deploy.outputs.deployed }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.env }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # GitHub Environment `dev`: no reviewers, deployment branch `main` (D9 §6.2). `deployment: false`
+    # keeps the Environment's rules and secrets without an automatic deployment object, so the record
+    # created below (with its payload) is the only one per run.
+    environment:
+      name: dev
+      deployment: false
+    concurrency:
+      group: deploy-${{ inputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # the write-back commit
+      deployments: write # the GitHub Deployment record
+    env:
+      DEPLOY_ENV: ${{ inputs.env }}
+      DEPLOY_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    outputs:
+      deployed: ${{ steps.compose.outputs.deployed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Guard
+        run: |
+          set -euo pipefail
+          if [[ ! $DEPLOY_ENV =~ ^[a-z][a-z0-9]*-dev$ ]]; then
+            echo "::error::deploy-dev only deploys *-dev envs, got '$DEPLOY_ENV' (qa / prod go through bump PRs)"
+            exit 1
+          fi
+          [[ $DEPLOY_TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "::error::invalid tag '$DEPLOY_TAG'"; exit 1; }
+
+      - name: Record the deployment (in progress)
+        id: deployment
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -cn --arg env "$DEPLOY_ENV" --arg tag "$DEPLOY_TAG" --argjson images "$IMAGES" \
+            '{env: $env, tag: $tag, images: $images}')
+          id=$(jq -n --arg ref "$GITHUB_SHA" --arg tag "$DEPLOY_TAG" --arg env "$DEPLOY_ENV" --argjson payload "$payload" '{
+                ref: $ref, environment: "dev", description: ("deploy-dev " + $env + " " + $tag),
+                auto_merge: false, required_contexts: [], payload: $payload,
+                transient_environment: false, production_environment: false
+              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+            -f state=in_progress -f log_url="$RUN_URL" -f description="deploying $DEPLOY_TAG" >/dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the targets
+        id: targets
+        run: |
+          set -euo pipefail
+          file="config/$DEPLOY_ENV/targets.yml"
+          if [[ ! -f $file ]]; then
+            echo "::warning::$file not found — nothing to deploy"
+            echo '[]' > "$RUNNER_TEMP/targets.json"
+            exit 0
+          fi
+          declared=$(yq '.env // ""' "$file")
+          if [[ -n $declared && $declared != "$DEPLOY_ENV" ]]; then
+            echo "::error::$file declares env '$declared', expected '$DEPLOY_ENV'"
+            exit 1
+          fi
+          # shellcheck disable=SC2016 # $d is a yq variable, not a shell one
+          yq -o=json -I=0 '(.defaults // {}) as $d | [(.targets // [])[] | {
+              "instance": .instance,
+              "kind": (.kind // $d.kind // "compose"),
+              "host": (.host // $d.host // ""),
+              "user": (.user // $d.user // "deploy")
+            }]' "$file" > "$RUNNER_TEMP/targets.json"
+          jq -e 'all(.[]; (.instance | test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$")) and (.kind == "compose" or .kind == "helm"))' \
+            "$RUNNER_TEMP/targets.json" >/dev/null ||
+            { echo "::error::$file: every target needs instance <flow>/<AppName>/<AppInstance> and kind compose | helm"; exit 1; }
+          echo "compose=$(jq '[.[] | select(.kind == "compose")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
+          echo "helm=$(jq '[.[] | select(.kind == "helm")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy compose targets (demo step 1 — placeholder)
+        id: compose
+        run: |
+          set -euo pipefail
+          # TODO(DL-35): the real transport — not built in the demo (brief v1.1). When the dev hosts exist:
+          #   1. Environment `dev` holds the secret DEV_DEPLOY_SSH_KEY (a deploy key for the `deploy` user);
+          #      load it into ssh-agent for this job only:  eval "$(ssh-agent -s)"; ssh-add - <<<"$KEY"
+          #   2. Pin the host keys: a reviewed config/<env>/known_hosts, used with
+          #      -o StrictHostKeyChecking=yes -o UserKnownHostsFile=config/<env>/known_hosts -o BatchMode=yes
+          #   3. On each host the key's authorized_keys entry has a forced command
+          #      (command="/usr/local/bin/run-compose-ssh",no-pty,no-port-forwarding,no-agent-forwarding)
+          #      that accepts only `run-compose.sh <env> <flow> <AppName> <AppInstance> pull|start|health`
+          #      with IMAGE_TAG, validates the arguments and execs the installed run-compose.sh.
+          #   4. Per target: pull → start → health (D9 §6.4); a failed health re-runs start with the
+          #      previous IMAGE_TAG from the checked-out compose.env (D9 §6.9) and that instance gets no
+          #      write-back. Align first: D9 §6.4 passes IMAGE_TAG as an environment override, while
+          #      run-compose.sh ignores exported IMAGE_TAG outside `local` (compose.env is the record) —
+          #      either it honours the override on *-dev hosts, or the host syncs the candidate
+          #      compose.env (as validated below) before `pull`.
+          #   5. A host that GitHub-hosted runners cannot reach gets a self-hosted runner on the host
+          #      (runs-on: [self-hosted, <host>]) running the same three commands locally — the one
+          #      self-hosted exception (DL-35, D7 §2).
+          # The config as it will be after the write-back: run-compose.sh takes the tag of a *-dev
+          # instance from its compose.env (git is the deployment record), so the dry run validates a
+          # candidate copy of the tree with IMAGE_TAG already set (CONFIG_ROOT).
+          candidate="$RUNNER_TEMP/config-candidate"
+          rm -rf "$candidate"
+          if [[ -d config ]]; then cp -a config "$candidate"; fi
+          deployed=() failed=()
+          {
+            echo "### deploy-dev: compose targets (placeholder — TODO(DL-35))"
+            echo ""
+            echo "| instance | host | result | command it would run |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r instance host user; do
+            IFS=/ read -r flow app inst <<<"$instance"
+            wrapper="deephaven-connectors/$app/scripts/run-compose.sh"
+            remote_cmd="IMAGE_TAG=$DEPLOY_TAG run-compose.sh $DEPLOY_ENV $flow $app $inst"
+            ssh_cmd="ssh ${user}@${host:-<host missing in targets.yml>} '$remote_cmd pull && $remote_cmd start && $remote_cmd health'"
+            echo "::group::$instance"
+            result=validated
+            if [[ -z $host ]]; then
+              echo "::error::$instance: no host in targets.yml"
+              result="failed: no host"
+            elif [[ ! -f $wrapper ]]; then
+              echo "::error::$instance: $wrapper not found"
+              result="failed: no run-compose.sh"
+            elif ! scripts/ci/set-image-tag.sh "$DEPLOY_TAG" "$candidate/$DEPLOY_ENV/$instance/compose.env" >/dev/null; then
+              echo "::error::$instance: config/$DEPLOY_ENV/$instance/compose.env missing"
+              result="failed: no compose.env"
+            # Validate as the host would run it: GITHUB_RUN_ID would switch run-compose.sh to the CI
+            # project name (ci-<run>-<attempt>-...), which the dev host never uses.
+            elif ! env -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT CONFIG_ROOT="$candidate" \
+                bash "$wrapper" "$DEPLOY_ENV" "$flow" "$app" "$inst" start --dry-run; then
+              echo "::error::$instance: run-compose.sh start --dry-run failed"
+              result="failed: dry-run"
+            fi
+            if [[ $result == validated ]]; then
+              echo "would run: $ssh_cmd"
+              deployed+=("$instance")
+            else
+              failed+=("$instance")
+            fi
+            echo "::endgroup::"
+            echo "| \`$instance\` | ${host:-—} | $result | \`$ssh_cmd\` |" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.[] | select(.kind == "compose") | [.instance, .host, .user] | @tsv' "$RUNNER_TEMP/targets.json")
+          echo "deployed=$(printf '%s\n' "${deployed[@]}" | jq -R . | jq -cs 'map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          echo "list=${deployed[*]}" >> "$GITHUB_OUTPUT"
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo "::error::${#failed[@]} compose target(s) failed: ${failed[*]} — no write-back for them"
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Helm targets (demo step 2)
+        if: steps.targets.outputs.helm != '0'
+        run: |
+          set -euo pipefail
+          while read -r instance; do
+            echo "::notice title=deploy-dev::$instance is kind: helm — demo step 2 (kind + Helm); skipped in step 1"
+          done < <(jq -r '.[] | select(.kind == "helm") | .instance' "$RUNNER_TEMP/targets.json")
+
+      - name: Write back the deployed tag
+        id: writeback
+        if: steps.compose.outputs.list != ''
+        env:
+          DEPLOYED: ${{ steps.compose.outputs.list }}
+        run: |
+          set -euo pipefail
+          read -r -a instances <<<"$DEPLOYED"
+          scripts/ci/write-back-tag.sh "$DEPLOY_ENV" "$DEPLOY_TAG" "${instances[@]}"
+
+      - name: Fail when a target failed
+        if: steps.compose.outputs.failed == 'true'
+        run: exit 1
+
+      - name: Record the deployment result
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          [[ $JOB_STATUS == success ]] && state=success
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state="$state" -f log_url="$RUN_URL" -f description="deploy-dev $DEPLOY_TAG: $JOB_STATUS" >/dev/null
+          echo "- GitHub Deployment $DEPLOYMENT_ID in Environment \`dev\`: **$state**" >> "$GITHUB_STEP_SUMMARY"

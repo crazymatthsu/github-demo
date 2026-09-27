@@ -41,7 +41,7 @@ class ConfigLinterTest {
     fun `a valid tree has no findings and passes placeholders for the secrets to the renderer`() {
         validInstance("local", "trades-db-to-amps")
         validInstance("us-dev", "trades-db-to-amps")
-        write("us-dev/targets.yml", "env: us-dev\ndefaults: { kind: compose }\ntargets:\n" +
+        write("us-dev/targets.yml", "env: us-dev\ndefaults: { kind: compose, user: deploy }\ntargets:\n" +
             "  - instance: cash/source-database/trades-db-to-amps\n    host: dev-01.example.com\n")
         val requests = mutableListOf<ComposeRenderRequest>()
         val findings = lint { request -> requests += request; CommandResult(0, "") }
@@ -97,10 +97,11 @@ class ConfigLinterTest {
     fun `targets must match the instance directories`() {
         validInstance("us-dev", "trades-db-to-amps")
         write("us-dev/targets.yml", "env: us-dev\ntargets:\n  - instance: cash/source-database/gone\n    kind: compose\n" +
-            "    host: h\n  - instance: cash/source-database/trades-db-to-amps\n    kind: helm\n")
+            "    host: h\n    user: Root!\n  - instance: cash/source-database/trades-db-to-amps\n    kind: helm\n")
         val messages = lint().filter { it.check == 11 }.joinToString("\n")
         assertTrue(messages.contains("cash/source-database/gone has no directory"), messages)
         assertTrue(messages.contains("kind helm needs cluster"), messages)
+        assertTrue(messages.contains("user 'Root!' is not a valid login name"), messages)
     }
 
     @Test

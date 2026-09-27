@@ -6,8 +6,10 @@
 # trust stores, tzdata, curl and the non-root user app (10001); this file never repeats that (D3 §5).
 ARG BASE_IMAGE=ghcr.io/crazymatthsu/base/jre21:latest
 
-# Stage 1: explode the layered Spring Boot jar (Boot 4.1 tools jarmode).
+# Stage 1: explode the layered Spring Boot jar (Boot 4.1 tools jarmode). The base ends as user 10001, which
+# cannot write /build: this throwaway stage runs as root.
 FROM ${BASE_IMAGE} AS layers
+# hadolint ignore=DL3002,DL3066
 USER root
 WORKDIR /build
 COPY build/libs/source-amps.jar app.jar
@@ -39,13 +41,13 @@ COPY --from=layers /build/extracted/spring-boot-loader/ ./
 COPY --from=layers /build/extracted/snapshot-dependencies/ ./
 COPY --from=layers /build/extracted/application/ ./
 COPY --chmod=0755 scripts/entrypoint.sh /app/entrypoint.sh
-# /config is filled by read-only mounts (D5 §6.1, D6 §6.7); /logs only serves optional file appenders.
-USER root
-RUN mkdir -p /config /logs && chown 10001:10001 /logs
+# The base image provides /config (read-only mounts of the D5 layers) and /app/logs (the only writable path
+# besides /tmp). No VOLUME: anonymous volumes would escape the CI leak check; compose and Kubernetes mount
+# tmpfs / emptyDir at run time instead (D6 §6.7).
 # Numeric user so that Kubernetes can verify runAsNonRoot (D11); the base image names it "app".
 USER 10001:10001
 EXPOSE 8080
 # Compose test stacks override this with the readiness probe (D6 §6.9); Kubernetes uses its own probes.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=60s --retries=3 \
-  CMD curl -fsS http://localhost:8080/actuator/health/liveness || exit 1
+  CMD ["sh", "-c", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
 ENTRYPOINT ["/app/entrypoint.sh"]

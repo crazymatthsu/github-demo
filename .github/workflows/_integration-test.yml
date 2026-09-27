@@ -1,0 +1,153 @@
+# Reusable: one integration-test job for one Gradle project (D10 §5.2, §6.11; model C, DL-24).
+#
+# Start the project's compose stack (Deephaven + the dependencies it declares + the app image built
+# in this run, by digest) → run the tests in the `it-runner` service (ci-build image, on the stack
+# network, no published ports) → diagnostics on failure → teardown and leak check on success, failure
+# AND cancel (`always()`, DL-27). `level: system` runs the same stack with our own deephaven-server
+# image from this run instead of the upstream one (DL-26).
+name: _integration-test
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Gradle project path, e.g. :deephaven-connectors:source-database.
+        type: string
+        required: true
+      images:
+        description: JSON object Gradle project → image pinned by digest (the _gradle-build `images` output).
+        type: string
+        required: true
+      level:
+        description: "'component' (upstream Deephaven) or 'system' (our deephaven-server image from `images`)."
+        type: string
+        default: component
+      ci-build-image:
+        description: ci-build image for the it-runner service ('' → probe GHCR, else build it locally).
+        type: string
+        default: ''
+      retention-days:
+        description: Retention of the uploaded reports and diagnostics (D10 §6.1 — 7 on PRs, 14 on main).
+        type: number
+        default: 7
+    outputs:
+      diagnostics-artifact:
+        description: Name of the diagnostics artefact (uploaded only when the job fails).
+        value: ${{ jobs.it.outputs.diagnostics-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  it:
+    name: ${{ inputs.level }} (${{ inputs.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.level == 'system' && 45 || 30 }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # One stack per job and runner VM; every resource carries the run labels (D10 §6.1, DL-27).
+      COMPOSE_PROJECT_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      # The image under test is the digest built in this run, never a floating tag.
+      APP_IMAGE: ${{ fromJSON(inputs.images)[inputs.project] }}
+      IT_PROJECT: ${{ inputs.project }}
+      IT_LEVEL: ${{ inputs.level }}
+    outputs:
+      diagnostics-artifact: ${{ steps.check.outputs.diagnostics }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check inputs
+        id: check
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          case "$IT_LEVEL" in
+            component | system) ;;
+            *) echo "::error::level must be component or system, got '$IT_LEVEL'"; exit 2 ;;
+          esac
+          if [[ ! $APP_IMAGE =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no digest-pinned image for $IT_PROJECT in the images input (got '${APP_IMAGE}')"
+            exit 2
+          fi
+          if [[ $IT_LEVEL == system ]]; then
+            server=$(jq -r '.[":deephaven-server"] // empty' <<<"$IMAGES")
+            [[ -n $server ]] || { echo "::error::system level needs the :deephaven-server image in the images input"; exit 2; }
+            echo "DEEPHAVEN_IMAGE=$server" >> "$GITHUB_ENV"   # our image replaces the pin in versions.env
+          fi
+          slug=$(sed 's/^://; s/:/-/g' <<<"$IT_PROJECT")
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "diagnostics=it-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${IT_LEVEL}-${slug}" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Build environment (Gradle cache for it-runner, ci-build image)
+        uses: ./.github/actions/setup-build-env
+        with:
+          java: 'false'
+          # The host Gradle user home is bind-mounted into it-runner; only the build job writes the cache.
+          gradle-cache-read-only: 'true'
+          ensure-base: ci-build
+          ci-build-image: ${{ inputs.ci-build-image }}
+
+      - name: Start the stack (pull, up --wait)
+        uses: ./.github/actions/compose-stack
+        with:
+          command: up
+          project: ${{ inputs.project }}
+
+      - name: Integration tests in it-runner
+        run: |
+          set -euo pipefail
+          read -r -a compose <<<"${COMPOSE_BIN:-docker compose}"
+          "${compose[@]}" run --rm it-runner ./gradlew "${IT_PROJECT}:integrationTest" -Pcompose.managed=false --no-daemon
+
+      - name: Diagnostics before teardown
+        if: failure()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: diagnostics
+          diagnostics-dir: build/ci-logs
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.check.outputs.diagnostics }}
+          path: |
+            build/ci-logs/**
+            **/build/test-results/**
+            **/build/reports/**
+          if-no-files-found: warn
+          retention-days: ${{ inputs.retention-days }}
+
+      - name: Teardown (success, failure and cancel)
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: down
+
+      - name: Leak check
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: leak-check
+
+      - name: Test summary
+        if: always()
+        run: scripts/ci/junit-summary.sh "Integration tests — ${IT_LEVEL} (${IT_PROJECT})"
+
+      - name: Upload test results
+        if: always() && steps.check.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: it-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.level }}-${{ steps.check.outputs.slug }}
+          path: '**/build/test-results/integrationTest/**'
+          if-no-files-found: ignore
+          retention-days: ${{ inputs.retention-days }}

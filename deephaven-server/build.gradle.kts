@@ -6,8 +6,8 @@ plugins {
 }
 
 dockerImage {
-    // The Dockerfile selects the upstream image with this ARG (-Pimage.arg.DEEPHAVEN_IMAGE= or env).
-    baseImageArg = "DEEPHAVEN_IMAGE"
+    // The Dockerfile selects the upstream image with this ARG (-Pimage.arg.DEEPHAVEN_BASE_IMAGE=<ref>).
+    baseImageArg = "DEEPHAVEN_BASE_IMAGE"
 }
 
 // The demo root CA is produced by test-infra (test-infra/ca/demo-root-ca.pem). It is staged into the build

@@ -1,0 +1,58 @@
+# Release PRs from Conventional Commits (DL-04, D4 §5 (2), D9 §6.11).
+#
+# release-please keeps one release PR open per version line (release-please-config.json):
+#   `.`                → the connector family, tags v<x.y.z>
+#   `deephaven-server` → deephaven-server, tags deephaven-server/v<x.y.z>
+# Merging the PR creates the annotated tag and a GitHub Release with the changelog.
+#
+# The build never reads .release-please-manifest.json: that file is release-please's own bookkeeping.
+# Gradle derives every version from git tags alone (buildlogic.git-version, D4 §6.1), so "no version
+# file" still holds, and release.yml asserts `./gradlew printVersion` == the tag.
+#
+# Tags and PRs created with GITHUB_TOKEN start no workflow runs, so this workflow dispatches
+# release.yml on each new tag (workflow_dispatch is exempt from that rule).
+# TODO(DL-09): with a GitHub App token the tag push itself triggers release.yml; drop the dispatch then.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # tags, releases, the release branch
+      pull-requests: write # the release PR
+      issues: write # release-please's labels (autorelease: pending / tagged)
+      actions: write # dispatch release.yml
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Start release.yml for each new tag
+        if: steps.rp.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTPUTS: ${{ toJSON(steps.rp.outputs) }}
+        run: |
+          set -euo pipefail
+          while read -r path; do
+            key=tag_name
+            [[ $path == . ]] || key="${path}--tag_name"
+            tag=$(jq -r --arg k "$key" '.[$k] // empty' <<<"$OUTPUTS")
+            [[ -n $tag ]] || { echo "::error::no tag output for released path '$path'"; exit 1; }
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+            echo "- released \`$path\` as \`$tag\` → release.yml dispatched" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.paths_released | fromjson | .[]' <<<"$OUTPUTS")

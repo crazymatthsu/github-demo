@@ -1,0 +1,358 @@
+# Release pipeline (D7 §4.8, §5.1, §5.7; D4 §5, §6.1–§6.4, Figure 3; D9 §6.3).
+#
+# Trigger: a release tag — `v<x.y.z>` releases the connector family (lockstep), `deephaven-server/v<x.y.z>`
+# releases deephaven-server (DL-03). release-please creates the tags with GITHUB_TOKEN, and such pushes
+# start no workflow, so release-please.yml dispatches this workflow on the tag instead
+# (`gh workflow run release.yml --ref <tag>`); a hand-pushed tag (the emergency route) triggers it directly.
+#
+#   resolve       assert `./gradlew printVersion` == the tag; wait for the main.yml run of the tagged
+#                 commit to have passed; resolve its images by the sha-<sha7> tag (build once, D4)
+#   promote       retag those digests with the release tags inside GHCR (_docker-publish.yml) — nothing
+#                 is rebuilt; the images keep the -rc version in their labels (build-once trade-off)
+#   sbom          one CycloneDX SBOM per image (anchore/sbom-action)
+#   github-release  create the GitHub Release (or reuse release-please's) and attach the SBOMs
+#   bump-qa       open the config/us-qa bump PR (family line only; skipped with a notice while
+#                 config/us-qa does not exist — the demo has no qa target)
+name: release
+
+on:
+  push:
+    tags: ['v*', 'deephaven-server/v*']
+  workflow_dispatch:
+    inputs:
+      wait-minutes:
+        description: How long to wait for the main.yml run of the tagged commit to finish.
+        type: number
+        default: 60
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAMESPACE: ghcr.io/crazymatthsu
+
+jobs:
+  resolve:
+    name: resolve tested digests
+    runs-on: ubuntu-latest
+    # Mostly waiting: release-please tags the release commit a minute after the merge, while main.yml
+    # is still building and testing that same commit.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      line: ${{ steps.tag.outputs.line }}
+      version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.tag.outputs.sha }}
+      main-run: ${{ steps.wait.outputs.url }}
+      projects: ${{ steps.images.outputs.projects }}
+      images: ${{ steps.images.outputs.images }}
+      tags: ${{ steps.images.outputs.tags }}
+    steps:
+      - name: Parse the tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF_TYPE != tag ]]; then
+            echo "::error::release.yml runs on a release tag; dispatch it with: gh workflow run release.yml --ref v1.2.3"
+            exit 1
+          fi
+          tag=$GITHUB_REF_NAME
+          if [[ $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            line=family
+          elif [[ $tag =~ ^deephaven-server/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            line=deephaven-server
+          else
+            echo "::error::'$tag' is not a release tag (v<x.y.z> or deephaven-server/v<x.y.z>)"
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "line=$line"
+            echo "version=${BASH_REMATCH[1]}"
+            echo "sha=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          java: 'true'
+
+      - name: Assert that the version derived from git equals the tag
+        env:
+          LINE: ${{ steps.tag.outputs.line }}
+          EXPECTED: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=(-q printVersion)
+          [[ $LINE == family ]] || args+=("-PversionLine=$LINE")
+          actual=$(./gradlew "${args[@]}" | tr -d '\r' | sed '/^[[:space:]]*$/d' | tail -n 1)
+          if [[ $actual != "$EXPECTED" ]]; then
+            echo "::error::./gradlew ${args[*]} printed '$actual', the tag says '$EXPECTED' (D4 §6.1) — is the tag on the right commit, and the work tree clean?"
+            exit 1
+          fi
+          echo "- \`./gradlew ${args[*]}\` = \`$actual\` ✔" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for the main.yml run of this commit
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.tag.outputs.sha }}
+          WAIT_MINUTES: ${{ inputs.wait-minutes || 60 }}
+        run: |
+          set -euo pipefail
+          # Promote, never rebuild (D7 §4.8): only a commit whose main.yml run (main or hotfix/*) passed
+          # the component and system tests may be released.
+          deadline=$((SECONDS + WAIT_MINUTES * 60))
+          while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/main.yml/runs?head_sha=$SHA&per_page=50" \
+              --jq '[.workflow_runs[] | {status, conclusion, html_url, head_branch, run_attempt}]')
+            url=$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")][0].html_url // empty' <<<"$runs")
+            if [[ -n $url ]]; then
+              echo "url=$url" >> "$GITHUB_OUTPUT"
+              echo "- tested by main.yml: $url" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            if [[ $(jq '[.[] | select(.status != "completed")] | length' <<<"$runs") -eq 0 ]]; then
+              echo "::error::no successful main.yml run for ${SHA::7} ($(jq -c 'map({conclusion, head_branch})' <<<"$runs")). Tag a commit that main.yml has tested, or re-run its failed jobs and then this workflow."
+              exit 1
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::main.yml for ${SHA::7} is still running after ${WAIT_MINUTES} min; re-run this workflow when it has finished"
+              exit 1
+            fi
+            echo "main.yml for ${SHA::7} is still running; waiting"
+            sleep 30
+          done
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Resolve the tested images and the release tag set
+        id: images
+        env:
+          LINE: ${{ steps.tag.outputs.line }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ $LINE == family ]]; then
+            projects=$(yq -o=json -I=0 '.projects | to_entries | map(select(.value.image == true and .key != ":deephaven-server") | .key)' .github/affected-map.yml)
+          else
+            projects='[":deephaven-server"]'
+          fi
+          release_tags=("$VERSION" "sha-${SHA::7}")
+          if [[ $LINE == family ]]; then
+            # Convenience tags (D4 §6.2, dev repository only) move only when this is the newest release
+            # of their series, so a hotfix of an older line never drags `latest` backwards.
+            IFS=. read -r major minor _ <<<"$VERSION"
+            newest() { git tag --list "$1" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true; }
+            [[ $(newest "v$major.$minor.*") == "$TAG" ]] && release_tags+=("$major.$minor")
+            [[ $(newest "v$major.*") == "$TAG" ]] && release_tags+=("$major")
+            [[ $(newest 'v*') == "$TAG" ]] && release_tags+=(latest)
+          fi
+          tags_json=$(printf '%s\n' "${release_tags[@]}" | jq -R . | jq -cs .)
+          images='{}' tags='{}'
+          {
+            echo "### Release $TAG"
+            echo ""
+            echo "| project | tested image | release tags |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for project in $(jq -r '.[]' <<<"$projects"); do
+            repo="$IMAGE_NAMESPACE/$(sed 's/^://; s/:/\//g' <<<"$project")"
+            source="$repo:sha-${SHA::7}"
+            pinned=$(scripts/ci/resolve-image.sh "$source") ||
+              { echo "::error::$source not found: main.yml published no image for this commit"; exit 1; }
+            images=$(jq -c --arg p "$project" --arg r "$source@${pinned#*@}" '. + {($p): $r}' <<<"$images")
+            tags=$(jq -c --arg p "$project" --argjson t "$tags_json" '. + {($p): $t}' <<<"$tags")
+            echo "| \`$project\` | \`$source@${pinned#*@}\` | $(jq -r 'map("`" + . + "`") | join(", ")' <<<"$tags_json") |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo "projects=$projects"
+            echo "images=$images"
+            echo "tags=$tags"
+          } >> "$GITHUB_OUTPUT"
+
+  promote:
+    needs: resolve
+    uses: ./.github/workflows/_docker-publish.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      images: ${{ needs.resolve.outputs.images }}
+      tags: ${{ needs.resolve.outputs.tags }}
+
+  sbom:
+    name: sbom (${{ matrix.project }})
+    needs: [resolve, promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.resolve.outputs.projects) }}
+    steps:
+      - name: Image and file name
+        id: target
+        env:
+          PROJECT: ${{ matrix.project }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+        run: |
+          set -euo pipefail
+          ref=$(jq -r --arg p "$PROJECT" '.[$p]' <<<"$IMAGES")
+          repo=${ref%@*}
+          repo=${repo%:*}
+          slug=$(sed 's/^://; s/:/-/g' <<<"$PROJECT")
+          echo "image=$repo@${ref#*@}" >> "$GITHUB_OUTPUT"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.target.outputs.image }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          format: cyclonedx-json
+          output-file: ${{ runner.temp }}/sbom/${{ steps.target.outputs.slug }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ steps.target.outputs.slug }}
+          path: ${{ runner.temp }}/sbom/${{ steps.target.outputs.slug }}.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sbom-*
+          path: sboms
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          MAIN_RUN: ${{ needs.resolve.outputs.main-run }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          TAGS: ${{ needs.resolve.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # release-please already created the release with its changelog; a hand-pushed tag has none yet.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" sboms/*.cdx.json --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### GitHub Release $TAG"
+            echo ""
+            echo "- tested by $MAIN_RUN"
+            echo "- SBOMs: $(find sboms -name '*.cdx.json' -printf '%f ')"
+            echo ""
+            echo "| project | image | tags |"
+            echo "|---|---|---|"
+            jq -r --argjson tags "$TAGS" 'to_entries[] | "| `\(.key)` | `\(.value)` | \($tags[.key] | join(", ")) |"' <<<"$IMAGES"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  bump-qa:
+    name: us-qa bump PR
+    needs: [resolve, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Open the bump PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ needs.resolve.outputs.line }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          MAIN_RUN: ${{ needs.resolve.outputs.main-run }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          notice() { echo "::notice title=us-qa bump::$1"; echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+          if [[ $LINE != family ]]; then
+            notice "$TAG: no config/us-qa instance runs deephaven-server; no bump PR"
+            exit 0
+          fi
+          if [[ ! -d config/us-qa ]]; then
+            notice "config/us-qa does not exist yet (the demo has no qa target), so there is nothing to bump for $TAG. Create config/us-qa/<flow>/<AppName>/<AppInstance>/ and the next release opens the PR."
+            exit 0
+          fi
+          files=()
+          for app in $(jq -r 'keys[] | sub("^.*:"; "")' <<<"$IMAGES"); do
+            for f in config/us-qa/*/"$app"/*/compose.env config/us-qa/*/"$app"/*/values.yaml; do
+              [[ -f $f && $f != */app-common/* && $f != */_common/* ]] && files+=("$f")
+            done
+          done
+          if [[ ${#files[@]} -eq 0 ]]; then
+            notice "config/us-qa has no instance of $(jq -r 'keys | join(", ")' <<<"$IMAGES"); no bump PR"
+            exit 0
+          fi
+          changed=$(scripts/ci/set-image-tag.sh "$VERSION" "${files[@]}")
+          if [[ -z $changed ]]; then
+            notice "config/us-qa already runs $VERSION everywhere; no bump PR"
+            exit 0
+          fi
+          branch="bump/us-qa/$VERSION"
+          git switch --quiet -c "$branch"
+          git add -- config/us-qa
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "chore(release): bump source-* to $VERSION in us-qa/*"
+          # TODO(DL-09): push and open the PR with the GitHub App token, so that pr.yml runs on it.
+          git push --quiet --force origin "HEAD:refs/heads/$branch"
+          body=$(mktemp)
+          {
+            echo "Release **$TAG** for \`config/us-qa\` (D4 §6.4, D9 §6.3). Approval by the CODEOWNERS of \`config/*-qa/**\` is the deploy intent."
+            echo ""
+            echo "| project | image (tested by main.yml, promoted by digest) |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| `\(.key)` | `\(.value)` |"' <<<"$IMAGES"
+            echo ""
+            echo "Changed files:"
+            while read -r f; do echo "- \`$f\`"; done <<<"$changed"
+            echo ""
+            echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo "- Tested by: $MAIN_RUN"
+            echo ""
+            echo "> Opened with GITHUB_TOKEN, which starts no workflow: close and reopen this PR to run \`pr-gate\` (a GitHub App token removes this step, DL-09)."
+          } > "$body"
+          if gh pr view "$branch" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            gh pr edit "$branch" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            notice "updated the existing us-qa bump PR for $VERSION"
+          else
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" \
+              --title "chore(release): bump source-* to $VERSION in us-qa/*" --body-file "$body")
+            notice "opened $url"
+          fi

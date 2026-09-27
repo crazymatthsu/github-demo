@@ -37,7 +37,7 @@ Commands (D6 §6.4):
   pull                  pre-pull the image (the only command that contacts the registry)
   validate              offline checks: names, required files, compose.env rules, variables, compose lint
   exec <svc> <cmd...>   exec in a service (arguments after <svc> belong to the command)
-  shell                 exec app sh
+  shell                 exec <AppName> sh (the app's service is named after the AppName)
   version               tag, digest and OCI labels of the running image
 
 Options (before or after the command):
@@ -51,8 +51,12 @@ Options (before or after the command):
 Exit codes: 0 ok · 1 operation failed or check negative · 2 usage · 3 refused by a safety rule ·
             4 config tree error · 5 engine not found or not running · 124 timeout
 Environment: CONFIG_ROOT (default <repo>/config), START_TIMEOUT, STOP_TIMEOUT, DEPS_NETWORK (join an
-existing network, e.g. the one of ./gradlew devUp), RUN_COMPOSE_ENGINE; secrets such as
-SPRING_DATASOURCE_PASSWORD are passed through from this shell, never from compose.env (D2 §8.1).
+existing network, e.g. the one of ./gradlew devUp), RUN_COMPOSE_ENGINE, IMAGE_TAG and IMAGE_REPO (override
+compose.env in every env, e.g. deploy-dev's pull / start before the write-back, D9 §6.4; every other
+compose.env value always comes from the file), APP_IMAGE (local only: run this image instead of
+IMAGE_REPO/APP_NAME:IMAGE_TAG);
+secrets such as SPRING_DATASOURCE_PASSWORD are passed through from this shell, never from compose.env
+(D2 §8.1).
 EOF
 }
 
@@ -147,6 +151,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENGINE_CHOICE" ] && OPTS_TEXT="$OPTS_TEXT --engine $ENGINE_CHOICE"
 
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 audit() {
     local result="$1"
     [ "$AUDIT" -eq 1 ] || return 0
@@ -154,6 +159,7 @@ audit() {
     who="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo unknown)}}"
     line="ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) who=$who host=$(hostname 2>/dev/null || uname -n)"
     line="$line env=$ENV_NAME flow=$FLOW app=$APP instance=$INSTANCE cmd=$COMMAND opts=\"${OPTS_TEXT# }\" result=$result"
+    [ -z "${OVERRIDES:-}" ] || line="$line override=$OVERRIDES"
     if [ -n "${GITHUB_RUN_ID:-}" ]; then
         line="$line run=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}/actions/runs/$GITHUB_RUN_ID actor=${GITHUB_ACTOR:-unknown}"
     fi
@@ -287,10 +293,30 @@ if [ -n "${GITHUB_RUN_ID:-}" ]; then
     # host keeps its stable name so that a redeploy replaces the stack instead of starting a second one.
     [ "$ENV_NAME" = local ] && PROJECT="ci-$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}-$PROJECT"
 fi
-if [ "$ENV_NAME" != local ]; then
-    # On dev hosts git is the deployment record: compose.env wins over anything exported in this shell.
-    for key in $ENV_KEYS; do unset "$key" 2>/dev/null || true; done
-fi
+# compose.env is the default for every variable it defines; only IMAGE_REPO and IMAGE_TAG may be overridden
+# from this shell, in every allowed env (deploy-dev injects IMAGE_TAG for pull / start before its write-back
+# persists it, D9 §6.4). Overrides are announced and recorded in the audit line. APP_IMAGE is local only.
+OVERRIDES=""
+for key in $ENV_KEYS; do
+    case "$key" in IMAGE_REPO | IMAGE_TAG) ;; *) unset "$key" 2>/dev/null || true ;; esac
+done
+[ "$ENV_NAME" = local ] || unset APP_IMAGE
+for key in IMAGE_REPO IMAGE_TAG; do
+    value="${!key:-}"
+    if [ -n "$value" ] && [ "$value" != "$(env_value "$key")" ]; then
+        case "$key" in
+            IMAGE_TAG) pattern='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?$' ;;
+            *) pattern='^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$' ;;
+        esac
+        printf '%s' "$value" | grep -Eq "$pattern" || die "$EXIT_USAGE" "$key='$value' is not a valid override"
+        info "$key=$value from the environment overrides compose.env ($(env_value "$key"))"
+        OVERRIDES="$OVERRIDES,$key"
+        export "${key?}"
+    else
+        unset "$key"
+    fi
+done
+OVERRIDES="${OVERRIDES#,}"
 export APP_ENV="$ENV_NAME" APP_FLOW="$FLOW" APP_NAME="$APP" APP_INSTANCE="$INSTANCE"
 export CONFIG_DIR COMMON_DIR PROJECT
 if [ -n "$PLATFORM_DIR" ]; then export PLATFORM_DIR; else unset PLATFORM_DIR; fi
@@ -303,14 +329,14 @@ fi
 export SELINUX_LABEL_SHARED SELINUX_LABEL_PRIVATE
 START_TIMEOUT="${START_TIMEOUT:-180}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-30}"
-IMAGE_REF="$(env_value IMAGE_REPO)/$APP:$(env_value IMAGE_TAG)"
-[ "$ENV_NAME" = local ] && [ -n "${IMAGE_REPO:-}${IMAGE_TAG:-}" ] &&
-    IMAGE_REF="${IMAGE_REPO:-$(env_value IMAGE_REPO)}/$APP:${IMAGE_TAG:-$(env_value IMAGE_TAG)}"
+IMAGE_REF="${IMAGE_REPO:-$(env_value IMAGE_REPO)}/$APP:${IMAGE_TAG:-$(env_value IMAGE_TAG)}"
+[ -z "${APP_IMAGE:-}" ] || IMAGE_REF="$APP_IMAGE"
 ACTUATOR_PORT="$(env_value ACTUATOR_HOST_PORT)"
 
 # Required template variables (${VAR:?...}) that nobody provides: the secrets of D2 §8.1.
 missing_required() {
     local var out=""
+    # shellcheck disable=SC2013 # variable names never contain whitespace
     for var in $(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:?\?' "$COMPOSE_FILE" | sed -e 's/^\${//' -e 's/:*?$//' | sort -u); do
         if [ -z "${!var:-}" ] && ! contains_word "$var" "$ENV_KEYS"; then out="$out $var"; fi
     done
@@ -406,7 +432,7 @@ compose() {
 }
 plan_step() { [ "$DRY_RUN" -eq 0 ] || printf '  %-13s %s\n' "then" "$*"; }
 readiness_url() { printf 'http://127.0.0.1:%s/actuator/health/readiness' "$ACTUATOR_PORT"; }
-app_container() { "${COMPOSE[@]}" -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q app 2>/dev/null | head -n 1; }
+app_container() { "${COMPOSE[@]}" -p "$PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps -q "$APP" 2>/dev/null | head -n 1; }
 http_get() { curl -fsS --max-time 5 "$1"; }
 
 wait_ready() {
@@ -444,7 +470,7 @@ cmd_start() {
 cmd_health() {
     local cid="" body="" status="DOWN" running=false rc=0
     if [ "$DRY_RUN" -eq 1 ]; then
-        compose ps -q app
+        compose ps -q "$APP"
         plan_step "curl -fsS $(readiness_url)"
         [ -x "$APP_DIR/scripts/smoke.sh" ] && plan_step "$(rel "$APP_DIR/scripts/smoke.sh")"
         return 0
@@ -504,7 +530,7 @@ image_label() { "$ENGINE" image inspect --format "{{index .Config.Labels \"$2\"}
 cmd_version() {
     local cid image_id image digest
     if [ "$DRY_RUN" -eq 1 ]; then
-        compose ps -q app
+        compose ps -q "$APP"
         plan_step "$ENGINE inspect <app container>; $ENGINE image inspect <image> (tag, digest, OCI labels)"
         return 0
     fi
@@ -542,6 +568,7 @@ cmd_printenv() {
         printf '# compose.env (%s)\n' "$(rel "$ENV_FILE")"
         grep -Ev '^[[:space:]]*(#|$)' "$ENV_FILE"
         printf '# passed through from this shell\n'
+        # shellcheck disable=SC2013 # variable names never contain whitespace
         for var in $(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:?\?' "$COMPOSE_FILE" | sed -e 's/^\${//' -e 's/:*?$//' | sort -u); do
             if ! contains_word "$var" "$ENV_KEYS" && ! contains_word "$var" "$SCRIPT_VARIABLES APP_ENV APP_FLOW APP_NAME APP_INSTANCE"; then
                 if contains_word "$var" "$MISSING"; then printf '%s=<unset>\n' "$var"; else printf '%s=%s\n' "$var" "${!var}"; fi
@@ -572,7 +599,7 @@ cmd_validate() {
 
 cmd_app_config() {
     if [ "$OFFLINE" -eq 1 ]; then
-        compose run --rm --no-deps -T app --print-config | mask_stream
+        compose run --rm --no-deps -T "$APP" --print-config | mask_stream
         return "${PIPESTATUS[0]}"
     fi
     local url="http://127.0.0.1:$ACTUATOR_PORT/actuator/connectorconfig"
@@ -622,7 +649,7 @@ case "$COMMAND" in
     shell)
         tty_flag=()
         [ -t 0 ] || tty_flag=(-T)
-        compose exec "${tty_flag[@]+"${tty_flag[@]}"}" app sh || rc=$?
+        compose exec "${tty_flag[@]+"${tty_flag[@]}"}" "$APP" sh || rc=$?
         ;;
     version) cmd_version || rc=$? ;;
 esac

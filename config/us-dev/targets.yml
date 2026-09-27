@@ -5,6 +5,7 @@
 env: us-dev
 defaults:
   kind: compose
+  user: deploy                  # DL-35: SSH user whose forced command is run-compose.sh
 targets:
   - instance: cash/source-database/trades-db-to-amps
     kind: compose

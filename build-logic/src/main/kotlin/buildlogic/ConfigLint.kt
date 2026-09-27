@@ -399,7 +399,8 @@ class ConfigLinter(
             error(11, file, "unknown top-level key '$it' (allowed: env, defaults, targets)")
         }
         if (doc["env"]?.toString() != env) error(11, file, "env: must be '$env' (was '${doc["env"]}')")
-        val entryKeys = setOf("kind", "host", "cluster", "namespace")
+        // `user`: the SSH user of a compose host (DL-35: `deploy`, the default of the deploy-dev job).
+        val entryKeys = setOf("kind", "host", "user", "cluster", "namespace")
         val defaults = doc["defaults"] ?: emptyMap<String, Any>()
         if (defaults !is Map<*, *>) {
             error(11, file, "defaults: must be a mapping")
@@ -428,6 +429,9 @@ class ConfigLinter(
             if (!listed.add(instance)) error(11, file, "$where: $instance listed twice")
             if (instance !in known) error(11, file, "$where: $instance has no directory config/$env/$instance/")
             val effective = defaults.entries.associate { it.key.toString() to it.value } + entry.entries.associate { it.key.toString() to it.value }
+            effective["user"]?.toString()?.let { user ->
+                if (!Regex("^[a-z_][a-z0-9_-]{0,31}$").matches(user)) error(11, file, "$where: user '$user' is not a valid login name")
+            }
             when (val kind = effective["kind"]?.toString()) {
                 "compose" -> if (effective["host"]?.toString().isNullOrBlank()) error(11, file, "$where: kind compose needs host")
                 "helm" -> listOf("cluster", "namespace").forEach {

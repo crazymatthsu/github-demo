@@ -10,7 +10,7 @@
 //
 // Properties: -Pimage.registry (env IMAGE_REGISTRY, default ghcr.io/crazymatthsu), -Pimage.tags=a,b,
 // -Pimage.engine=auto|docker|podman (env CONTAINER_ENGINE), -Pimage.requireEngine=true (default when CI=true),
-// -Pimage.arg.BASE_IMAGE=<ref> (env BASE_IMAGE; DEEPHAVEN_IMAGE for deephaven-server),
+// -Pimage.arg.BASE_IMAGE=<ref> (env BASE_IMAGE; -Pimage.arg.DEEPHAVEN_BASE_IMAGE for deephaven-server),
 // -Pimage.extraArgs="--cache-from ...", -Pimage.allowLocalPush=true, -Pimage.sourceUrl=<repo url>.
 // Outputs for workflows: build/image/refs.txt (every reference built), build/image/digest.txt (after push).
 import buildlogic.BuildImageTask
@@ -79,14 +79,13 @@ val imageLabels: Provider<Map<String, String>> = image.imageName.zip(
         "com.example.version-kind" to facts.getValue("kind"),
     )
 }
-// -Pimage.arg.<ARG>=<ref> or the environment variable of the same name (BASE_IMAGE / DEEPHAVEN_IMAGE).
+// -Pimage.arg.<ARG>=<ref>; for the apps' BASE_IMAGE also the environment variable BASE_IMAGE (CI exports the
+// jre21 base it resolved or bootstrapped). DEEPHAVEN_IMAGE in the environment means "the server image to
+// run" to test-infra, so the deephaven-server base is only ever taken from -Pimage.arg.DEEPHAVEN_BASE_IMAGE.
 val argProperties: Provider<Map<String, String>> = providers.gradlePropertiesPrefixedBy("image.arg.")
-val argEnvironment: Provider<Map<String, String>> = providers.environmentVariable("BASE_IMAGE").orElse("")
-    .zip(providers.environmentVariable("DEEPHAVEN_IMAGE").orElse("")) { base, deephaven ->
-        mapOf("BASE_IMAGE" to base, "DEEPHAVEN_IMAGE" to deephaven)
-    }
-val baseImageOverride: Provider<String> = image.baseImageArg.zip(argProperties.zip(argEnvironment) { p, e -> listOf(p, e) }) { arg, maps ->
-    maps[0]["image.arg.$arg"]?.takeIf { it.isNotBlank() } ?: maps[1][arg].orEmpty()
+val baseImageEnvironment: Provider<String> = providers.environmentVariable("BASE_IMAGE").orElse("")
+val baseImageOverride: Provider<String> = image.baseImageArg.zip(argProperties.zip(baseImageEnvironment) { p, e -> p to e }) { arg, (props, env) ->
+    props["image.arg.$arg"]?.takeIf { it.isNotBlank() } ?: if (arg == "BASE_IMAGE") env else ""
 }
 val engineChoiceProvider: Provider<String> = providers.gradleProperty("image.engine")
     .orElse(providers.environmentVariable("CONTAINER_ENGINE")).orElse("auto")
@@ -101,7 +100,10 @@ val stageDockerContext = tasks.register<Sync>("stageDockerContext") {
     group = "container image"
     description = "Stages the minimal image build context under build/docker/."
     into(layout.buildDirectory.dir("docker"))
-    from("docker") { into("docker") }
+    from("docker") {
+        exclude("docker-compose*.yml") // the compose template is not part of the image
+        into("docker")
+    }
     from("scripts") {
         include("entrypoint.sh")
         into("scripts")

@@ -1,0 +1,145 @@
+# Company base images (D3 §6.1–§6.3, DL-13, DL-28; D7 §6.1):
+#   ghcr.io/crazymatthsu/base/jre21:<yyyymmdd>-<run_number>     runtime base of every app image
+#   ghcr.io/crazymatthsu/base/ci-build:<yyyymmdd>-<run_number>  JDK 21 build image (build job, it-runner)
+# Both also move `latest`, which the builds resolve to a digest (_gradle-build.yml probe). Built from
+# upstream Temurin with the demo CA (test-infra/ca), verified, then pushed — a broken build never moves
+# `latest`. Until the first run, CI builds these images locally as a bootstrap (setup-build-env).
+name: base-image
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # weekly: OS and JRE patches
+  workflow_dispatch:
+    inputs:
+      ca-bundle-version:
+        description: CA bundle version label (rotation, D3 §6.3); empty keeps the Dockerfile default.
+        type: string
+        default: ''
+  push:
+    branches: [main]
+    paths:
+      - 'docker/base/**'
+      - 'test-infra/ca/**'
+      - '.github/workflows/base-image.yml'
+
+concurrency:
+  group: base-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAMESPACE: ghcr.io/crazymatthsu
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Build contexts as documented in each Dockerfile's header (the CA bundle directory);
+          # keep in step with .github/actions/setup-build-env (local bootstrap builds).
+          - image: jre21
+            context: test-infra/ca
+          - image: ci-build
+            context: test-infra/ca
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag
+        id: tag
+        run: |
+          echo "tag=$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/registry-login
+
+      - uses: docker/setup-buildx-action@v4
+        id: buildx
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: docker/base/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          pull: true
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/base/${{ matrix.image }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE_NAMESPACE }}/base/${{ matrix.image }}:latest
+          build-args: |
+            IMAGE_VERSION=${{ steps.tag.outputs.tag }}
+            GIT_SHA=${{ github.sha }}
+            CREATED=${{ steps.tag.outputs.created }}
+            ${{ inputs.ca-bundle-version != '' && format('CA_BUNDLE_VERSION={0}', inputs.ca-bundle-version) || '' }}
+          cache-from: type=gha,scope=base-${{ matrix.image }}
+          cache-to: type=gha,scope=base-${{ matrix.image }},mode=max
+
+      - name: Verify
+        env:
+          IMAGE: ${{ env.IMAGE_NAMESPACE }}/base/${{ matrix.image }}:${{ steps.tag.outputs.tag }}
+          NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          check() { # check <description> <command...>
+            local what=$1
+            shift
+            if out=$("$@" 2>&1); then
+              echo "| $what | ok | \`$(head -n 1 <<<"$out")\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $what | **failed** | \`$(head -n 1 <<<"$out")\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$NAME: $what failed: $out"
+              return 1
+            fi
+          }
+          {
+            echo "### base/$NAME"
+            echo ""
+            echo "| check | result | output |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          check "java -version" docker run --rm --entrypoint java "$IMAGE" -version || status=1
+          if [[ $NAME == jre21 ]]; then
+            # The Dockerfile already fails without the CA in both stores; this re-checks the result (D3 §6.2).
+            check "CA in the OS store" docker run --rm --entrypoint bash "$IMAGE" -c \
+              'test -s /etc/ssl/certs/company-ca-bundle.pem && openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/company-ca-bundle.pem' || status=1
+            check "CA in the JVM cacerts" docker run --rm --entrypoint keytool "$IMAGE" \
+              -list -cacerts -storepass changeit -alias demo-root-ca || status=1
+            check "TLS through the OS store (curl https://github.com)" docker run --rm --entrypoint curl "$IMAGE" \
+              -sS -o /dev/null -w '%{http_code}' https://github.com || status=1
+            check "runs as non-root" bash -c "u=\$(docker image inspect --format '{{.Config.User}}' '$IMAGE'); [[ -n \$u && \$u != root && \$u != 0 ]] && echo \"user \$u\"" || status=1
+          else
+            # What the build job needs inside the job container (DL-28, _gradle-build.yml).
+            check "git" docker run --rm --entrypoint git "$IMAGE" --version || status=1
+            check "docker CLI" docker run --rm --entrypoint docker "$IMAGE" --version || status=1
+            check "docker buildx (BuildKit builds, COPY --chmod)" docker run --rm --entrypoint docker "$IMAGE" buildx version || status=1
+            check "user 1001 = the hosted runner UID (build job container)" bash -c \
+              "u=\$(docker image inspect --format '{{.Config.User}}' '$IMAGE'); [[ \${u%%:*} == 1001 || \${u%%:*} == runner ]] && echo \"user \$u\"" || status=1
+          fi
+          exit "$status"
+
+      - name: Push
+        env:
+          REPO: ${{ env.IMAGE_NAMESPACE }}/base/${{ matrix.image }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker push --quiet "$REPO:$TAG"
+          docker push --quiet "$REPO:latest"
+          pinned=$(scripts/ci/resolve-image.sh "$REPO:$TAG")
+          latest=$(scripts/ci/resolve-image.sh "$REPO:latest")
+          [[ ${pinned#*@} == "${latest#*@}" ]] || { echo "::error::latest does not point at $TAG"; exit 1; }
+          {
+            echo ""
+            echo "Published \`$REPO:$TAG\` and \`latest\` → \`${pinned#*@}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

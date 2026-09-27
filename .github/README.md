@@ -105,7 +105,10 @@ that cancels itself with its stack up, then checks that run's teardown and leak-
 
 ## Only provable on GitHub
 
-Container job with an empty image running on the host; the Docker socket inside the ci-build job
-container; `environment.deployment: false`; GHCR package permissions for push, retag and delete;
-`imagetools create --prefer-index=false` preserving digests; release-please output names; `always()`
-steps after a cancel; runner memory for Deephaven + SQL Server; merge queue availability.
+A container job with an empty image running on the host; socket access from the ci-build job
+container through `--group-add <docker GID>` as user 1001; `environment.deployment: false`; GHCR
+package permissions for push, retag and delete with `GITHUB_TOKEN`; `imagetools create
+--prefer-index=false` preserving digests (every write is verified, so a mismatch fails loudly);
+release-please's tags, release and output names; the write-back push under the chosen branch
+protection; `always()` steps after a cancel (the nightly drill checks it); runner memory for
+Deephaven + SQL Server + it-runner; merge queue availability on the plan.
