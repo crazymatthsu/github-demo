@@ -12,11 +12,13 @@
 // -Pimage.engine=auto|docker|podman (env CONTAINER_ENGINE), -Pimage.requireEngine=true (default when CI=true),
 // -Pimage.arg.BASE_IMAGE=<ref> (env BASE_IMAGE; -Pimage.arg.DEEPHAVEN_BASE_IMAGE for deephaven-server),
 // -Pimage.extraArgs="--cache-from ...", -Pimage.allowLocalPush=true, -Pimage.sourceUrl=<repo url>,
+// -Pimage.pushAttempts=3 (retries of a failed `push`; pushes of one build run one at a time, see ImagePushLock),
 // -PpushConvenienceTags=false (pushImage leaves out the floating tags main / latest / X / X.Y, e.g. so that
 // CI moves `main` only after the system test; the immutable version and sha-<sha7> tags are always pushed).
 // Outputs for workflows: build/image/refs.txt (every reference built), build/image/digest.txt (after push).
 import buildlogic.BuildImageTask
 import buildlogic.DockerImageExtension
+import buildlogic.ImagePushLock
 import buildlogic.PrintImageRefTask
 import buildlogic.PushImageTask
 import buildlogic.buildlogicProperty
@@ -137,10 +139,16 @@ val pushedImageRefs: Provider<List<String>> = run {
     allImageRefs.map { refs -> if (keepFloating) refs else refs.filterNot { floatingTag.matches(it.substringAfterLast(':')) } }
 }
 
+val pushLock = gradle.sharedServices.registerIfAbsent("imagePushLock", ImagePushLock::class) {
+    maxParallelUsages = 1
+}
+
 tasks.register<PushImageTask>("pushImage") {
     group = "container image"
     description = "Pushes every tag of this build (never a local build); -PpushConvenienceTags=false skips main / latest."
     dependsOn(buildImage)
+    usesService(pushLock)
+    pushAttempts = providers.gradleProperty("image.pushAttempts").map(String::toInt).orElse(3)
     imageRefs = pushedImageRefs
     versionKind = versionKindValue
     allowLocalPush = providers.gradleProperty("image.allowLocalPush").map { it.toBoolean() }.orElse(false)

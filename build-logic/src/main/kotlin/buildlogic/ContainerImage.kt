@@ -7,6 +7,8 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.Optional
@@ -136,14 +138,19 @@ abstract class ContainerEngineTask : DefaultTask() {
         }
     }
 
-    /** Runs [command] with its output streamed to the build log; throws on a non-zero exit. */
-    protected fun runLoud(command: List<String>, what: String) {
+    /** Runs [command] with its output streamed to the build log; returns its exit code. */
+    protected fun runStreaming(command: List<String>): Int {
         logger.lifecycle("> ${command.joinToString(" ")}")
-        val result = execOperations.exec {
+        return execOperations.exec {
             commandLine(command)
             isIgnoreExitValue = true
-        }
-        if (result.exitValue != 0) throw GradleException("$what failed (exit ${result.exitValue}): ${command.joinToString(" ")}")
+        }.exitValue
+    }
+
+    /** Runs [command] with its output streamed to the build log; throws on a non-zero exit. */
+    protected fun runLoud(command: List<String>, what: String) {
+        val exit = runStreaming(command)
+        if (exit != 0) throw GradleException("$what failed (exit $exit): ${command.joinToString(" ")}")
     }
 
     /** The usable engine, or null after logging why the task does nothing (or throwing when required). */
@@ -225,6 +232,44 @@ abstract class BuildImageTask : ContainerEngineTask() {
     }
 }
 
+/**
+ * One image push at a time per build. GHCR links a layer that several repositories share lazily, and pushing
+ * images built on the same base in parallel then fails at the manifest upload with "unknown blob" (seen with
+ * the four app images of one PR build). `pushImage` tasks share this service with `maxParallelUsages = 1`.
+ */
+abstract class ImagePushLock : BuildService<BuildServiceParameters.None>
+
+/** Retry policy of `pushImage`: a registry's transient answers ("unknown blob", 5xx) clear on a later attempt. */
+object PushRetry {
+    /** Exit code of the last attempt (0 on success) and how many attempts were made. */
+    data class Outcome(val exitCode: Int, val attempts: Int)
+
+    /**
+     * Runs [attempt] (attempt number in, exit code out) up to [attempts] times. After a failed attempt that is
+     * not the last, [onRetry] gets the attempt number and exit code and [sleep] is called with
+     * [backoffMillis] × attempt number.
+     */
+    fun run(
+        attempts: Int,
+        backoffMillis: Long,
+        sleep: (Long) -> Unit,
+        onRetry: (Int, Int) -> Unit = { _, _ -> },
+        attempt: (Int) -> Int,
+    ): Outcome {
+        require(attempts >= 1) { "attempts must be at least 1, was $attempts" }
+        var exit = 0
+        for (n in 1..attempts) {
+            exit = attempt(n)
+            if (exit == 0) return Outcome(0, n)
+            if (n < attempts) {
+                onRetry(n, exit)
+                sleep(backoffMillis * n)
+            }
+        }
+        return Outcome(exit, attempts)
+    }
+}
+
 /** `pushImage`: pushes every tag of this build; local builds are never pushed (D4 §6.2). */
 @DisableCachingByDefault(because = "Pushes to a registry")
 abstract class PushImageTask : ContainerEngineTask() {
@@ -237,12 +282,20 @@ abstract class PushImageTask : ContainerEngineTask() {
     @get:Input
     abstract val allowLocalPush: Property<Boolean>
 
+    /** Attempts per tag (`-Pimage.pushAttempts`, default 3); see [PushRetry]. */
+    @get:Input
+    abstract val pushAttempts: Property<Int>
+
     /** `<repository>@sha256:…` of the pushed manifest (`build/image/digest.txt`), for workflows. */
     @get:OutputFile
     abstract val digestFile: RegularFileProperty
 
     init {
         outputs.upToDateWhen { false }
+    }
+
+    companion object {
+        const val PUSH_BACKOFF_MILLIS = 5_000L
     }
 
     @TaskAction
@@ -255,7 +308,21 @@ abstract class PushImageTask : ContainerEngineTask() {
         }
         val engine = engineOrSkip("push of ${imageRefs.get().joinToString()}") ?: return
         val refs = imageRefs.get()
-        refs.forEach { runLoud(listOf(engine.executable, "push", it), "Image push") }
+        val attempts = pushAttempts.get()
+        refs.forEach { ref ->
+            val command = listOf(engine.executable, "push", ref)
+            val outcome = PushRetry.run(attempts, PUSH_BACKOFF_MILLIS, { Thread.sleep(it) }, { n, exit ->
+                logger.warn(
+                    "$path: push of $ref failed (exit $exit) on attempt $n of $attempts; retrying. Registries answer " +
+                        "transient errors such as \"unknown blob\" while another push links the same layers.",
+                )
+            }) { runStreaming(command) }
+            if (outcome.exitCode != 0) {
+                throw GradleException(
+                    "Image push failed (exit ${outcome.exitCode}) after ${outcome.attempts} attempt(s): ${command.joinToString(" ")}",
+                )
+            }
+        }
         val repository = refs.first().substringBeforeLast(':')
         val inspect = run(listOf(engine.executable, "image", "inspect", "--format", "{{join .RepoDigests \"\\n\"}}", refs.first()))
         val digest = inspect.output.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("$repository@") }
