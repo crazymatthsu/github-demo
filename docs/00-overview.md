@@ -162,7 +162,7 @@ requests. D7 owns the CI part of this picture, D4 the tags, D9 the deployments.
 | D2 | [02-secrets-and-vault.md](02-secrets-and-vault.md) | Vault path layout, Kubernetes auth, secrets delivery options, Spring Vault DB credentials, the demo's no-Vault stub and the switch |
 | D3 | [03-docker-images.md](03-docker-images.md) | Dockerfile standard, enterprise CA in both trust stores, base image, image naming, registry for EKS, special images |
 | D4 | [04-versioning-and-image-tagging.md](04-versioning-and-image-tagging.md) | Git-derived versions, tag naming, lockstep vs independent, promotion, retention, where tags live in values and compose |
-| D5 | [05-configuration-management.md](05-configuration-management.md) | Config tree and layering, env vars vs YAML, naming model, config in the monorepo, `targets.yml`, GitOps delivery, config-lint |
+| D5 | [05-configuration-management.md](05-configuration-management.md) | Config tree and layering, env vars vs YAML, naming model, config in the monorepo, `workflows-config.yml`, GitOps delivery, config-lint |
 | D6 | [06-runtime-operations.md](06-runtime-operations.md) | `run-compose.sh` specification, Kubernetes runtime (probes, resources, logs, metrics, security), local developer experience |
 | D7 | [07-ci-pipeline-github-actions.md](07-ci-pipeline-github-actions.md) | Workflow set and topology, test tiers by trigger, affected-subproject detection, caching, gates, publishing |
 | D8 | [08-integration-testing.md](08-integration-testing.md) | Test levels, compose harness, dependency images, test data, expected-output comparison, budgets |
@@ -231,7 +231,7 @@ No row blocks the demo skeleton: the eleven blocking rows were decided on 2026-0
 | [DL-36](adr/DL-36-loop-guard-for-bot-write-backs.md) | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | **Decided (v1.0):** skip bot author + `[skip ci]`; config-only human merges still deploy | yes | decided (v1.0) |
 | [DL-37](adr/DL-37-appinstance-naming.md) | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
 | [DL-38](adr/DL-38-kubernetes-namespace-layout.md) | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (deferred; the demo uses namespace = `<flow>` as a working assumption) | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
-| [DL-39](adr/DL-39-host-pools-per-env-flow.md) | Host pools for the bare-metal compose targets | host per instance / pool per `<env>/<flow>` with recorded placement / deploy-time scheduler | **One inventory per flow, `config/<env>/<flow>/targets.yml`, with the flow's `pool`; every box gets the flow's whole configuration (host bundle synced on deploy); placement pinned → discovered → assigned, recorded as `host` by the write-back; single-run rule on the boxes** | no | decided (v1.3) |
+| [DL-39](adr/DL-39-host-pools-per-env-flow.md) | Host pools for the bare-metal compose targets | host per instance / pool per `<env>/<flow>` with recorded placement / deploy-time scheduler | **One inventory per flow, `config/<env>/<flow>/workflows-config.yml`, with the flow's `pool`; every box gets the flow's whole configuration (host bundle synced on deploy); placement pinned → discovered → assigned, recorded as `host` by the write-back; single-run rule on the boxes** | no | decided (v1.3) |
 
 ## 9. Traceability from the brief
 
@@ -245,7 +245,7 @@ No row blocks the demo skeleton: the eleven blocking rows were decided on 2026-0
 | §5.4 | Versioning, image tagging and retention | D4 |
 | §5.5 | Image tags in deployment manifests and in compose | D4 (scheme, placement), D11 (Helm mechanics) |
 | §5.6 | Configuration model, naming model | D5 |
-| §5.7 | Configuration repository and GitOps delivery | D5 (repository, `targets.yml`), D11 (controller mechanics) |
+| §5.7 | Configuration repository and GitOps delivery | D5 (repository, `workflows-config.yml`), D11 (controller mechanics) |
 | §5.8 | `run-compose.sh` specification | D6 |
 | §5.9 | CI pipeline — GitHub Actions to the registry | D7 |
 | §5.10 | Integration testing | D8 |
@@ -328,7 +328,7 @@ Unanswered items from `TODO.md` §8 at v1.1. Items tagged *(Phase 3)* are not ne
 | IRSA | IAM Roles for Service Accounts: AWS identity for a pod without static keys |
 | kind | Kubernetes in Docker: a throw-away cluster inside a CI job or on a laptop |
 | Helm release | one installed instance of a chart; here one per AppInstance |
-| targets.yml | per-env file mapping each instance to its deploy target: compose host, or cluster + namespace |
+| workflows-config.yml | per-env file mapping each instance to its deploy target: compose host, or cluster + namespace |
 | write-back | the CD job committing the deployed image tag into the config tree |
 | loop guard | the rule that a bot write-back commit does not trigger the deploy workflow again |
 

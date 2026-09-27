@@ -63,7 +63,7 @@ Phasing:
 | §5.6 `compose.env` values become container `env` in the instance values | §6.3 |
 | §5.6 One release and one Deployment per AppInstance named `<app>-<instance>`, `replicas: 1` | §5, §6.2 |
 | §5.6 config-lint renders `helm template` | §6.4 (checks in D5 §6.5) |
-| §5.7 ApplicationSet (git directory × cluster generator) replaces `targets.yml` | §4.5, §6.6, Figure 1 |
+| §5.7 ApplicationSet (git directory × cluster generator) replaces `workflows-config.yml` | §4.5, §6.6, Figure 1 |
 | §5.7 Delivery: Argo CD / Flux / CI push; controller placement | §4.2, §4.3, §5 |
 | §5.7 ConfigMap change → rolling restart; RBAC per env; audit; rollback | §6.5, D5 §4.6 |
 | §5.7 Secrets never in the config repo; delivered per DL-31 | §6.3, D2 |
@@ -114,7 +114,7 @@ Phasing:
 | Option | Pros | Cons | When to prefer |
 |---|---|---|---|
 | **Git directory generator** over `config/<env>/*/*/*` excluding `app-common` and `_common`, in a **matrix with a cluster generator** matching `<env>` | the tree is the inventory; adding a directory adds an Application; `path[n]` segments give env, flow, app, instance | requires the directory depth to be exactly the identity tuple (config-lint enforces it) | recommended |
-| List generator fed from `targets.yml` | explicit, works with an irregular tree | a file to keep in sync — what `targets.yml` retirement avoids | transition only |
+| List generator fed from `workflows-config.yml` | explicit, works with an irregular tree | a file to keep in sync — what `workflows-config.yml` retirement avoids | transition only |
 | One hand-written Application per instance | fully explicit | does not scale past a handful | never |
 
 ### 4.6 Pointers for decisions owned elsewhere
@@ -145,7 +145,7 @@ Recommended (to validate):
 |---|---|---|---|
 | R1 | Namespace per `<flow>` in each `<region>-<stage>` cluster; release and Deployment `<app>-<instance>` (DL-38) | RBAC, quotas, NetworkPolicies and sync windows follow the business flow; names stay under Helm's 53-character limit | §4.1 |
 | R2 | Argo CD on EKS (DL-30), per-cluster install for prod, a hub for the non-prod clusters of a region (§4.3) | sync windows are the only controller feature that maps directly to trading-hours deployment windows; prod isolation | §4.2, §4.3 |
-| R3 | ApplicationSet = git directory generator × cluster generator (§4.5); `targets.yml` retires when it goes live | the tree is the inventory; no second file to keep in sync | §4.5 |
+| R3 | ApplicationSet = git directory generator × cluster generator (§4.5); `workflows-config.yml` retires when it goes live | the tree is the inventory; no second file to keep in sync | §4.5 |
 | R4 | The chart never templates secret values: it mounts an existing `Secret <app>-<instance>-secrets` at `/secrets/` and, behind a flag, renders the `ExternalSecret` (D2) | one chart for demo and production; secrets stay out of values and git | D2 §4.3 |
 | R5 | Checksum annotation on the pod template for the Helm-owned ConfigMap; Reloader annotation behind a flag for the ESO-owned `Secret` (D5 §4.6) | rollout exactly when config changes; rotations still reach pods | D5 §4.6 |
 | R6 | `helm upgrade --install --rollback-on-failure --wait --timeout 5m` per instance from CI; `helm rollback` only as the demo's emergency path; on EKS rollback is a git revert | a failed deploy leaves the previous release running (§5.12); the controller owns state on EKS | §6.4 |
@@ -175,7 +175,7 @@ Recommended (to validate):
 |---|---|---|
 | directory `<AppName>/<AppInstance>` | Helm release, Deployment, Application (per-cluster Argo CD) | `source-database-trades-db-to-amps` |
 | `<flow>` | namespace (R1) | `cash` |
-| `<env>` | cluster: `targets.yml` (demo) or cluster generator label `env=us-dev` (Phase 3) | the `us-dev` cluster |
+| `<env>` | cluster: `workflows-config.yml` (demo) or cluster generator label `env=us-dev` (Phase 3) | the `us-dev` cluster |
 | identity tuple | labels on every object | `app.kubernetes.io/name=source-database`, `app.kubernetes.io/instance=source-database-trades-db-to-amps`, `platform.<company>.com/env=us-dev`, `.../flow=cash`, `.../app=source-database`, `.../instance=trades-db-to-amps` |
 | `helm/source-database/values.yaml` | values layer 1 | chart defaults |
 | `config/us-dev/cash/source-database/app-common/values.yaml` | values layer 2 (`-f`) | resources for this env + flow, `env: {TZ: America/New_York}` |
@@ -280,7 +280,7 @@ is the fallback).
 | Sync waves | `-1`: ServiceAccount, `ExternalSecret` (the `Secret` must exist before the pod); `0`: ConfigMap, Deployment, Service; PostSync hook: the smoke-test Job |
 | Sync windows | on the `AppProject`: `deny` during trading hours per flow and region, `allow` in the deployment window (for example `cash` in `us-prod`: weekdays 18:30–21:30 `America/New_York`); `manualSync: false` in prod; region ordering (`jp` before `us`) is a promotion rule in D9, not a window |
 | Image bumps in dev | the `deploy-dev` write-back until Argo CD Image Updater (or a bot PR) replaces it (D4, D9) |
-| Retiring `targets.yml` | delete the env's file once its ApplicationSet is live; config-lint check 11 switches to the ApplicationSet dry-run (D5 check 13) |
+| Retiring `workflows-config.yml` | delete the env's file once its ApplicationSet is live; config-lint check 11 switches to the ApplicationSet dry-run (D5 check 13) |
 
 ## 7. Diagrams
 
@@ -292,7 +292,7 @@ flowchart LR
     ac["us-dev/cash/source-database/app-common/ (values.yaml, application.yml)"]
     i1["us-dev/cash/source-database/trades-db-to-amps/ (values.yaml, application.yml, compose.env)"]
     i2["us-dev/cash/source-database/positions-db-to-deephaven/"]
-    tg["us-dev/cash/targets.yml (demo, one per flow)"]
+    tg["us-dev/cash/workflows-config.yml (demo, one per flow)"]
   end
   subgraph inv["Inventory → one release per instance"]
     dd["deploy-dev job: helm upgrade --install (Demo step 2)"]
@@ -326,7 +326,7 @@ flowchart LR
 
 *Figure 1 — One instance directory becomes one release; the chart is shared, the values and file layers are not.*
 
-Whether the inventory is `targets.yml` read by CI or an ApplicationSet enumerating directories, the
+Whether the inventory is `workflows-config.yml` read by CI or an ApplicationSet enumerating directories, the
 result is the same set of releases, so the demo and Phase 3 (EKS + GitOps) produce identical objects
 in the cluster. The `Secret` enters from the side: never rendered from values.
 
@@ -340,7 +340,7 @@ flowchart LR
   merge["Merge to main"]
   build["build + integration-test + publish image (pre-release tag)"]
   subgraph demo["Demo step 2 (kind + Helm)"]
-    tg["read config/us-dev/*/targets.yml"]
+    tg["read config/us-dev/*/workflows-config.yml"]
     up["helm upgrade --install per instance --rollback-on-failure --wait"]
     ok{"ready in 5m?"}
     wb["write back image.tag / IMAGE_TAG, skip ci"]
@@ -383,7 +383,7 @@ sequenceDiagram
   G->>W: push to main (not by the bot, no skip ci)
   W->>W: build, unit tests, integration tests (compose stack, D10)
   W->>R: push image source-database with the pre-release tag
-  W->>W: deploy-dev: read config/us-dev/*/targets.yml
+  W->>W: deploy-dev: read config/us-dev/*/workflows-config.yml
   loop for each instance with kind helm
     W->>K: kubectl create secret ...-secrets (demo stub, D2)
     W->>K: helm upgrade --install app-instance -n cash -f app-common/values.yaml -f inst/values.yaml --set-file ... --set-string image.tag=TAG --rollback-on-failure --wait --timeout 5m
@@ -417,14 +417,14 @@ the loop guard keys on.
 |---|---|---|
 | `deephaven-connectors/<AppName>/helm/<AppName>/` for `source-database`, `source-kafka` and `source-amps` (`Chart.yaml`, `values.yaml`, `values.schema.json`, `templates/{_helpers.tpl,deployment,configmap,service,serviceaccount,networkpolicy,pdb,servicemonitor,externalsecret}.yaml`, `templates/tests/smoke-test.yaml`, `NOTES.txt`, `README.md`) | three charts, identical apart from `Chart.yaml` and `image.repository` (`diff -r`) | Demo step 2 (kind + Helm) |
 | `config/{local,us-dev}/cash/<AppName>/app-common/values.yaml` and `config/{local,us-dev}/cash/<AppName>/<AppInstance>/values.yaml` | values layers 2 and 3 for every existing app-common and instance directory; `image.tag` equals `IMAGE_TAG` of the sibling `compose.env` (config-lint check 4) | Demo step 2 (kind + Helm) |
-| `config/us-dev/cash/targets.yml` (one inventory per flow since v1.3, DL-39; `defaults: {kind: helm, cluster: kind-ci, namespace: cash}`; `trades-db-to-amps` is `kind: compose`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
+| `config/us-dev/cash/workflows-config.yml` (one inventory per flow since v1.3, DL-39; `defaults: {kind: helm, cluster: kind-ci, namespace: cash}`; `trades-db-to-amps` is `kind: compose`) | inventory for `deploy-dev` | Demo step 2 (kind + Helm) |
 | `scripts/helm-deploy-instance.sh`, `scripts/helm-smoke-diff.sh` | the one implementation of §6.4 (§8.3); the smoke diff of §7 | Demo step 2 (kind + Helm) |
 | `build-logic/src/main/kotlin/buildlogic/ConfigLint*.kt` (checks 3, 4, 10, 12), `.github/workflows/config-lint.yml` (`setup-kube-tools`: helm, kubeconform) | D5 check 12: `helm lint` / `helm template` per instance, kubeconform on the rendered releases | Demo step 2 (kind + Helm) |
 | `test-infra/kind/{versions.env,cluster.yaml,kind.sh,README.md}`; `.github/actions/{setup-kube-tools,kind-cluster,helm-deploy-instance}/action.yml` | pinned tools; the kind lifecycle (`up`, `load`, `diagnostics`, `down`, `leak-check`, D10); the composite actions of D7 | Demo step 2 (kind + Helm) |
 | `.github/workflows/_kind-deploy.yml`, called by `pr.yml` (job `kind-deploy`, when the affected map's `deploy-test` matches and this run pushed the `source-database` image) and by `main.yml` (between `publish` and `deploy-dev`) | acceptance criterion "Demo step 2" of §7: cluster `ci-<run_id>-<attempt>`, the run's image loaded by digest, one release per instance directory of `config/us-dev/*/source-database/`, `helm test`, smoke diff, diagnostics on failure, `kind.sh down` + `leak-check` in `always()` | Demo step 2 (kind + Helm) |
 | `.github/workflows/_deploy-dev.yml` (Helm adapter for `cluster: kind-ci`), `scripts/ci/write-back-tag.sh` (`WRITE_BACK_KINDS=compose,helm`) | §6.4 commands into a kind cluster created in the job (`deploy-<run_id>-<attempt>`, deleted in `always()`); write-back of `IMAGE_TAG` and `image.tag` together; any other `cluster` fails with `TODO(Phase 3)` | Demo step 2 (kind + Helm) |
 | `templates/externalsecret.yaml`, `servicemonitor.yaml`, `pdb.yaml`, `networkpolicy.yaml` | rendered only behind `enabled` flags, all off in the demo | Phase 3 (EKS + GitOps) |
-| ApplicationSet and `AppProject` manifests — proposed location `config/<env>/_argocd/` next to `targets.yml` (assumption) | replaces `targets.yml` | Phase 3 (EKS + GitOps) |
+| ApplicationSet and `AppProject` manifests — proposed location `config/<env>/_argocd/` next to `workflows-config.yml` (assumption) | replaces `workflows-config.yml` | Phase 3 (EKS + GitOps) |
 | `docs/adr/` | ADRs for DL-30 (EKS), DL-38, DL-34 once confirmed | phase 1 review |
 
 ### 8.2 Chart `values.yaml` (abridged; `deephaven-connectors/<AppName>/helm/<AppName>/values.yaml` is authoritative)
@@ -499,7 +499,7 @@ prints the commands with the Secret's values masked.
 
 The kind job (`_kind-deploy.yml`) and `deploy-dev` call it through the composite action
 `.github/actions/helm-deploy-instance`, which runs it for every instance directory (or every
-`targets.yml` target), first renders each release to check that every container image was loaded into
+`workflows-config.yml` target), first renders each release to check that every container image was loaded into
 kind, and writes the job-summary table (release, namespace, revision, ready, `helm test`, result).
 config-lint calls `--mode lint` and `--mode template` (D5 check 12). In Phase 3 (EKS + GitOps) the
 ApplicationSet of §6.6 renders the same flags.
@@ -514,7 +514,7 @@ ApplicationSet of §6.6 renders the same flags.
 | DL-30 GitOps controller on EKS (Argo CD leaning) and hub vs per-cluster placement | open for EKS | Phase 3 (EKS + GitOps) |
 | DL-31 secrets delivery (ESO leaning; chart flag) | open | Phase 3 (EKS + GitOps), D2 |
 | DL-34 registry for EKS (JFrog direct vs ECR mirror) | open | `image.repository`, `imagePullSecrets` values |
-| DL-38 namespace layout (per flow leaning) | open | `targets.yml` defaults, `AppProject` destinations |
+| DL-38 namespace layout (per flow leaning) | open | `workflows-config.yml` defaults, `AppProject` destinations |
 | DL-20 tag vs digest pinning per env | open | `image.digest` usage in qa / prod values |
 | DL-09 bump delivery for qa / prod | open for qa / prod | D9 |
 | DL-32 Kubernetes test tier beyond kind (dev EKS namespace) | open for Phase 3 | D10 |

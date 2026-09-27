@@ -218,7 +218,7 @@ class ConfigLinter(
         val pools = mutableListOf<FlowPool>()
         for (child in envDir.listFiles().orEmpty().sortedBy { it.name }) {
             when {
-                child.isFile && child.name == "targets.yml" -> error(11, child, "moved to config/$env/<flow>/targets.yml: one " +
+                child.isFile && (child.name == "workflows-config.yml" || child.name == "targets.yml") -> error(11, child, "moved to config/$env/<flow>/workflows-config.yml: one " +
                     "deploy inventory per flow (env, flow, pool, defaults, targets; D5 §6.6, DL-39)")
                 child.isFile && child.name == "README.md" -> Unit
                 child.isFile && child.name == "known_hosts" -> lintKnownHosts(child)
@@ -236,12 +236,16 @@ class ConfigLinter(
         checkSharedBoxes(pools)
     }
 
-    /** Returns the flow's pool (check 11) when its targets.yml declares one. */
+    /** Returns the flow's pool (check 11) when its workflows-config.yml declares one. */
     private fun lintFlow(flowDir: File, env: String, appsSeen: MutableSet<String>): FlowPool? {
         val instances = mutableListOf<String>()
         for (appDir in flowDir.listFiles().orEmpty().sortedBy { it.name }) {
             if (!appDir.isDirectory) {
-                if (appDir.name != "targets.yml") error(1, appDir, "unexpected file in a flow directory (expected targets.yml and <AppName>/)")
+                when (appDir.name) {
+                    "workflows-config.yml" -> Unit
+                    "targets.yml" -> error(11, appDir, "renamed: the flow's deploy inventory is workflows-config.yml (D5 §6.6, DL-39)")
+                    else -> error(1, appDir, "unexpected file in a flow directory (expected workflows-config.yml and <AppName>/)")
+                }
                 continue
             }
             val app = appDir.name
@@ -275,7 +279,7 @@ class ConfigLinter(
                 lintInstance(instDir, env, flowDir.name, app, commonEnv, commonComplete)
             }
         }
-        val targetsFile = File(flowDir, "targets.yml")
+        val targetsFile = File(flowDir, "workflows-config.yml")
         return when {
             env.endsWith("-dev") && !targetsFile.isFile -> {
                 error(3, targetsFile, "required in every flow of a *-dev env (the flow's deploy-dev inventory, D5 §6.6)")
@@ -283,7 +287,7 @@ class ConfigLinter(
             }
             env.endsWith("-dev") -> lintTargets(targetsFile, env, flowDir.name, instances)
             targetsFile.isFile -> {
-                warn(11, targetsFile, "only *-dev envs are deployed from targets.yml; this file is ignored")
+                warn(11, targetsFile, "only *-dev envs are deployed from workflows-config.yml; this file is ignored")
                 lintTargets(targetsFile, env, flowDir.name, instances)
             }
             else -> null
@@ -686,7 +690,7 @@ class ConfigLinter(
         }
     }
 
-    // --- check 11: config/<env>/<flow>/targets.yml (D5 §6.6) and the host pool of DL-39 --------------------
+    // --- check 11: config/<env>/<flow>/workflows-config.yml (D5 §6.6) and the host pool of DL-39 --------------------
 
     /** The `pool` of one flow: the boxes of `<env>/<flow>`, reached as [user], the bundle under [root]. */
     private data class Pool(val hosts: List<String>, val user: String, val root: String)

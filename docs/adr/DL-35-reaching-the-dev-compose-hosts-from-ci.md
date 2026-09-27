@@ -10,7 +10,7 @@
 ## Context
 
 In demo step 1 the `deploy-dev` job must run `run-compose.sh <env> <flow> <app> <inst> pull`, `start`,
-`health` on the dev compose hosts listed in `config/us-dev/cash/targets.yml`. GitHub-hosted runners may or
+`health` on the dev compose hosts listed in `config/us-dev/cash/workflows-config.yml`. GitHub-hosted runners may or
 may not reach those hosts; a self-hosted runner on the host is the one exception §7 allows.
 
 ## Decision

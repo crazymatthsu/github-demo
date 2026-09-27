@@ -27,7 +27,7 @@ with the release name `<app>-<instance>` unique inside it.
 
 - Argo CD `AppProject`, sync windows and RBAC align with the flow (D9, D11).
 - NetworkPolicies and PSS labels are applied per flow namespace (D6).
-- `targets.yml` carries a `namespace` field equal to the flow until the ApplicationSet derives it (D11).
+- `workflows-config.yml` carries a `namespace` field equal to the flow until the ApplicationSet derives it (D11).
 
 ## References
 

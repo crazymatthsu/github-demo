@@ -1,7 +1,7 @@
 # Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-32, DL-35, DL-36,
 # DL-39).
 #
-# Reads one inventory per flow, config/<env>/<flow>/targets.yml (D5 §6.6): env and flow restate the path,
+# Reads one inventory per flow, config/<env>/<flow>/workflows-config.yml (D5 §6.6): env and flow restate the path,
 # targets[].instance is <AppName>/<AppInstance> (the job prefixes the flow: <flow>/<AppName>/<AppInstance>),
 # kind is compose | helm, cluster and namespace belong to helm targets, `pool` lists the flow's bare-metal
 # boxes. Each field comes from the target, else from defaults (kind else compose, namespace else the flow, DL-38).
@@ -21,7 +21,7 @@
 #                          TODO(Phase 3) below.
 # Then the deployed tag is written back to the config tree by the bot with `[skip ci]` (loop guard,
 # DL-36) — IMAGE_TAG in compose.env and image.tag in values.yaml of every deployed instance, never of a
-# failed one, plus the box of every pooled instance as `host` in its flow's targets.yml — and the run is
+# failed one, plus the box of every pooled instance as `host` in its flow's workflows-config.yml — and the run is
 # recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
 # touched: the job refuses any env that is not *-dev, and so do run-compose.sh, helm-deploy-instance.sh
 # and write-back-tag.sh.
@@ -98,20 +98,21 @@ jobs:
         id: targets
         run: |
           set -euo pipefail
-          # One inventory per flow (D5 §6.6): merge config/<env>/<flow>/targets.yml into one list with the
+          # One inventory per flow (D5 §6.6): merge config/<env>/<flow>/workflows-config.yml into one list with the
           # flow prepended to every instance, so everything below sees <flow>/<AppName>/<AppInstance>.
-          if [[ -f config/$DEPLOY_ENV/targets.yml ]]; then
-            echo "::error::config/$DEPLOY_ENV/targets.yml moved to config/$DEPLOY_ENV/<flow>/targets.yml (one inventory per flow, DL-39)"
+          for legacy in config/"$DEPLOY_ENV"/targets.yml config/"$DEPLOY_ENV"/workflows-config.yml config/"$DEPLOY_ENV"/*/targets.yml; do
+            [[ -f $legacy ]] || continue
+            echo "::error::$legacy: the deploy inventory is config/$DEPLOY_ENV/<flow>/workflows-config.yml (one per flow, DL-39)"
             exit 1
-          fi
+          done
           files=()
-          for file in config/"$DEPLOY_ENV"/*/targets.yml; do
-            if [[ -f $file && $file != "config/$DEPLOY_ENV/_common/targets.yml" ]]; then files+=("$file"); fi
+          for file in config/"$DEPLOY_ENV"/*/workflows-config.yml; do
+            if [[ -f $file && $file != "config/$DEPLOY_ENV/_common/workflows-config.yml" ]]; then files+=("$file"); fi
           done
           echo '[]' > "$RUNNER_TEMP/targets.raw.json"
           echo '{}' > "$RUNNER_TEMP/pools.json"
           if [[ ${#files[@]} -eq 0 ]]; then
-            echo "::warning::no config/$DEPLOY_ENV/<flow>/targets.yml found — nothing to deploy"
+            echo "::warning::no config/$DEPLOY_ENV/<flow>/workflows-config.yml found — nothing to deploy"
           fi
           for file in "${files[@]}"; do
             flow=$(basename "$(dirname "$file")")
@@ -140,7 +141,7 @@ jobs:
           done
           jq -e 'all(.[]; (.instance | type == "string" and test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$")) and (.kind == "compose" or .kind == "helm"))' \
             "$RUNNER_TEMP/targets.raw.json" >/dev/null ||
-            { echo "::error::every target needs instance <AppName>/<AppInstance> and kind compose | helm (config/$DEPLOY_ENV/<flow>/targets.yml)"; exit 1; }
+            { echo "::error::every target needs instance <AppName>/<AppInstance> and kind compose | helm (config/$DEPLOY_ENV/<flow>/workflows-config.yml)"; exit 1; }
           # compose targets keep host and user; helm targets keep cluster and namespace, "{flow}" → the flow.
           jq -c 'map((.instance | split("/")[0]) as $flow
               | if .kind == "helm" then del(.host, .user) | .namespace |= gsub("\\{flow\\}"; $flow)
@@ -183,7 +184,7 @@ jobs:
           POOLED_FLOWS: ${{ steps.targets.outputs.pooled }}
         run: |
           set -euo pipefail
-          # A flow whose targets.yml declares a `pool` (DL-39): scripts/pool-deploy.sh builds the flow's host
+          # A flow whose workflows-config.yml declares a `pool` (DL-39): scripts/pool-deploy.sh builds the flow's host
           # bundle from this checkout (validated from inside with IMAGE_TAG=<tag>), syncs it to every box of the
           # pool, resolves each instance's box (pinned → discovered → assigned) and runs, there,
           #   IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <inst> pull → start → health
@@ -291,11 +292,11 @@ jobs:
               IFS=/ read -r flow app inst <<<"$instance"
               wrapper="deephaven-connectors/$app/scripts/run-compose.sh"
               remote_cmd="IMAGE_TAG=$DEPLOY_TAG run-compose.sh $DEPLOY_ENV $flow $app $inst"
-              ssh_cmd="ssh ${user}@${host:-<host missing in targets.yml>} '$remote_cmd pull && $remote_cmd start && $remote_cmd health'"
+              ssh_cmd="ssh ${user}@${host:-<host missing in workflows-config.yml>} '$remote_cmd pull && $remote_cmd start && $remote_cmd health'"
               echo "::group::$instance"
               result=validated
               if [[ -z $host ]]; then
-                echo "::error::$instance: no host in config/$DEPLOY_ENV/$flow/targets.yml and no pool"
+                echo "::error::$instance: no host in config/$DEPLOY_ENV/$flow/workflows-config.yml and no pool"
                 result="failed: no host"
               elif [[ ! -f $wrapper ]]; then
                 echo "::error::$instance: $wrapper not found"
@@ -460,7 +461,7 @@ jobs:
         if: ${{ !cancelled() && steps.deployed.outputs.list != '' }}
         env:
           DEPLOYED: ${{ steps.deployed.outputs.list }}
-          # The boxes pool-deploy.sh chose, recorded as `host` in each flow's targets.yml (DL-39).
+          # The boxes pool-deploy.sh chose, recorded as `host` in each flow's workflows-config.yml (DL-39).
           WRITE_BACK_PLACEMENTS: ${{ steps.compose.outputs.placements }}
         run: |
           set -euo pipefail

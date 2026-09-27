@@ -110,11 +110,11 @@ in_dir() { # <dir> <command...>: the command, run from <dir>
     shift
     (cd "$dir" && "$@")
 }
-# fixture <name> [yq expression for us-dev/cash/targets.yml]: a copy of config/, printed as a CONFIG_ROOT.
+# fixture <name> [yq expression for us-dev/cash/workflows-config.yml]: a copy of config/, printed as a CONFIG_ROOT.
 fixture() {
     mkdir -p "$WORK/$1"
     cp -R "$REPO/config" "$WORK/$1/config"
-    [ -z "${2:-}" ] || yq -i "$2" "$WORK/$1/config/us-dev/cash/targets.yml"
+    [ -z "${2:-}" ] || yq -i "$2" "$WORK/$1/config/us-dev/cash/workflows-config.yml"
     printf '%s' "$WORK/$1/config"
 }
 known_hosts() { # the reviewed host keys the ssh transport requires (a test key, public)
@@ -134,12 +134,12 @@ case_bundle() { # the layout and marker for us-dev/cash; every instance validate
     m="$b/.platform-bundle"
     for f in .platform-bundle scripts/run-compose.sh scripts/smoke.sh deephaven-connectors/source-database/docker/docker-compose.yml \
         deephaven-connectors/source-database/scripts/run-compose.sh deephaven-connectors/source-database/scripts/smoke.sh \
-        config/_common/source-database/application.yml config/us-dev/_common/application.yml config/us-dev/cash/targets.yml \
+        config/_common/source-database/application.yml config/us-dev/_common/application.yml config/us-dev/cash/workflows-config.yml \
         config/us-dev/cash/source-database/app-common/application.yml config/us-dev/cash/source-database/trades-db-to-amps/compose.env \
         config/us-dev/cash/source-database/positions-db-to-deephaven/application.yml; do
         [ -f "$b/$f" ] || fail "the bundle lacks $f"
     done
-    for f in config/us-dev/targets.yml config/local deephaven-connectors/source-amps deephaven-connectors/source-kafka \
+    for f in config/us-dev/workflows-config.yml config/local deephaven-connectors/source-amps deephaven-connectors/source-kafka \
         deephaven-connectors/source-database/src deephaven-connectors/source-database/build scripts/ci scripts/test .git; do
         [ ! -e "$b/$f" ] || fail "the bundle holds $f"
     done
@@ -285,7 +285,7 @@ case_sync_local() { # the local transport: every box gets the same complete tree
     [ ! -e "$one/stale.txt" ] || fail "sync kept a file the bundle does not have"
     expect_in "synced and verified" "$ERR"
     # A changed bundle is refused rather than synced.
-    echo tampered >>"$b/config/us-dev/cash/targets.yml"
+    echo tampered >>"$b/config/us-dev/cash/workflows-config.yml"
     run env CONFIG_ROOT="$cfg" "$POOL_DEPLOY" us-dev cash sync --bundle "$b" --transport local --local-root "$boxes"
     expect_rc 4
     expect_in "changed since it was built" "$ERR"
@@ -345,7 +345,7 @@ case_refusals() { # env, flow, pool and usage rules
     cfg="$(fixture refusals)"
     run env CONFIG_ROOT="$cfg" "$POOL_DEPLOY" us-dev deriv plan --dry-run
     expect_rc 4
-    expect_in "config/us-dev/deriv/targets.yml not found" "$ERR"
+    expect_in "config/us-dev/deriv/workflows-config.yml not found" "$ERR"
     cfg="$(fixture refusals-no-pool 'del(.pool) | .targets[0].host = "dev-compose-01.us-dev.example.com"')"
     run env CONFIG_ROOT="$cfg" "$POOL_DEPLOY" us-dev cash plan --dry-run
     expect_rc 4
@@ -442,7 +442,7 @@ case_ssh_deploy() { # the ssh transport end to end: rsync verified per box, the 
     expect_json "$(cat "$report")" '.placements[0] | "\(.how) \(.result) \(.commands | length)"' "assigned deployed 3"
     # A verification that finds a difference fails the box; with no box left nothing is deployed.
     run env CONFIG_ROOT="$cfg" POOL_SSH="$STUB/ssh" POOL_RSYNC="$STUB/rsync" STUB_LOG="$log" \
-        STUB_RSYNC_CHANGES='>f..t...... config/us-dev/cash/targets.yml\n' "$POOL_DEPLOY" us-dev cash deploy --tag t1 --transport ssh
+        STUB_RSYNC_CHANGES='>f..t...... config/us-dev/cash/workflows-config.yml\n' "$POOL_DEPLOY" us-dev cash deploy --tag t1 --transport ssh
     expect_rc 1
     expect_in "the synced tree differs from the bundle" "$ERR"
     expect_not_in "deployed" "$OUT"
@@ -472,7 +472,7 @@ case_local_execute() { # POOL_LOCAL_EXECUTE=true: the real run-compose.sh comman
     [[ $(tail -n 1 <<<"$starts") != *override=* ]] || fail "the second start carries the override: $starts"
 }
 
-case_write_back() { # the box is recorded as host in the flow's targets.yml, in the tag's commit; idempotent
+case_write_back() { # the box is recorded as host in the flow's workflows-config.yml, in the tag's commit; idempotent
     local g="$WORK/write-back" count targets
     mkdir -p "$g"
     git init -q --bare "$g/remote.git"
@@ -488,10 +488,10 @@ case_write_back() { # the box is recorded as host in the flow's targets.yml, in 
         "$REPO/scripts/ci/write-back-tag.sh" us-dev 0.1.0-rc.99
     expect_rc 0
     expect_in "cash/source-database/gone was not deployed" "$ERR"
-    targets="$(git -C "$g/remote.git" show main:config/us-dev/cash/targets.yml)"
+    targets="$(git -C "$g/remote.git" show main:config/us-dev/cash/workflows-config.yml)"
     expect_json "$(yq -o=json '.' <<<"$targets")" '.targets[] | select(.instance == "source-database/trades-db-to-amps") | .host' "$H2"
-    [ "$(git -C "$g/remote.git" diff main~1 main -- config/us-dev/cash/targets.yml | grep -c '^[-+] ')" -eq 1 ] ||
-        fail "the placement is not a one-line change: $(git -C "$g/remote.git" diff main~1 main -- config/us-dev/cash/targets.yml)"
+    [ "$(git -C "$g/remote.git" diff main~1 main -- config/us-dev/cash/workflows-config.yml | grep -c '^[-+] ')" -eq 1 ] ||
+        fail "the placement is not a one-line change: $(git -C "$g/remote.git" diff main~1 main -- config/us-dev/cash/workflows-config.yml)"
     expect_in "IMAGE_TAG=0.1.0-rc.99" "$(git -C "$g/remote.git" show main:config/us-dev/cash/source-database/trades-db-to-amps/compose.env)"
     expect_in "chore(config): us-dev deployed 0.1.0-rc.99 [skip ci]" "$(git -C "$g/remote.git" log -1 --format=%B main)"
     expect_in "us-dev/$TRADES on $H2" "$(git -C "$g/remote.git" log -1 --format=%B main)"
@@ -502,11 +502,11 @@ case_write_back() { # the box is recorded as host in the flow's targets.yml, in 
     expect_rc 0
     expect_in "nothing to write back" "$OUT"
     [ "$(git -C "$g/remote.git" rev-list --count main)" = "$count" ] || fail "an idempotent write-back committed"
-    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/targets.yml" source-database/gone "$H1"
+    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/workflows-config.yml" source-database/gone "$H1"
     expect_rc 4
-    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/targets.yml" source-database/trades-db-to-amps dev-other.example.com
+    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/workflows-config.yml" source-database/trades-db-to-amps dev-other.example.com
     expect_rc 4
-    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/targets.yml" "$TRADES" "$H1"
+    run "$REPO/scripts/ci/set-target-host.sh" "$g/work/config/us-dev/cash/workflows-config.yml" "$TRADES" "$H1"
     expect_rc 2
 }
 

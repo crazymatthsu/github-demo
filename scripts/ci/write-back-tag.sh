@@ -6,10 +6,10 @@
 #   Sets the tag in both files of every deployed instance under config/<env>/<flow>/<AppName>/<AppInstance>/:
 #   IMAGE_TAG=<tag> in compose.env and image.tag in values.yaml (demo step 2; skipped while an instance has
 #   no values.yaml), so the two always agree (config-lint check 4) whether compose or Helm deployed it.
-#   The instances are the ones given, or else every target of every flow's config/<env>/<flow>/targets.yml
+#   The instances are the ones given, or else every target of every flow's config/<env>/<flow>/workflows-config.yml
 #   whose effective kind (target `kind`, else `defaults.kind`, else compose) is listed in WRITE_BACK_KINDS.
 #   WRITE_BACK_PLACEMENTS="<flow>/<AppName>/<AppInstance>=<host> ..." (the boxes scripts/pool-deploy.sh chose)
-#   records each one as `host` of the instance's target in config/<env>/<flow>/targets.yml
+#   records each one as `host` of the instance's target in config/<env>/<flow>/workflows-config.yml
 #   (scripts/ci/set-target-host.sh) — only for instances in the deployed list. On top of the current tip of
 #   the branch it commits
 #       chore(config): <env> deployed <tag> [skip ci]
@@ -20,9 +20,9 @@
 # Environment: WRITE_BACK_BRANCH (main) · WRITE_BACK_REMOTE (origin) · WRITE_BACK_KINDS (compose,helm)
 #   WRITE_BACK_PLACEMENTS (none) · WRITE_BACK_PUSH (true; false commits in a scratch worktree only — for
 #   tests and dry runs) · WRITE_BACK_ATTEMPTS (3: re-applied on a fresh tip when the push loses a race)
-#   values.yaml and targets.yml are edited with mikefarah yq v4 (preinstalled on GitHub-hosted runners).
+#   values.yaml and workflows-config.yml are edited with mikefarah yq v4 (preinstalled on GitHub-hosted runners).
 # Exit codes: 0 written, or nothing to write · 1 git, push or yq failure · 2 usage · 3 refused (env is
-#   not *-dev) · 4 config tree error (no targets.yml, an instance's compose.env missing, a values.yaml
+#   not *-dev) · 4 config tree error (no workflows-config.yml, an instance's compose.env missing, a values.yaml
 #   without an image.tag to set, or a placement without its target or outside the flow's pool).
 #
 # TODO(DL-09): the enterprise identity is a GitHub App installation token (actor <app>[bot], allowed
@@ -61,12 +61,12 @@ if [[ ${#instances[@]} -eq 0 ]]; then
   # One inventory per flow (D5 §6.6): its instances are <AppName>/<AppInstance>, relative to the flow.
   shopt -s nullglob
   inventories=()
-  for targets in "config/$env_name"/*/targets.yml; do
+  for targets in "config/$env_name"/*/workflows-config.yml; do
     [[ $targets == "config/$env_name/_common/"* ]] || inventories+=("$targets")
   done
   shopt -u nullglob
   [[ ${#inventories[@]} -gt 0 ]] ||
-    { echo "write-back-tag.sh: no config/$env_name/<flow>/targets.yml and no instances given" >&2; exit 4; }
+    { echo "write-back-tag.sh: no config/$env_name/<flow>/workflows-config.yml and no instances given" >&2; exit 4; }
   # shellcheck disable=SC2016 # $d is a yq variable
   query='(.defaults.kind // "compose") as $d | (.targets // [])[] | [.instance, (.kind // $d)] | @tsv'
   for targets in "${inventories[@]}"; do
@@ -136,10 +136,10 @@ apply() { # prints the changed files
       return 4
     fi
   done
-  # The box of each pooled instance, as `host` of its target in the flow's targets.yml.
+  # The box of each pooled instance, as `host` of its target in the flow's workflows-config.yml.
   for instance in "${instances[@]}"; do
     [[ -n ${placement[$instance]:-} ]] || continue
-    "$here/set-target-host.sh" "$worktree/config/$env_name/${instance%%/*}/targets.yml" "${instance#*/}" \
+    "$here/set-target-host.sh" "$worktree/config/$env_name/${instance%%/*}/workflows-config.yml" "${instance#*/}" \
       "${placement[$instance]}" || return
   done
 }

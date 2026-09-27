@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # set-target-host.sh — record the box an instance runs on in its flow's inventory (DL-39; D5 §6.6, D9 §6.4).
 #
-# Usage: set-target-host.sh <config/<env>/<flow>/targets.yml> <AppName>/<AppInstance> <host>
+# Usage: set-target-host.sh <config/<env>/<flow>/workflows-config.yml> <AppName>/<AppInstance> <host>
 #   Sets `host: <host>` on the targets[] entry whose instance is <AppName>/<AppInstance> (mikefarah yq v4): the
 #   entry's other keys and the file's comments stay, and in yq's own layout the edit is one line. When the file
 #   declares a pool, <host> must be one of its boxes. Prints the file when its content changed, as

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # pool-deploy.sh — host pools per env/flow for the bare-metal compose targets (DL-39; D9 §6.4, D5 §6.6).
 #
-# Every box of the `pool` in config/<env>/<flow>/targets.yml (one inventory per flow) receives the flow's host
+# Every box of the `pool` in config/<env>/<flow>/workflows-config.yml (one inventory per flow) receives the flow's host
 # bundle — the compose runtime plus every app, instance and layer of the flow — so any instance of the flow can run
-# on any box. Each compose target runs on exactly one box, resolved as pinned (`host` in targets.yml) → discovered
+# on any box. Each compose target runs on exactly one box, resolved as pinned (`host` in workflows-config.yml) → discovered
 # (the one box it already runs on) → assigned (the box with the fewest placements); deploy-dev writes the chosen
 # box back as `host` (scripts/ci/set-target-host.sh). The one implementation behind the pooled flows of
 # .github/workflows/_deploy-dev.yml; transports ssh (DL-35), local (the runner plays every box: the demo, until
@@ -31,7 +31,7 @@ usage() {
     cat <<'EOF'
 Usage: pool-deploy.sh <env> <flow> <command> [options]
 
-Host pools (DL-39): every box of the pool in config/<env>/<flow>/targets.yml (one inventory per flow) holds the
+Host pools (DL-39): every box of the pool in config/<env>/<flow>/workflows-config.yml (one inventory per flow) holds the
 flow's whole configuration and the compose runtime (the host bundle, under the pool's root), so any instance of
 the flow can run on any box; each compose target of the flow runs on exactly one box. Instances are named
 <flow>/<AppName>/<AppInstance> in the output, as deploy-dev and the write-back use them.
@@ -42,7 +42,7 @@ Commands:
            .platform-bundle manifest, then run-compose.sh ... validate every compose target of the flow from
            inside it (IMAGE_TAG=<tag> when given; placeholder values for the secrets). Prints the manifest.
   plan     [--tag <tag>] [--json]
-           the pool and the box of every compose target: pinned (host in targets.yml) → discovered (the one
+           the pool and the box of every compose target: pinned (host in workflows-config.yml) → discovered (the one
            box it runs on) → assigned (the box with the fewest placements so far, ties in pool order). JSON:
            {env, flow, tag, transport, discovery, pool: {hosts, user, root}, placements: [{instance, host, how}]}
   sync     --bundle <dir>
@@ -83,13 +83,13 @@ Environment: CONFIG_ROOT (default <repo>/config) · POOL_SSH (ssh binary, defaul
   -o UserKnownHostsFile=<CONFIG_ROOT>/<env>/known_hosts; without that file the ssh transport refuses (5): an
   unknown host key is never accepted) · POOL_LOCAL_EXECUTE (local transport: true runs the commands for real)
 Exit codes: 0 ok · 1 transport or command failure (after trying every box and instance) · 2 usage ·
-  3 refused (env not local / *-dev) · 4 config tree or targets error (no targets.yml or no pool for the flow,
+  3 refused (env not local / *-dev) · 4 config tree or targets error (no workflows-config.yml or no pool for the flow,
   host not in the pool, missing files, a bundle that does not validate or changed since it was built) ·
   5 tool missing (yq v4, jq, rsync, ssh, sha256sum, known_hosts) · 6 placement conflict (an instance running on
   more than one box, or on a box other than its pin without --move)
 Bundle: scripts/run-compose.sh and smoke.sh; per app with a directory under config/<env>/<flow>/ its compose
   template and wrappers; config/_common/<app>/, config/<env>/_common/, config/<env>/<flow>/<app>/,
-  config/<env>/<flow>/targets.yml, and config/<env>/known_hosts when present. BUNDLE_SHA256 is the sha256 of
+  config/<env>/<flow>/workflows-config.yml, and config/<env>/known_hosts when present. BUNDLE_SHA256 is the sha256 of
   the sorted "<sha256>  <path>" lines of every file but .platform-bundle and .state/. A sync is verified by
   rsync's exit code and a second rsync --dry-run --itemize-changes --checksum that must list no change; a local
   box also recomputes BUNDLE_SHA256.
@@ -201,7 +201,7 @@ fi
 # --- tools (5) --------------------------------------------------------------------------------------------
 
 yq --version 2>/dev/null | grep -q mikefarah ||
-    die "$EXIT_TOOL" "mikefarah yq v4 is needed to read targets.yml (preinstalled on GitHub-hosted runners)"
+    die "$EXIT_TOOL" "mikefarah yq v4 is needed to read workflows-config.yml (preinstalled on GitHub-hosted runners)"
 command -v jq >/dev/null 2>&1 || die "$EXIT_TOOL" "jq is needed (preinstalled on GitHub-hosted runners)"
 SHA256=()
 if command -v sha256sum >/dev/null 2>&1; then
@@ -223,7 +223,7 @@ CONFIG_ROOT="${CONFIG_ROOT:-$REPO_ROOT/config}"
 [ -d "$CONFIG_ROOT" ] || die "$EXIT_CONFIG" "config tree not found: $CONFIG_ROOT"
 CONFIG_ROOT="$(cd "$CONFIG_ROOT" && pwd -P)"
 ENV_DIR="$CONFIG_ROOT/$ENV_NAME"
-TARGETS_FILE="$ENV_DIR/$FLOW/targets.yml"
+TARGETS_FILE="$ENV_DIR/$FLOW/workflows-config.yml"
 KNOWN_HOSTS="$ENV_DIR/known_hosts"
 [ -f "$TARGETS_FILE" ] || die "$EXIT_CONFIG" "$(rel "$TARGETS_FILE") not found (the flow's deploy-dev inventory, D5 §6.6)"
 TARGETS_JSON="$(yq -o=json -I=0 '.' "$TARGETS_FILE" 2>&1)" || die "$EXIT_CONFIG" "$(rel "$TARGETS_FILE") does not parse: $TARGETS_JSON"
@@ -259,7 +259,7 @@ app_rel() {
     return 1
 }
 
-# Compose targets of the flow in targets.yml order (kind from the target, else defaults, else compose — as
+# Compose targets of the flow in workflows-config.yml order (kind from the target, else defaults, else compose — as
 # deploy-dev reads it), named <flow>/<AppName>/<AppInstance> from here on; T_PIN is the recorded placement (host,
 # else defaults.host), empty when there is none.
 T_INSTANCE=() T_PIN=()
@@ -453,7 +453,7 @@ build_bundle() { # <out> <tag>
     done
     [ ! -d "$ENV_DIR/_common" ] || copy_tree "$ENV_DIR/_common" "config/$ENV_NAME/_common"
     mkdir -p "$OUT_DIR/config/$ENV_NAME/$FLOW"
-    cp -p "$TARGETS_FILE" "$OUT_DIR/config/$ENV_NAME/$FLOW/targets.yml"
+    cp -p "$TARGETS_FILE" "$OUT_DIR/config/$ENV_NAME/$FLOW/workflows-config.yml"
     # The pinned host keys: run-compose.sh's pool guard on a box asks the other boxes with them.
     [ ! -f "$KNOWN_HOSTS" ] || cp -p "$KNOWN_HOSTS" "$OUT_DIR/config/$ENV_NAME/known_hosts"
     find "$OUT_DIR" -mindepth 1 -type d -name .state -prune -exec rm -rf {} +
@@ -512,7 +512,7 @@ load_bundle() { # <dir>: a bundle of this env, flow and pool, unchanged since it
     fi
     hosts="$(manifest_value "$manifest" POOL_HOSTS)" user="$(manifest_value "$manifest" POOL_USER)" root="$(manifest_value "$manifest" POOL_ROOT)"
     if [ "$hosts" != "${POOL_HOSTS[*]}" ] || [ "$user" != "$POOL_USER" ] || [ "$root" != "$POOL_ROOT" ]; then
-        die "$EXIT_CONFIG" "$1 was built for pool '$hosts' ($user, $root), targets.yml now says '${POOL_HOSTS[*]}' ($POOL_USER, $POOL_ROOT): rebuild it"
+        die "$EXIT_CONFIG" "$1 was built for pool '$hosts' ($user, $root), workflows-config.yml now says '${POOL_HOSTS[*]}' ($POOL_USER, $POOL_ROOT): rebuild it"
     fi
     BUNDLE_FILES="$(manifest_value "$manifest" BUNDLE_FILES)" BUNDLE_SHA256="$(manifest_value "$manifest" BUNDLE_SHA256)"
     BUNDLE_TAG="$(manifest_value "$manifest" BUNDLE_TAG)"
@@ -671,7 +671,7 @@ plan_placements() {
                 if [ "$MOVE" -eq 1 ]; then
                     PLACE_FROM[i]="${running[0]}"
                 else
-                    CONFLICTS+=("$instance is pinned to $pin but running on ${running[0]}: deploy --move stops it there first, or record ${running[0]} as its host in targets.yml")
+                    CONFLICTS+=("$instance is pinned to $pin but running on ${running[0]}: deploy --move stops it there first, or record ${running[0]} as its host in workflows-config.yml")
                     PLACE_HOW[i]=conflict
                 fi
             fi

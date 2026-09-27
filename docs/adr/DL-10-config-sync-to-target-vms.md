@@ -20,7 +20,7 @@ development and CI read the checked-out config tree directly and need no synchro
 compose hosts of demo step 1 are driven by the `deploy-dev` job (DL-35), not by a sync agent.
 
 > **Update 2026-09-27 (v1.3):** DL-39 reopens this question for the on-prem compose boxes only: the
-> `deploy-dev` job syncs a per-flow host bundle to every box of a `targets.yml` pool over the DL-35 SSH
+> `deploy-dev` job syncs a per-flow host bundle to every box of a `workflows-config.yml` pool over the DL-35 SSH
 > channel. Clusters stay with DL-30.
 
 ## Alternatives considered

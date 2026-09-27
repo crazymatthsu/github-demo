@@ -16,7 +16,7 @@ Most connectors are single-consumer pipelines where two active consumers would d
 
 One Application / Helm release per AppInstance, generated from the config tree, one Deployment named
 `<app>-<instance>`, `replicas: 1` for now (decided v0.7). Values are layered chart defaults →
-`app-common` → instance; `targets.yml` (demo) or an ApplicationSet (EKS) enumerates the instances.
+`app-common` → instance; `workflows-config.yml` (demo) or an ApplicationSet (EKS) enumerates the instances.
 
 ## Alternatives considered
 

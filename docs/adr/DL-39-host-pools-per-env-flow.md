@@ -5,11 +5,11 @@
 | Status | Accepted (v1.3, 2026-09-27) |
 | Date | 2026-09-27 |
 | Blocking for demo skeleton | no (follow-up to demo step 2) |
-| Demo | `pool` in `config/us-dev/cash/targets.yml`; `scripts/pool-deploy.sh`; the runner plays every box until the dev boxes exist (DL-35) |
+| Demo | `pool` in `config/us-dev/cash/workflows-config.yml`; `scripts/pool-deploy.sh`; the runner plays every box until the dev boxes exist (DL-35) |
 
 ## Context
 
-Demo step 1 records one compose host per AppInstance in `targets.yml`. The platform owner asked for the
+Demo step 1 records one compose host per AppInstance in `workflows-config.yml`. The platform owner asked for the
 bare-metal boxes to be organised per `<env>/<flow>` instead: a list of hosts for `us-dev/cash`, every box
 of that list holding the configuration of every instance of the flow, so that any `AppName/AppInstance`
 of the flow can run on any box (failover, rebalancing, maintenance), not only on the one box named for
@@ -21,7 +21,7 @@ decision reopens it for the compose path only.
 ## Decision
 
 1. **One inventory per flow, with its pool.** The inventory moves into the flow directory:
-   `config/<env>/<flow>/targets.yml` (the env-level file is retired), so each flow team owns its hosts
+   `config/<env>/<flow>/workflows-config.yml` (the env-level file is retired), so each flow team owns its hosts
    through CODEOWNERS on `config/<env>/<flow>/**`. The file may declare `pool` with `hosts` (the boxes),
    `user` (SSH user, default `deploy`) and `root` (install root, default `/opt/platform`); its targets
    are `<AppName>/<AppInstance>` relative to the flow. A compose target then needs no `host`; a `host` it
@@ -29,13 +29,13 @@ decision reopens it for the compose path only.
 2. **The whole flow on every box.** On every deploy the job builds one **host bundle** per flow — the
    compose runtime (`scripts/run-compose.sh`, `scripts/smoke.sh`, each app's compose template and
    wrappers) plus `config/_common/`, `config/<env>/_common/`, `config/<env>/<flow>/**` (every app,
-   instance and layer), `targets.yml` and `config/<env>/known_hosts` when present, with a `.platform-bundle`
+   instance and layer), `workflows-config.yml` and `config/<env>/known_hosts` when present, with a `.platform-bundle`
    manifest (`BUNDLE_SHA256` over the sorted file hashes) — and syncs it to every box of the pool
    (`rsync --delete`, the box's `.state/` kept, over the DL-35 SSH channel; each copy verified by a second
    checksum dry run). `run-compose.sh` resolves its root
    from the bundle marker, so `run-compose.sh <env> <flow> <app> <inst> start` works on any box.
 3. **Placement is recorded, not fixed.** Each instance runs on exactly one box. `scripts/pool-deploy.sh`
-   resolves the box as pinned (`host` in `targets.yml`) → discovered (the one box where it already runs,
+   resolves the box as pinned (`host` in `workflows-config.yml`) → discovered (the one box where it already runs,
    asked through `run-compose.sh status --json`) → assigned (the pool box with the fewest placements,
    deterministic). The write-back records the chosen box as `host` next to the deployed tag, so git shows
    where every instance runs and moving one is a PR that changes `host`. An instance found on two boxes,
@@ -58,7 +58,7 @@ decision reopens it for the compose path only.
 
 ## Consequences
 
-- Each flow's `targets.yml` keeps one entry per instance (the deployment record and write-back anchor);
+- Each flow's `workflows-config.yml` keeps one entry per instance (the deployment record and write-back anchor);
   only `host` becomes optional for pooled flows. `deploy-dev` merges the flows' files, prefixing the flow.
 - The DL-35 transport now carries the bundle sync as well as the three commands; the forced command on
   the boxes must allow `run-compose.sh` with `pull`, `start`, `stop`, `health` and `status` for the deploy

@@ -35,7 +35,7 @@
 /config/                @crazymatthsu
 
 # Each flow owns its directory in every env, including its deploy inventory and host pool
-# config/<env>/<flow>/targets.yml (DL-39) — flow teams (@example/flow-cash @example/flow-deriv @example/flow-swap)
+# config/<env>/<flow>/workflows-config.yml (DL-39) — flow teams (@example/flow-cash @example/flow-deriv @example/flow-swap)
 /config/*/cash/         @crazymatthsu
 /config/*/deriv/        @crazymatthsu
 /config/*/swap/         @crazymatthsu

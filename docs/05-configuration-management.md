@@ -16,7 +16,7 @@ YAML, the AppName / AppInstance naming model and its validation — and the conf
 where it lives, how it is guarded, how an instance is inventoried, how a change reaches the dev
 compose hosts and the clusters, and how a configuration change becomes a rolling update.
 
-In scope: everything under `config/`, the jar defaults it overrides, `targets.yml`, the config-lint
+In scope: everything under `config/`, the jar defaults it overrides, `workflows-config.yml`, the config-lint
 job, the delivery path and the write-back. Out of scope: secret values and Vault (D2), chart
 templates (D11), the `run-compose.sh` command table (D6), approval gates and promotion policy (D9),
 the workflow files themselves (D7), image tag computation (D4).
@@ -24,11 +24,11 @@ the workflow files themselves (D7), image tag computation (D4).
 Phasing:
 
 - **Demo step 1 (compose)** — config tree in this repo, consumed directly by `run-compose.sh` on
-  laptops, in CI and on the dev compose hosts; `deploy-dev` reads `config/us-dev/cash/targets.yml`.
+  laptops, in CI and on the dev compose hosts; `deploy-dev` reads `config/us-dev/cash/workflows-config.yml`.
 - **Demo step 2 (kind + Helm)** — the same files become Helm values and a ConfigMap per release;
   config-lint adds `helm lint` / `helm template`; `deploy-dev` runs `helm upgrade --install`.
 - **Phase 3 (EKS + GitOps)** — a controller reconciles the config tree into the clusters;
-  `targets.yml` retires in favour of an ApplicationSet; qa and prod promote by PR.
+  `workflows-config.yml` retires in favour of an ApplicationSet; qa and prod promote by PR.
 
 ## 2. Context and constraints
 
@@ -47,7 +47,7 @@ Phasing:
   layers, and the precedence order.
 - Tree location: §2.3 places `config/` at the repository root while the §2.4 per-subproject tree
   draws it inside `<subproject>/`. This document uses the **root** location — the tree carries a
-  `<AppName>` level and a per-env `targets.yml`, both of which only make sense across apps — and
+  `<AppName>` level and a per-env `workflows-config.yml`, both of which only make sense across apps — and
   reports the discrepancy.
 
 ## 3. Requirements
@@ -63,7 +63,7 @@ Phasing:
 | §5.6 Non-Spring files follow the hierarchy; how `application.yml` references them | §6.4 |
 | §5.6 Hostnames in the repo, secrets never | §6.5 (checks 8–9), D2 |
 | §5.7 Separate repo trade-offs; decision and guard-rails | §4.4, §5 (R4), §6.7 |
-| §5.7 Inventory `targets.yml`; ApplicationSet replaces it on EKS | §6.6, Figure 2 |
+| §5.7 Inventory `workflows-config.yml`; ApplicationSet replaces it on EKS | §6.6, Figure 2 |
 | §5.7 Delivery mechanism: Argo CD / Flux / CI push; compose reads the tree directly | §4.5, §5 (R5), Figure 3 |
 | §5.7 Criteria: controller provided? ConfigMap change → restart; drift and self-heal; RBAC; audit; rollback; secrets | §4.6, §5 (R6), Figure 4, §9 |
 | §5.7 Promotion of a config change dev → qa → prod | §4.7, §5 (R7), §6.7 |
@@ -150,7 +150,7 @@ the naming model of §6.2; dev auto-deploy with write-back. The rest is recommen
 | R2 | Precedence as in §6.1: jar defaults < platform < env < app-common < instance < `/secrets/` < environment variables. Spring ranks OS environment variables above all config-data imports (verify in the rendered-config test); the brief adopted this order in v0.9 — harmless because env vars never carry secrets or YAML keys (R3) | the order must be the one the runtime actually applies; config-lint's rendered-config test pins it | — |
 | R3 | **Env vars only** for deploy-time knobs that compose or the platform also consume (§6.3 list); **YAML** for application configuration including source / target host and port; one canonical place per key; `compose.env` variable names never spell a Spring property | reviewable structure where it matters; duplicates impossible by construction | §4.3 |
 | R4 | Monorepo guard-rails: CODEOWNERS on `config/**` with `config/*-prod/**` and `config/*-qa/**` owned by ops; path-filtered `config-lint`; no image rebuild on config-only changes; write-backs with the loop guard (R8) | the decided location needs the access control a separate repo would have given | §4.4 |
-| R5 | Delivery: CI push (`run-compose.sh`, then `helm upgrade --install`) in the demo — decided; **Argo CD** on EKS (DL-30 leaning) with an ApplicationSet generated from the tree, retiring `targets.yml`; Flux if the platform provides it | sync windows map to trading-hours deployment windows; the ApplicationSet makes the tree itself the inventory | §4.5 |
+| R5 | Delivery: CI push (`run-compose.sh`, then `helm upgrade --install`) in the demo — decided; **Argo CD** on EKS (DL-30 leaning) with an ApplicationSet generated from the tree, retiring `workflows-config.yml`; Flux if the platform provides it | sync windows map to trading-hours deployment windows; the ApplicationSet makes the tree itself the inventory | §4.5 |
 | R6 | Rollout on change: **checksum annotation** for the Helm-owned ConfigMap; a **Reloader-style controller** only for ESO-owned `Secret`s (D2); blast radius one instance at a time because each instance is its own release | no controller needed for the common case; rotations still reach pods | §4.6 |
 | R7 | Promotion dev → qa → prod by **PR per env** (DL-21) with the parity report attached by config-lint | git stays the deployment record; the diff is what is reviewed | §4.7 |
 | R8 | Loop guard: skip the bot author in the workflow `if:` **and** `[skip ci]` in the write-back commit (DL-36) | either alone has a failure mode; together they cover a renamed bot and a manual replay | §4.8 |
@@ -280,7 +280,7 @@ Every file in a layer directory is shipped to the same mount path, so a referenc
 
 Required files per instance (`config/<env>/<flow>/<AppName>/<AppInstance>/`): `compose.env`,
 `application.yml`, `values.yaml` (from Demo step 2). Required per `app-common/`: `application.yml`,
-`values.yaml`. Required per flow directory of a `*-dev` env: `targets.yml` (one inventory per flow, v1.3, DL-39; only
+`values.yaml`. Required per flow directory of a `*-dev` env: `workflows-config.yml` (one inventory per flow, v1.3, DL-39; only
 dev envs are auto-deployed; retired by ApplicationSets). Optional: `_common` layers,
 `logback.xml`, client properties, `config/<env>/known_hosts` (pinned SSH host keys of the pool boxes in
 `ssh-keyscan` format, DL-39). Forbidden: anything matching a secret pattern; `.env` files other
@@ -298,14 +298,14 @@ than `compose.env`.
 | 8 | Parity: key sets of the merged configuration diffed across `us-dev` / `us-qa` / `us-prod` (and `jp-*`) for the same `<flow>/<AppName>/<AppInstance>`; report attached to the PR | missing key in a higher env (fail for prod, warn for qa) | Demo step 1 (compose) |
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
-| 11 | `config/<env>/<flow>/targets.yml` per flow of a `*-dev` env (an env-level file is an error): `env` and `flow` equal the path; every instance directory of the flow has one target and every target has a directory; `pool` has unique valid hosts (a host in two flows with the same `root` is an error), a login-name `user` and an absolute `root`; a compose target has a `host` or a `pool`, and a `host` under a pool is one of its boxes; every compose `host` is a valid host name and every helm `namespace` a DNS label; `root` is plain absolute path segments; `config/<env>/known_hosts`, when present, is in `ssh-keyscan` format | inventory drift | Demo step 1 (compose); per-flow files and pools from v1.3 (DL-39) |
+| 11 | `config/<env>/<flow>/workflows-config.yml` per flow of a `*-dev` env (an env-level file is an error): `env` and `flow` equal the path; every instance directory of the flow has one target and every target has a directory; `pool` has unique valid hosts (a host in two flows with the same `root` is an error), a login-name `user` and an absolute `root`; a compose target has a `host` or a `pool`, and a `host` under a pool is one of its boxes; every compose `host` is a valid host name and every helm `namespace` a DNS label; `root` is plain absolute path segments; `config/<env>/known_hosts`, when present, is in `ssh-keyscan` format | inventory drift | Demo step 1 (compose); per-flow files and pools from v1.3 (DL-39) |
 | 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers, through `scripts/helm-deploy-instance.sh --mode lint` / `--mode template` (one flag list, D11 §8.3); kubeconform (`-strict`, Kubernetes 1.37) on the rendered releases when it is installed (CI installs it) | chart or values invalid; a rendered object invalid | Demo step 2 (kind + Helm) |
 | 13 | ApplicationSet dry-run: generated Application names equal `<app>-<instance>` and are ≤ 53 chars | generator mismatch | Phase 3 (EKS + GitOps) |
 
-### 6.6 Inventory — `targets.yml` (Demo step 1 and 2) and what replaces it
+### 6.6 Inventory — `workflows-config.yml` (Demo step 1 and 2) and what replaces it
 
-One inventory per flow, `config/<env>/<flow>/targets.yml`, so each flow team owns its hosts (CODEOWNERS on
-`config/<env>/<flow>/**`, §6.7). The real `config/us-dev/cash/targets.yml` (v1.3, DL-39):
+One inventory per flow, `config/<env>/<flow>/workflows-config.yml`, so each flow team owns its hosts (CODEOWNERS on
+`config/<env>/<flow>/**`, §6.7). The real `config/us-dev/cash/workflows-config.yml` (v1.3, DL-39):
 
 ```yaml
 env: us-dev
@@ -334,9 +334,9 @@ receives the flow's **host bundle** on each deploy (D9 §6.4): the compose runti
 `config/<env>/_common/` and all of `config/<env>/<flow>/` (this file included), under `root`, so
 `run-compose.sh <env> <flow> <app> <inst> start` works on any box. Two instances on one box need distinct
 `*_HOST_PORT` values in their `compose.env` (§6.3). A box listed by two flows of one env with the same
-`root` is an error (their bundles would collide). There is no env-level `config/<env>/targets.yml`.
+`root` is an error (their bundles would collide). There is no env-level `config/<env>/workflows-config.yml`.
 
-Only `*-dev` envs carry `targets.yml` files (one per flow directory) consumed by `deploy-dev`; qa and prod
+Only `*-dev` envs carry `workflows-config.yml` files (one per flow directory) consumed by `deploy-dev`; qa and prod
 are never touched by that job (§5.12). In Phase 3 (EKS + GitOps) the ApplicationSet's git directory generator enumerates
 `config/<env>/<flow>/<AppName>/<AppInstance>/` and a cluster generator maps `<env>` to a cluster, so
 the file retires (D11).
@@ -356,7 +356,7 @@ the file retires (D11).
 | Item | Convention |
 |---|---|
 | Author | the deploy bot identity (GitHub App token, DL-09), never a personal token |
-| Files touched | only `IMAGE_TAG` in `<instance>/compose.env` (Demo step 1), `image.tag` in `<instance>/values.yaml` (Demo step 2) and, for a pooled instance, `host` of its target in the flow's `targets.yml` (DL-39); one commit per `main` run covering every deployed instance |
+| Files touched | only `IMAGE_TAG` in `<instance>/compose.env` (Demo step 1), `image.tag` in `<instance>/values.yaml` (Demo step 2) and, for a pooled instance, `host` of its target in the flow's `workflows-config.yml` (DL-39); one commit per `main` run covering every deployed instance |
 | Message | `chore(config): us-dev deployed <tag> [skip ci]`; the body lists the instances (with their boxes) and the run URL |
 | Loop guard | `if: github.actor != '<bot>'` on the `main` workflow plus `[skip ci]` (R8); a human config-only merge still deploys |
 | Branch protection | the bot needs a bypass for direct pushes to `main`, or the write-back opens an auto-merged PR — decide with DL-09 |
@@ -397,7 +397,7 @@ flowchart TB
   com["_common/"]
   comApp["source-database/ (application.yml)"]
   env["us-dev/  (also us-qa, us-prod, jp-dev, jp-qa, jp-prod, local)"]
-  tgt["targets.yml"]
+  tgt["workflows-config.yml"]
   envCom["_common/ (application.yml)"]
   flow["cash/  (also deriv, swap)"]
   app["source-database/  (== Gradle subproject, == image name)"]
@@ -431,7 +431,7 @@ flowchart LR
   guard{"Bot author or skip ci?"}
   stop["No deploy (loop guard)"]
   subgraph demo["deploy-dev job — Demo step 1 (compose) / Demo step 2 (kind + Helm)"]
-    tg["read config/us-dev/*/targets.yml"]
+    tg["read config/us-dev/*/workflows-config.yml"]
     rc["run-compose.sh pull, start, health on the compose host"]
     hu["helm upgrade --install per instance (atomic)"]
     wb["write back IMAGE_TAG / image.tag with skip ci"]
@@ -505,14 +505,14 @@ unavailable, which the sync window confines to the deployment window.
 | `config/us-dev/cash/source-database/trades-db-to-amps/{compose.env,application.yml,values.yaml}` and `.../positions-db-to-deephaven/{...}` | the two instances whose effective configuration provably differs (§6.3) | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
 | `config/us-dev/_common/application.yml`, `config/_common/source-database/application.yml` | optional layers 3 and 2 with one key each, to prove the precedence order | Demo step 1 (compose) |
 | `config/local/cash/source-database/...` | developer stack: the same shape with `localhost` endpoints (§5.13) | Demo step 1 (compose) |
-| `config/us-dev/cash/targets.yml` (one per flow) | inventory read by `deploy-dev`; `pool` for the bare-metal boxes of the flow (DL-39) | Demo step 1 (compose), Demo step 2 (kind + Helm), host pools (v1.3) |
+| `config/us-dev/cash/workflows-config.yml` (one per flow) | inventory read by `deploy-dev`; `pool` for the bare-metal boxes of the flow (DL-39) | Demo step 1 (compose), Demo step 2 (kind + Helm), host pools (v1.3) |
 | `deephaven-connectors/source-database/src/main/resources/application.yml` | layer 1 with the import list of §6.1 | Demo step 1 (compose) |
 | `deephaven-connectors/connectors-framework/` (`ConnectorIdentity`, `@ConfigurationProperties` + `@Validated` bindings, masked start-up summary) | validation and the identity tuple in logs and metrics | Demo step 1 (compose) |
 | `build-logic/` (root task `configLint`) | checks 1–6 and 9–12 runnable locally and in CI (7 and 8 reported as TODO); `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |
 | `.github/workflows/pr.yml` (`config-lint` job, path-filtered), `.github/CODEOWNERS` | guard-rails of §6.7 | Demo step 1 (compose) |
-| `.github/workflows/main.yml` (`deploy-dev` job: read `targets.yml`, deploy, write back, loop guard) | R8 and §6.8 | Demo step 1 (compose), Demo step 2 (kind + Helm) |
+| `.github/workflows/main.yml` (`deploy-dev` job: read `workflows-config.yml`, deploy, write back, loop guard) | R8 and §6.8 | Demo step 1 (compose), Demo step 2 (kind + Helm) |
 | `deephaven-connectors/source-database/helm/source-database/templates/configmap.yaml`, `deployment.yaml` (checksum annotation) | layers 2–5 as a ConfigMap, mounted per layer (D11) | Demo step 2 (kind + Helm) |
-| ApplicationSet per env (location proposed in D11) | replaces `targets.yml` | Phase 3 (EKS + GitOps) |
+| ApplicationSet per env (location proposed in D11) | replaces `workflows-config.yml` | Phase 3 (EKS + GitOps) |
 | Rendered-config test (`integrationTest` of `source-database`) | asserts the precedence order of §6.1 (R2) | Demo step 1 (compose) |
 
 ## 9. Open items
@@ -529,7 +529,7 @@ unavailable, which the sync window confines to the deployment window.
 | DL-21 promotion by PR per env | open | D9 |
 | DL-30 GitOps controller on EKS (Argo CD leaning) | open for EKS | Phase 3 (EKS + GitOps) |
 | DL-36 loop guard (skip bot author + `[skip ci]`) | open | Demo step 1 (compose) — blocking |
-| DL-38 namespace layout (namespace per flow leaning) | open | `targets.yml` defaults, D11 |
+| DL-38 namespace layout (namespace per flow leaning) | open | `workflows-config.yml` defaults, D11 |
 | DL-35 reaching the dev compose hosts | open | Demo step 1 (compose) — blocking |
 
 §8 questions this document depends on: EKS topology (cluster per `<region>-<stage>` or shared
