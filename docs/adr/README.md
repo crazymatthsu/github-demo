@@ -16,7 +16,7 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-07 | Config layering mechanism | Accepted (v1.0) | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
 | DL-08 | Env vars vs YAML | Proposed | [DL-08-env-vars-vs-yaml.md](DL-08-env-vars-vs-yaml.md) |
 | DL-09 | Image and config bump delivery | Accepted (dev v0.7; qa / prod v1.0) | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
-| DL-10 | Config sync to target VMs | Closed (superseded by DL-30) | [DL-10-config-sync-to-target-vms.md](DL-10-config-sync-to-target-vms.md) |
+| DL-10 | Config sync to target VMs | Closed for clusters (DL-39 covers the bare-metal pools) (superseded by DL-30) | [DL-10-config-sync-to-target-vms.md](DL-10-config-sync-to-target-vms.md) |
 | DL-11 | Vault authentication | Proposed — deferred to Phase 3 | [DL-11-vault-authentication.md](DL-11-vault-authentication.md) |
 | DL-12 | DB credentials | Proposed — deferred to Phase 3 | [DL-12-db-credentials.md](DL-12-db-credentials.md) |
 | DL-13 | Enterprise CA injection | Accepted (v1.0) | [DL-13-enterprise-ca-injection.md](DL-13-enterprise-ca-injection.md) |
@@ -45,3 +45,4 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-36 | Loop guard for bot write-backs in the same repo | Accepted (v1.0) | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
 | DL-37 | AppInstance naming | Accepted | [DL-37-appinstance-naming.md](DL-37-appinstance-naming.md) |
 | DL-38 | Kubernetes namespace layout | Proposed — deferred to Phase 3 | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |
+| DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |

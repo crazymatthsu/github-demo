@@ -3,7 +3,9 @@
 # stacks and the dev compose hosts of demo step 1. Never qa or prod: production runs on Kubernetes (D9, D11).
 #
 # This is the canonical implementation; every app's scripts/run-compose.sh is a thin wrapper that execs it
-# with --app-dir <its subproject>. Run with --help for the command table.
+# with --app-dir <its subproject>. Run with --help for the command table. On a box of a host pool (DL-39) it
+# runs from the host bundle that scripts/pool-deploy.sh synced: the nearest ancestor holding .platform-bundle
+# is the root, and start / restart first ask the pool's other boxes (the pool guard, D6 §6.5).
 set -euo pipefail
 
 readonly EXIT_FAILED=1 EXIT_USAGE=2 EXIT_REFUSED=3 EXIT_CONFIG=4 EXIT_ENGINE=5 EXIT_TIMEOUT=124
@@ -42,7 +44,8 @@ Commands (D6 §6.4):
 
 Options (before or after the command):
   --dry-run             print the resolved paths, identity, engine and exact command lines; run nothing
-  --force               allow a guarded operation (down --volumes on *-dev); never overrides the env allow-list
+  --force               allow a guarded operation (down --volumes on *-dev; start / restart past the pool
+                        guard); never overrides the env allow-list
   --engine docker|podman  force the engine (default: $RUN_COMPOSE_ENGINE, else docker, then podman)
   --json                machine-readable output for health, status and version
   -q, --quiet           less informational output
@@ -57,6 +60,18 @@ compose.env value always comes from the file), APP_IMAGE (local only: run this i
 IMAGE_REPO/APP_NAME:IMAGE_TAG);
 secrets such as SPRING_DATASOURCE_PASSWORD are passed through from this shell, never from compose.env
 (D2 §8.1).
+
+Root: the nearest ancestor of this script holding a .platform-bundle marker (a host bundle synced by
+scripts/pool-deploy.sh, DL-39), else the git checkout, else the script's parent directory.
+Pool guard (DL-39): on a box whose .platform-bundle lists more than one pool host (POOL_HOSTS), start and
+restart of an instance of that bundle's env and flow (never local) first ask every other box of the pool
+  $POOL_SSH $POOL_SSH_OPTS <POOL_USER>@<box> -- <POOL_ROOT>/<app dir>/scripts/run-compose.sh
+      <env> <flow> <AppName> <AppInstance> status --json
+and refuse (3) when the instance runs there; a box that does not answer is only a warning (a dead box must
+not block a failover). --force skips the guard, --dry-run prints its commands, POOL_PEER_CHECK=off disables
+it; POOL_SELF_HOST names this box in POOL_HOSTS (default: hostname -f). POOL_SSH is the ssh binary (default
+ssh); POOL_SSH_OPTS defaults to -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes, plus
+-o UserKnownHostsFile=<CONFIG_ROOT>/<env>/known_hosts when that file exists (an unknown key is never trusted).
 EOF
 }
 
@@ -217,7 +232,31 @@ fi
 
 # --- path resolution (D6 §6.2) and config-tree checks (4) -------------------------------------------------
 
-REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/.." && pwd -P))"
+# The nearest ancestor of $1 (itself included) that holds a .platform-bundle marker: the root of a host bundle
+# that scripts/pool-deploy.sh synced to a box of a pool (DL-39).
+find_bundle_root() {
+    local dir="$1"
+    while :; do
+        if [ -f "$dir/.platform-bundle" ]; then
+            printf '%s' "$dir"
+            return 0
+        fi
+        [ "$dir" != / ] || return 1
+        dir="$(dirname "$dir")"
+    done
+}
+# One value of the bundle manifest: KEY=value lines, the value optionally in double quotes. Read, never sourced.
+bundle_value() {
+    [ -n "$BUNDLE_ROOT" ] || return 0
+    awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); gsub(/^"|"$/, "", v); print v; exit }' \
+        "$BUNDLE_ROOT/.platform-bundle"
+}
+BUNDLE_ROOT="$(find_bundle_root "$SCRIPT_DIR" || true)"
+if [ -n "$BUNDLE_ROOT" ]; then
+    REPO_ROOT="$BUNDLE_ROOT"
+else
+    REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/.." && pwd -P))"
+fi
 if [ -n "$APP_DIR_ARG" ]; then
     [ -d "$APP_DIR_ARG" ] || die "$EXIT_CONFIG" "app directory not found: $APP_DIR_ARG"
     APP_DIR="$(cd "$APP_DIR_ARG" && pwd -P)"
@@ -357,6 +396,108 @@ if [ -n "$MISSING" ]; then
     [ "$DRY_RUN" -eq 0 ] || info "not set in this shell: $MISSING (start, restart, validate and app-config --offline need them)"
 fi
 
+# --- pool guard (DL-39, D6 §6.5): one running copy of an instance across the boxes of its pool ------------
+
+POOL_PEERS=()   # the other boxes of the pool when the guard applies
+POOL_SSH_ARGS=()
+POOL_GUARD_NOTE="" # why the guard does not apply to this start / restart (shown by --dry-run)
+setup_pool_guard() {
+    local hosts=() host self short matches=() user root
+    case "$COMMAND" in start | restart) ;; *) return 0 ;; esac
+    [ -n "$BUNDLE_ROOT" ] && [ "$ENV_NAME" != local ] || return 0
+    [ "$(bundle_value BUNDLE_ENV)" = "$ENV_NAME" ] && [ "$(bundle_value BUNDLE_FLOW)" = "$FLOW" ] || return 0
+    read -r -a hosts <<<"$(bundle_value POOL_HOSTS)"
+    [ "${#hosts[@]}" -gt 1 ] || return 0
+    user="$(bundle_value POOL_USER)"
+    root="$(bundle_value POOL_ROOT)"
+    for host in "${hosts[@]}"; do
+        printf '%s' "$host" | grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' ||
+            die "$EXIT_CONFIG" "$(rel "$BUNDLE_ROOT/.platform-bundle"): POOL_HOSTS entry '$host' is not a host name"
+    done
+    printf '%s' "$user" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' ||
+        die "$EXIT_CONFIG" "$(rel "$BUNDLE_ROOT/.platform-bundle"): POOL_USER '$user' is not a login name"
+    printf '%s' "$root" | grep -Eq '^(/[A-Za-z0-9._-]+)+/?$' ||
+        die "$EXIT_CONFIG" "$(rel "$BUNDLE_ROOT/.platform-bundle"): POOL_ROOT '$root' is not an absolute path"
+    if [ "${POOL_PEER_CHECK:-on}" = off ]; then
+        POOL_GUARD_NOTE="off (POOL_PEER_CHECK=off)"
+        return 0
+    fi
+    if [ "$FORCE" -eq 1 ]; then
+        POOL_GUARD_NOTE="skipped (--force)"
+        return 0
+    fi
+    # This box: POOL_SELF_HOST as given, else its FQDN — or the one pool host whose first label is its short name.
+    self="${POOL_SELF_HOST:-}"
+    if [ -z "$self" ]; then
+        self="$(hostname -f 2>/dev/null || true)"
+        [ -n "$self" ] || self="$(hostname 2>/dev/null || uname -n)"
+        self="$(printf '%s' "$self" | tr '[:upper:]' '[:lower:]')"
+        if ! contains_word "$self" "${hosts[*]}"; then
+            short="${self%%.*}"
+            for host in "${hosts[@]}"; do [ "${host%%.*}" != "$short" ] || matches+=("$host"); done
+            [ "${#matches[@]}" -ne 1 ] || self="${matches[0]}"
+        fi
+    fi
+    contains_word "$self" "${hosts[*]}" ||
+        warn "this machine ($self) is not one of POOL_HOSTS: asking every box of the pool (set POOL_SELF_HOST to its name there)"
+    for host in "${hosts[@]}"; do [ "$host" = "$self" ] || POOL_PEERS+=("$host"); done
+    if [ -n "${POOL_SSH_OPTS:-}" ]; then
+        read -r -a POOL_SSH_ARGS <<<"$POOL_SSH_OPTS"
+    else
+        # Never trust an unknown host key: the reviewed known_hosts of the env when the bundle carries it, else
+        # the deploy user's own.
+        POOL_SSH_ARGS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes)
+        [ ! -f "$ENV_DIR/known_hosts" ] || POOL_SSH_ARGS+=(-o "UserKnownHostsFile=$ENV_DIR/known_hosts")
+    fi
+    POOL_USER_NAME="$user" POOL_ROOT_DIR="${root%/}"
+}
+# The peer's copy of this command (the same app directory under the pool's root) as an argument vector.
+PEER_CMD=()
+peer_command() {
+    local app_rel="${APP_DIR#"$REPO_ROOT"/}" remote
+    [ "$app_rel" != "$APP_DIR" ] || app_rel="deephaven-connectors/$APP"
+    remote="$(printf '%q ' "$POOL_ROOT_DIR/$app_rel/scripts/run-compose.sh" "$ENV_NAME" "$FLOW" "$APP" "$INSTANCE" status --json)"
+    PEER_CMD=("${POOL_SSH:-ssh}" "${POOL_SSH_ARGS[@]+"${POOL_SSH_ARGS[@]}"}" "$POOL_USER_NAME@$1" -- "${remote% }")
+}
+# For --dry-run: a command line as it would be typed (arguments with spaces in single quotes).
+quote_words() {
+    local out="" word sq="'"
+    for word in "$@"; do
+        case "$word" in *[!A-Za-z0-9_./:=@,+-]*) word="$sq${word//$sq/$sq\\$sq$sq}$sq" ;; esac
+        out="$out $word"
+    done
+    printf '%s' "${out# }"
+}
+run_pool_guard() {
+    local peer out rc running last
+    [ "${#POOL_PEERS[@]}" -gt 0 ] && [ "$DRY_RUN" -eq 0 ] || return 0
+    if ! command -v "${POOL_SSH:-ssh}" >/dev/null 2>&1; then
+        warn "pool guard: ${POOL_SSH:-ssh} not found, so the other boxes (${POOL_PEERS[*]}) cannot be asked; continuing"
+        return 0
+    fi
+    for peer in "${POOL_PEERS[@]}"; do
+        peer_command "$peer"
+        rc=0
+        if command -v timeout >/dev/null 2>&1; then
+            out="$(timeout 60 "${PEER_CMD[@]}" 2>&1 </dev/null)" || rc=$?
+        else
+            out="$("${PEER_CMD[@]}" 2>&1 </dev/null)" || rc=$?
+        fi
+        running="$(printf '%s\n' "$out" | grep '^{' | tail -n 1 | sed -nE 's/.*"running":(true|false).*/\1/p' || true)"
+        case "$running" in
+            true) die "$EXIT_REFUSED" "$INSTANCE is already running on $peer; stop it there first, or --force" ;;
+            false) info "pool guard: $INSTANCE is not running on $peer" ;;
+            *)
+                last="$(printf '%s\n' "$out" | grep -v -e '^{' -e '^[[:space:]]*$' | tail -n 1 || true)"
+                warn "pool guard: could not ask $peer whether $INSTANCE runs there (exit $rc${last:+: $last}); continuing — a box that does not answer must not block a failover"
+                ;;
+        esac
+    done
+}
+POOL_USER_NAME="" POOL_ROOT_DIR=""
+setup_pool_guard
+run_pool_guard
+
 # --- engine (D6 §6.6) -------------------------------------------------------------------------------------
 
 ENGINE="" COMPOSE_KIND=""
@@ -420,6 +561,20 @@ show_plan() {
         "compose file" "$(rel "$COMPOSE_FILE")" "env file" "$(rel "$ENV_FILE")" "project" "$PROJECT" \
         "identity" "APP_ENV=$APP_ENV APP_FLOW=$APP_FLOW APP_NAME=$APP_NAME APP_INSTANCE=$APP_INSTANCE" \
         "image" "$IMAGE_REF" "engine" "$ENGINE (${COMPOSE[*]})" "deps network" "${DEPS_NETWORK:--}"
+    if [ -n "$BUNDLE_ROOT" ]; then
+        printf '  %-13s %s/%s, tag %s, %s files, sha256 %.12s…, pool %s\n' "host bundle" "$(bundle_value BUNDLE_ENV)" \
+            "$(bundle_value BUNDLE_FLOW)" "$(bundle_value BUNDLE_TAG)" "$(bundle_value BUNDLE_FILES)" \
+            "$(bundle_value BUNDLE_SHA256)" "$(bundle_value POOL_HOSTS)"
+    fi
+    if [ -n "$POOL_GUARD_NOTE" ]; then
+        printf '  %-13s %s\n' "peer check" "$POOL_GUARD_NOTE"
+    else
+        local peer
+        for peer in ${POOL_PEERS[@]+"${POOL_PEERS[@]}"}; do
+            peer_command "$peer"
+            printf '  %-13s %s\n' "peer check" "$(quote_words "${PEER_CMD[@]}")"
+        done
+    fi
 }
 # Runs (or, with --dry-run, prints) one compose command; returns its exit code.
 compose() {
@@ -483,7 +638,8 @@ cmd_health() {
         fi
     fi
     if [ "$status" = UP ] && [ -x "$APP_DIR/scripts/smoke.sh" ]; then
-        "$APP_DIR/scripts/smoke.sh" "$ENV_NAME" "$FLOW" "$APP" "$INSTANCE" >&2 || { status=SMOKE_FAILED; rc="$EXIT_FAILED"; }
+        CONFIG_ROOT="$CONFIG_ROOT" "$APP_DIR/scripts/smoke.sh" "$ENV_NAME" "$FLOW" "$APP" "$INSTANCE" >&2 ||
+            { status=SMOKE_FAILED; rc="$EXIT_FAILED"; }
     fi
     [ "$status" = UP ] || rc="$EXIT_FAILED"
     if [ "$JSON" -eq 1 ]; then

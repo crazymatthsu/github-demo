@@ -9,7 +9,7 @@ plugins {
 dependencies {
     // Lets the precompiled scripts apply id("org.springframework.boot") without a version.
     implementation(libs.spring.boot.gradle.plugin)
-    // YAML parsing for configLint (targets.yml, application.yml key scan).
+    // YAML parsing for configLint (workflows-config.yml, application.yml key scan).
     implementation(libs.snakeyaml)
 
     testImplementation(platform(libs.junit.bom))

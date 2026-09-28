@@ -5,7 +5,7 @@ The Kubernetes test tier of demo step 2 (D10 §5.9, D11 §6.4, DL-32). A throwaw
 runs `helm test` and a smoke comparison of two instances, and is then deleted. It is a deployment test
 of the chart and the config tree, not an integration test. The apps become ready without a reachable
 database or Deephaven, because readiness is `readinessState` plus the connector indicator. The same
-cluster type is the `deploy-dev` target `cluster: kind-ci` (`config/us-dev/targets.yml`) until a dev
+cluster type is the `deploy-dev` target `cluster: kind-ci` (`config/us-dev/cash/workflows-config.yml`, one inventory per flow) until a dev
 cluster exists.
 
 ```

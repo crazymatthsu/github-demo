@@ -1,11 +1,17 @@
-# Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-32, DL-35, DL-36).
+# Reusable: deploy the images main.yml just published to the dev targets (D9 §6.4–§6.6, DL-32, DL-35, DL-36,
+# DL-39).
 #
-# Reads config/<env>/targets.yml (D5 §6.6): targets[].instance is <flow>/<AppName>/<AppInstance>; kind is
-# compose | helm; cluster and namespace belong to helm targets. Each comes from the target, else from
-# defaults (kind else compose, namespace else "{flow}" = the instance's flow, DL-38).
-#   compose (demo step 1)  PLACEHOLDER (brief v1.1): `run-compose.sh ... start --dry-run` on the runner
-#                          validates the target and prints the compose command; the job prints the
-#                          SSH command it would run on the host — see TODO(DL-35) below.
+# Reads one inventory per flow, config/<env>/<flow>/workflows-config.yml (D5 §6.6): env and flow restate the path,
+# targets[].instance is <AppName>/<AppInstance> (the job prefixes the flow: <flow>/<AppName>/<AppInstance>),
+# kind is compose | helm, cluster and namespace belong to helm targets, `pool` lists the flow's bare-metal
+# boxes. Each field comes from the target, else from defaults (kind else compose, namespace else the flow, DL-38).
+#   compose (demo step 1)  a flow with a `pool` (DL-39): scripts/pool-deploy.sh builds the flow's host bundle,
+#                          syncs it to every box of the pool and runs pull → start → health on each instance's
+#                          box (pinned → discovered → assigned) — transport ssh once the Environment dev holds
+#                          DEV_DEPLOY_SSH_KEY, else local (the runner plays every box: validate + start
+#                          --dry-run per placement, the ssh commands printed). A flow without a pool keeps the
+#                          PLACEHOLDER (brief v1.1): `run-compose.sh ... start --dry-run` per target on the
+#                          runner and the SSH command it would run on its `host` — see TODO(DL-35) below.
 #   helm    (demo step 2)  cluster kind-ci: a kind cluster created in this job (deploy-<run_id>-<attempt>;
 #                          kind stands in until a dev cluster exists, DL-32) gets this run's images by
 #                          digest, loaded as <repo>:<tag>; every target is deployed with
@@ -15,7 +21,8 @@
 #                          TODO(Phase 3) below.
 # Then the deployed tag is written back to the config tree by the bot with `[skip ci]` (loop guard,
 # DL-36) — IMAGE_TAG in compose.env and image.tag in values.yaml of every deployed instance, never of a
-# failed one — and the run is recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
+# failed one, plus the box of every pooled instance as `host` in its flow's workflows-config.yml — and the run is
+# recorded as a GitHub Deployment in Environment `dev`. qa and prod are never
 # touched: the job refuses any env that is not *-dev, and so do run-compose.sh, helm-deploy-instance.sh
 # and write-back-tag.sh.
 name: _deploy-dev
@@ -39,6 +46,9 @@ on:
       deployed:
         description: JSON list of the instances deployed (<flow>/<AppName>/<AppInstance>).
         value: ${{ jobs.deploy.outputs.deployed }}
+      placements:
+        description: The boxes of the pooled compose instances, "<flow>/<AppName>/<AppInstance>=<host> ..." (DL-39).
+        value: ${{ jobs.deploy.outputs.placements }}
 
 permissions:
   contents: read
@@ -71,6 +81,7 @@ jobs:
       KIND_CLUSTER_NAME: deploy-${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
       deployed: ${{ steps.deployed.outputs.json }}
+      placements: ${{ steps.compose.outputs.placements }}
     steps:
       - uses: actions/checkout@v7
 
@@ -87,30 +98,50 @@ jobs:
         id: targets
         run: |
           set -euo pipefail
-          file="config/$DEPLOY_ENV/targets.yml"
-          if [[ ! -f $file ]]; then
-            echo "::warning::$file not found — nothing to deploy"
-            echo '[]' > "$RUNNER_TEMP/targets.json"
-            { echo "compose=0"; echo "helm=0"; } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          declared=$(yq '.env // ""' "$file")
-          if [[ -n $declared && $declared != "$DEPLOY_ENV" ]]; then
-            echo "::error::$file declares env '$declared', expected '$DEPLOY_ENV'"
+          # One inventory per flow (D5 §6.6): merge config/<env>/<flow>/workflows-config.yml into one list with the
+          # flow prepended to every instance, so everything below sees <flow>/<AppName>/<AppInstance>.
+          for legacy in config/"$DEPLOY_ENV"/targets.yml config/"$DEPLOY_ENV"/workflows-config.yml config/"$DEPLOY_ENV"/*/targets.yml; do
+            [[ -f $legacy ]] || continue
+            echo "::error::$legacy: the deploy inventory is config/$DEPLOY_ENV/<flow>/workflows-config.yml (one per flow, DL-39)"
             exit 1
+          done
+          files=()
+          for file in config/"$DEPLOY_ENV"/*/workflows-config.yml; do
+            if [[ -f $file && $file != "config/$DEPLOY_ENV/_common/workflows-config.yml" ]]; then files+=("$file"); fi
+          done
+          echo '[]' > "$RUNNER_TEMP/targets.raw.json"
+          echo '{}' > "$RUNNER_TEMP/pools.json"
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::warning::no config/$DEPLOY_ENV/<flow>/workflows-config.yml found — nothing to deploy"
           fi
-          # shellcheck disable=SC2016 # $d is a yq variable, not a shell one
-          yq -o=json -I=0 '(.defaults // {}) as $d | [(.targets // [])[] | {
-              "instance": .instance,
-              "kind": (.kind // $d.kind // "compose"),
-              "host": (.host // $d.host // ""),
-              "user": (.user // $d.user // "deploy"),
-              "cluster": (.cluster // $d.cluster // ""),
-              "namespace": (.namespace // $d.namespace // "{flow}")
-            }]' "$file" > "$RUNNER_TEMP/targets.raw.json"
+          for file in "${files[@]}"; do
+            flow=$(basename "$(dirname "$file")")
+            declared=$(yq '(.env // "") + "/" + (.flow // "")' "$file")
+            if [[ $declared != "$DEPLOY_ENV/$flow" ]]; then
+              echo "::error::$file declares env/flow '$declared', expected '$DEPLOY_ENV/$flow'"
+              exit 1
+            fi
+            # shellcheck disable=SC2016 # $d is a yq variable, not a shell one
+            FLOW=$flow yq -o=json -I=0 '(.defaults // {}) as $d | [(.targets // [])[] | {
+                "instance": (strenv(FLOW) + "/" + (.instance // "")),
+                "kind": (.kind // $d.kind // "compose"),
+                "host": (.host // $d.host // ""),
+                "user": (.user // $d.user // "deploy"),
+                "cluster": (.cluster // $d.cluster // ""),
+                "namespace": (.namespace // $d.namespace // "{flow}")
+              }]' "$file" > "$RUNNER_TEMP/flow.json"
+            jq -s 'add' "$RUNNER_TEMP/targets.raw.json" "$RUNNER_TEMP/flow.json" > "$RUNNER_TEMP/merged.json"
+            mv "$RUNNER_TEMP/merged.json" "$RUNNER_TEMP/targets.raw.json"
+            if [[ $(yq '.pool | tag' "$file") == '!!map' ]]; then
+              yq -o=json -I=0 '.pool' "$file" > "$RUNNER_TEMP/pool.json"
+              jq --arg flow "$flow" --slurpfile pool "$RUNNER_TEMP/pool.json" '. + {($flow): $pool[0]}' \
+                "$RUNNER_TEMP/pools.json" > "$RUNNER_TEMP/merged.json"
+              mv "$RUNNER_TEMP/merged.json" "$RUNNER_TEMP/pools.json"
+            fi
+          done
           jq -e 'all(.[]; (.instance | type == "string" and test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$")) and (.kind == "compose" or .kind == "helm"))' \
             "$RUNNER_TEMP/targets.raw.json" >/dev/null ||
-            { echo "::error::$file: every target needs instance <flow>/<AppName>/<AppInstance> and kind compose | helm"; exit 1; }
+            { echo "::error::every target needs instance <AppName>/<AppInstance> and kind compose | helm (config/$DEPLOY_ENV/<flow>/workflows-config.yml)"; exit 1; }
           # compose targets keep host and user; helm targets keep cluster and namespace, "{flow}" → the flow.
           jq -c 'map((.instance | split("/")[0]) as $flow
               | if .kind == "helm" then del(.host, .user) | .namespace |= gsub("\\{flow\\}"; $flow)
@@ -119,9 +150,15 @@ jobs:
               (.cluster | type == "string" and test("^[a-z0-9][a-z0-9.-]*$"))
               and (.namespace | type == "string" and test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")))' \
             "$RUNNER_TEMP/targets.json" >/dev/null ||
-            { echo "::error::$file: every helm target needs a cluster and a namespace that is a DNS label once {flow} is substituted"; exit 1; }
-          echo "compose=$(jq '[.[] | select(.kind == "compose")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
-          echo "helm=$(jq '[.[] | select(.kind == "helm")] | length' "$RUNNER_TEMP/targets.json")" >> "$GITHUB_OUTPUT"
+            { echo "::error::every helm target needs a cluster and a namespace that is a DNS label once {flow} is substituted"; exit 1; }
+          {
+            echo "compose=$(jq '[.[] | select(.kind == "compose")] | length' "$RUNNER_TEMP/targets.json")"
+            echo "helm=$(jq '[.[] | select(.kind == "helm")] | length' "$RUNNER_TEMP/targets.json")"
+            # Flows whose compose targets go through scripts/pool-deploy.sh: a pool and at least one compose target.
+            echo "pooled=$(jq -r --slurpfile pools "$RUNNER_TEMP/pools.json" '[.[] | select(.kind == "compose")
+                | .instance | split("/")[0]] | unique | map(select(. as $f | $pools[0] | has($f))) | join(" ")' \
+                "$RUNNER_TEMP/targets.json")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Record the deployment (in progress)
         id: deployment
@@ -140,77 +177,157 @@ jobs:
             -f state=in_progress -f log_url="$RUN_URL" -f description="deploying $DEPLOY_TAG" >/dev/null
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy compose targets (demo step 1 — placeholder)
+      - name: Deploy compose targets (demo step 1 — host pools, DL-39)
         id: compose
+        env:
+          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          POOLED_FLOWS: ${{ steps.targets.outputs.pooled }}
         run: |
           set -euo pipefail
-          # TODO(DL-35): the real transport — not built in the demo (brief v1.1). When the dev hosts exist:
-          #   1. Environment `dev` holds the secret DEV_DEPLOY_SSH_KEY (a deploy key for the `deploy` user);
-          #      load it into ssh-agent for this job only:  eval "$(ssh-agent -s)"; ssh-add - <<<"$KEY"
-          #   2. Pin the host keys: a reviewed config/<env>/known_hosts, used with
-          #      -o StrictHostKeyChecking=yes -o UserKnownHostsFile=config/<env>/known_hosts -o BatchMode=yes
-          #   3. On each host the key's authorized_keys entry has a forced command
-          #      (command="/usr/local/bin/run-compose-ssh",no-pty,no-port-forwarding,no-agent-forwarding)
-          #      that accepts only `run-compose.sh <env> <flow> <AppName> <AppInstance> pull|start|health`
-          #      with IMAGE_TAG, validates the arguments and execs the installed run-compose.sh.
-          #   4. Per target: pull → start → health (D9 §6.4); a failed health re-runs start with the
-          #      previous IMAGE_TAG from the checked-out compose.env (D9 §6.9) and that instance gets no
-          #      write-back. Align first: D9 §6.4 passes IMAGE_TAG as an environment override, while
-          #      run-compose.sh ignores exported IMAGE_TAG outside `local` (compose.env is the record) —
-          #      either it honours the override on *-dev hosts, or the host syncs the candidate
-          #      compose.env (as validated below) before `pull`.
-          #   5. A host that GitHub-hosted runners cannot reach gets a self-hosted runner on the host
-          #      (runs-on: [self-hosted, <host>]) running the same three commands locally — the one
-          #      self-hosted exception (DL-35, D7 §2).
-          # The config as it will be after the write-back: run-compose.sh takes the tag of a *-dev
-          # instance from its compose.env (git is the deployment record), so the dry run validates a
-          # candidate copy of the tree with IMAGE_TAG already set (CONFIG_ROOT).
-          candidate="$RUNNER_TEMP/config-candidate"
-          rm -rf "$candidate"
-          if [[ -d config ]]; then cp -a config "$candidate"; fi
-          deployed=() failed=()
-          {
-            echo "### deploy-dev: compose targets (placeholder — TODO(DL-35))"
-            echo ""
-            echo "| instance | host | result | command it would run |"
-            echo "|---|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          while IFS=$'\t' read -r instance host user; do
-            IFS=/ read -r flow app inst <<<"$instance"
-            wrapper="deephaven-connectors/$app/scripts/run-compose.sh"
-            remote_cmd="IMAGE_TAG=$DEPLOY_TAG run-compose.sh $DEPLOY_ENV $flow $app $inst"
-            ssh_cmd="ssh ${user}@${host:-<host missing in targets.yml>} '$remote_cmd pull && $remote_cmd start && $remote_cmd health'"
-            echo "::group::$instance"
-            result=validated
-            if [[ -z $host ]]; then
-              echo "::error::$instance: no host in targets.yml"
-              result="failed: no host"
-            elif [[ ! -f $wrapper ]]; then
-              echo "::error::$instance: $wrapper not found"
-              result="failed: no run-compose.sh"
-            elif ! scripts/ci/set-image-tag.sh "$DEPLOY_TAG" "$candidate/$DEPLOY_ENV/$instance/compose.env" >/dev/null; then
-              echo "::error::$instance: config/$DEPLOY_ENV/$instance/compose.env missing"
-              result="failed: no compose.env"
-            # Validate as the host would run it: GITHUB_RUN_ID would switch run-compose.sh to the CI
-            # project name (ci-<run>-<attempt>-...), which the dev host never uses.
-            elif ! env -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT CONFIG_ROOT="$candidate" \
-                bash "$wrapper" "$DEPLOY_ENV" "$flow" "$app" "$inst" start --dry-run; then
-              echo "::error::$instance: run-compose.sh start --dry-run failed"
-              result="failed: dry-run"
-            fi
-            if [[ $result == validated ]]; then
-              echo "would run: $ssh_cmd"
-              deployed+=("$instance")
+          # A flow whose workflows-config.yml declares a `pool` (DL-39): scripts/pool-deploy.sh builds the flow's host
+          # bundle from this checkout (validated from inside with IMAGE_TAG=<tag>), syncs it to every box of the
+          # pool, resolves each instance's box (pinned → discovered → assigned) and runs, there,
+          #   IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <inst> pull → start → health
+          # run-compose.sh honours IMAGE_TAG (and IMAGE_REPO) from the environment as an override of compose.env in
+          # every allowed env, so the synced compose.env keeps the previous tag until the write-back records the
+          # new one, and a failed start or health re-runs start without the override (D9 §6.9).
+          #   ssh    when the Environment `dev` holds DEV_DEPLOY_SSH_KEY: the key lives in this step's ssh-agent
+          #          only, and the reviewed config/<env>/known_hosts pins the boxes' host keys (pool-deploy.sh
+          #          refuses without it; an unknown key is never accepted).
+          #   local  otherwise — no box exists yet (brief v1.1): the runner plays every box, one directory each
+          #          under $RUNNER_TEMP/boxes (so every box provably gets the same complete tree), validate +
+          #          start --dry-run per placement, and the ssh commands printed.
+          # A flow without a pool keeps the per-target placeholder further down.
+          # TODO(DL-35), on the boxes: the deploy key's authorized_keys entry has a forced command
+          #   (command="/usr/local/bin/run-compose-ssh",no-pty,no-port-forwarding,no-agent-forwarding) that accepts
+          #   only `[IMAGE_TAG=<tag>] <root>/<app dir>/scripts/run-compose.sh <env> <flow> <AppName> <AppInstance>
+          #   pull|start|stop|health|status [--json]` and the bundle sync (rsync --server into <root>, e.g. through
+          #   rrsync), validates the arguments and execs them. A box that GitHub-hosted runners cannot reach gets
+          #   a self-hosted runner on it (runs-on: [self-hosted, <host>]) running the same commands locally — the
+          #   one self-hosted exception (DL-35, D7 §2).
+          deployed=() failed=() placements=() pool_failed=()
+          read -r -a pooled <<<"$POOLED_FLOWS"
+          if [[ ${#pooled[@]} -gt 0 ]]; then
+            if [[ -n ${DEV_DEPLOY_SSH_KEY:-} ]]; then
+              export POOL_TRANSPORT=ssh
+              key="$RUNNER_TEMP/deploy-key"
+              (umask 077 && printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key")
+              eval "$(ssh-agent -s)" > /dev/null
+              trap 'ssh-agent -k > /dev/null 2>&1 || true' EXIT
+              ssh-add -q "$key"
+              rm -f "$key"
             else
-              failed+=("$instance")
+              export POOL_TRANSPORT=local POOL_LOCAL_ROOT="$RUNNER_TEMP/boxes"
             fi
-            echo "::endgroup::"
-            echo "| \`$instance\` | ${host:-—} | $result | \`$ssh_cmd\` |" >> "$GITHUB_STEP_SUMMARY"
-          done < <(jq -r '.[] | select(.kind == "compose") | [.instance, .host, .user] | @tsv' "$RUNNER_TEMP/targets.json")
-          echo "deployed=$(printf '%s\n' "${deployed[@]}" | jq -R . | jq -cs 'map(select(length > 0))')" >> "$GITHUB_OUTPUT"
-          echo "list=${deployed[*]}" >> "$GITHUB_OUTPUT"
-          if [[ ${#failed[@]} -gt 0 ]]; then
-            echo "::error::${#failed[@]} compose target(s) failed: ${failed[*]} — no write-back for them"
+            for flow in "${pooled[@]}"; do
+              bundle="$RUNNER_TEMP/bundle-$flow" report="$RUNNER_TEMP/pool-$flow.json" out="$RUNNER_TEMP/deployed-$flow.txt"
+              rc=0
+              : > "$out"
+              echo "::group::pool $DEPLOY_ENV/$flow: host bundle"
+              scripts/pool-deploy.sh "$DEPLOY_ENV" "$flow" bundle --out "$bundle" --tag "$DEPLOY_TAG" || rc=$?
+              echo "::endgroup::"
+              if [[ $rc -eq 0 ]]; then
+                echo "::group::pool $DEPLOY_ENV/$flow: deploy (transport $POOL_TRANSPORT)"
+                scripts/pool-deploy.sh "$DEPLOY_ENV" "$flow" deploy --tag "$DEPLOY_TAG" --bundle "$bundle" \
+                  --report "$report" > "$out" || rc=$?
+                echo "::endgroup::"
+              fi
+              # stdout: `deployed <flow>/<app>/<inst>@<host>=<tag>` per instance that deployed (validated, with local).
+              while IFS= read -r line; do
+                if [[ $line =~ ^deployed\ ([a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+)@([a-z0-9.-]+)=(.+)$ ]]; then
+                  deployed+=("${BASH_REMATCH[1]}")
+                  placements+=("${BASH_REMATCH[1]}=${BASH_REMATCH[2]}")
+                fi
+              done < "$out"
+              expected=$(jq -r --arg f "$flow" '.[] | select(.kind == "compose") | .instance | select(startswith($f + "/"))' \
+                "$RUNNER_TEMP/targets.json")
+              for instance in $expected; do
+                [[ " ${deployed[*]} " == *" $instance "* ]] || failed+=("$instance")
+              done
+              if [[ $rc -ne 0 ]]; then
+                echo "::error::pool-deploy.sh $DEPLOY_ENV $flow failed (exit $rc) — see the group above"
+                pool_failed+=("$flow")
+              fi
+              {
+                echo "### deploy-dev: pool \`$DEPLOY_ENV/$flow\` (transport \`$POOL_TRANSPORT\`, DL-39)"
+                echo ""
+                if [[ -f $report ]]; then
+                  echo "| box | bundle | files | sha256 | verified |"
+                  echo "|---|---|---|---|---|"
+                  jq -r '.boxes[] | "| `\(.host)` | \(.result) | \(.files // "—") | `\(.sha256 // "—")` | \(.verified) |"' "$report"
+                  echo ""
+                  echo "| instance | host | how | result | command |"
+                  echo "|---|---|---|---|---|"
+                  jq -r '.placements[] | "| `\(.instance)` | \(.host // "—") | \(.how) | \(.result // "—") | \((.commands // []) | map("`" + . + "`") | join("<br>")) |"' "$report"
+                else
+                  echo "- **failed** before any box was touched (exit $rc): see the job log"
+                fi
+                echo ""
+              } >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
+          # A flow without a pool: the per-target placeholder (brief v1.1, TODO(DL-35)) — `run-compose.sh ... start
+          # --dry-run` on the runner and the SSH command it would run on the target's `host`. It validates the config
+          # as it will be after the write-back: a candidate copy of the tree with IMAGE_TAG set (CONFIG_ROOT); on a
+          # real host the override IMAGE_TAG=<tag> has the same effect before the write-back persists it.
+          rows=$(jq -r --arg pooled " $POOLED_FLOWS " '.[] | select(.kind == "compose")
+              | (.instance | split("/")[0]) as $flow | select($pooled | contains(" " + $flow + " ") | not)
+              | [.instance, .host, .user] | join("|")' "$RUNNER_TEMP/targets.json")
+          legacy=()
+          [[ -z $rows ]] || mapfile -t legacy <<<"$rows"
+          if [[ ${#legacy[@]} -gt 0 ]]; then
+            candidate="$RUNNER_TEMP/config-candidate"
+            rm -rf "$candidate"
+            if [[ -d config ]]; then cp -a config "$candidate"; fi
+            {
+              echo "### deploy-dev: compose targets without a pool (placeholder — TODO(DL-35))"
+              echo ""
+              echo "| instance | host | result | command it would run |"
+              echo "|---|---|---|---|"
+            } >> "$GITHUB_STEP_SUMMARY"
+            for row in "${legacy[@]}"; do
+              # "|", not a tab: read would merge the tabs around an empty host.
+              IFS='|' read -r instance host user <<<"$row"
+              IFS=/ read -r flow app inst <<<"$instance"
+              wrapper="deephaven-connectors/$app/scripts/run-compose.sh"
+              remote_cmd="IMAGE_TAG=$DEPLOY_TAG run-compose.sh $DEPLOY_ENV $flow $app $inst"
+              ssh_cmd="ssh ${user}@${host:-<host missing in workflows-config.yml>} '$remote_cmd pull && $remote_cmd start && $remote_cmd health'"
+              echo "::group::$instance"
+              result=validated
+              if [[ -z $host ]]; then
+                echo "::error::$instance: no host in config/$DEPLOY_ENV/$flow/workflows-config.yml and no pool"
+                result="failed: no host"
+              elif [[ ! -f $wrapper ]]; then
+                echo "::error::$instance: $wrapper not found"
+                result="failed: no run-compose.sh"
+              elif ! scripts/ci/set-image-tag.sh "$DEPLOY_TAG" "$candidate/$DEPLOY_ENV/$instance/compose.env" >/dev/null; then
+                echo "::error::$instance: config/$DEPLOY_ENV/$instance/compose.env missing"
+                result="failed: no compose.env"
+              # Validate as the host would run it: GITHUB_RUN_ID would switch run-compose.sh to the CI
+              # project name (ci-<run>-<attempt>-...), which the dev host never uses.
+              elif ! env -u GITHUB_RUN_ID -u GITHUB_RUN_ATTEMPT CONFIG_ROOT="$candidate" \
+                  bash "$wrapper" "$DEPLOY_ENV" "$flow" "$app" "$inst" start --dry-run; then
+                echo "::error::$instance: run-compose.sh start --dry-run failed"
+                result="failed: dry-run"
+              fi
+              if [[ $result == validated ]]; then
+                echo "would run: $ssh_cmd"
+                deployed+=("$instance")
+              else
+                failed+=("$instance")
+              fi
+              echo "::endgroup::"
+              echo "| \`$instance\` | ${host:-—} | $result | \`$ssh_cmd\` |" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+          {
+            echo "deployed=$(printf '%s\n' "${deployed[@]}" | jq -R . | jq -cs 'map(select(length > 0))')"
+            echo "list=${deployed[*]}"
+            echo "placements=${placements[*]}"
+          } >> "$GITHUB_OUTPUT"
+          if [[ ${#failed[@]} -gt 0 || ${#pool_failed[@]} -gt 0 ]]; then
+            echo "::error::compose: ${#failed[@]} target(s) failed${failed[*]:+: ${failed[*]}} — no write-back for them${pool_failed[*]:+; pool-deploy.sh failed for: ${pool_failed[*]}}"
             echo "failed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -344,6 +461,8 @@ jobs:
         if: ${{ !cancelled() && steps.deployed.outputs.list != '' }}
         env:
           DEPLOYED: ${{ steps.deployed.outputs.list }}
+          # The boxes pool-deploy.sh chose, recorded as `host` in each flow's workflows-config.yml (DL-39).
+          WRITE_BACK_PLACEMENTS: ${{ steps.compose.outputs.placements }}
         run: |
           set -euo pipefail
           read -r -a instances <<<"$DEPLOYED"

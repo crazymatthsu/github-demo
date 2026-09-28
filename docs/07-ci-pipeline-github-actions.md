@@ -490,7 +490,7 @@ flowchart LR
   ST --> PUB["publish: pre-release and sha- tags, SBOM, build-info"]
   CL --> PUB
   PUB --> KD["kind-deploy (Demo step 2): helm lint, upgrade --install per AppInstance, smoke, delete"]
-  KD --> DD["deploy-dev (Environment dev): pull, start, health per targets.yml"]
+  KD --> DD["deploy-dev (Environment dev): pull, start, health per workflows-config.yml"]
   DD --> WB["write-back of the deployed tag, with skip ci"]
 ```
 
@@ -566,10 +566,11 @@ makes, and it is the one commit that does not trigger another run.
 | Reusable workflows | `.github/workflows/_gradle-build.yml`, `_integration-test.yml`, `_docker-publish.yml`, `_deploy-dev.yml`, `_kind-deploy.yml` | Demo step 1 (compose); `_kind-deploy.yml` and the Helm adapter of `_deploy-dev.yml` in Demo step 2 (kind + Helm) |
 | Composite actions | `.github/actions/{setup-build-env,registry-login,compose-stack,affected-matrix}/action.yml`; `{setup-kube-tools,kind-cluster,helm-deploy-instance}/action.yml` | Demo step 1 (compose); the three Kubernetes actions in Demo step 2 (kind + Helm) |
 | Affected map | `.github/affected-map.yml` | Demo step 1 (compose) |
+| Host pools | `scripts/pool-deploy.sh` (called by `_deploy-dev.yml` per pooled flow), `scripts/ci/set-target-host.sh`, `scripts/test/pool-deploy-test.sh` (lint job, after ShellCheck) | v1.3 (DL-39) |
 | Ownership | `.github/CODEOWNERS` (`config/**` prod paths → ops; `build-logic/**`, `.github/**` → platform) | Demo step 1 (compose) |
 | Registry | GHCR via `GITHUB_TOKEN` (`packages: write`); `registry-login` has an `oidc` mode ready for Artifactory | Demo step 1 (compose); OIDC in the enterprise |
 | Build environment | `container: ghcr.io/<org>/base/ci-build:<tag>` on the `build` job (DL-28 leaning; D10 §5.2; image content in D3 §6.10) | Demo step 1 (compose) |
-| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/targets.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install --rollback-on-failure --wait` through `scripts/helm-deploy-instance.sh` into a kind cluster created in the job (`cluster: kind-ci`); Phase 3 (EKS + GitOps): Argo CD sync |
+| Dev deployment | `deploy-dev` job under Environment `dev`, adapter per `config/us-dev/cash/workflows-config.yml` (D9) | Demo step 1 (compose): `run-compose.sh` on the compose hosts (placeholder in the demo: `--dry-run` on the runner plus a `TODO(DL-35)` comment, D9 §6.4); Demo step 2 (kind + Helm): `helm upgrade --install --rollback-on-failure --wait` through `scripts/helm-deploy-instance.sh` into a kind cluster created in the job (`cluster: kind-ci`); Phase 3 (EKS + GitOps): Argo CD sync |
 | Retention | nightly job calling the GHCR package API (demo) / `jf` cleanup (enterprise), rules from D4 | Demo step 1 (compose) |
 
 ## 9. Open items

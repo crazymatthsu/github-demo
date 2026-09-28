@@ -162,8 +162,8 @@ v0.1 draft drew it under each subproject, the root location is the one used by D
 ```
 config/
 └── <env>/                         # us-dev | us-qa | us-prod | jp-dev | jp-qa | jp-prod
-    ├── targets.yml                # dev deploy targets: compose hosts (step 1) or cluster + namespace (step 2 / EKS)
     └── <business-flow>/           # cash | deriv | swap
+        ├── workflows-config.yml            # this flow's deploy inventory: host pool + recorded placement (bare metal) or cluster + namespace (Kubernetes)
         └── <AppName>/             # == subproject name, e.g. source-kafka
             ├── app-common/        # shared by all instances of this app in this env + flow
             │   ├── application.yml
@@ -192,7 +192,7 @@ Gaps in the v0.1 tree to resolve while writing D5:
   (`<app>-<instance>`, `replicas: 1`), values layered `helm/<app>/values.yaml` → `app-common/values.yaml`
   → `<instance>/values.yaml`; the `application.yml` layers are passed to the chart as file values
   (`--set-file`) and rendered into a ConfigMap mounted under `/config/...`; `compose.env` values
-  become container `env` in the instance values. `targets.yml` per env names the deploy target of
+  become container `env` in the instance values. `workflows-config.yml` per env names the deploy target of
   each instance (§5.6, §5.7, DL-33). Compose mounts the same files for tests.
 - Typos fixed from v0.1: `DockerFile` → `Dockerfile`, `AppInstnace` → `AppInstance`,
   `comfig` → `config`.
@@ -247,7 +247,7 @@ to grasp). Minimum set per document:
 | D8 | Test-infra stack | Test levels (unit → component IT → system IT → smoke) | Start deps → seed → run connector → assert → teardown |
 | D9 | Cluster / namespace / approval matrix per `<region>-<stage>` | dev → qa → prod promotion through the config repo with gates; hotfix path | Prod deploy via GitOps sync incl. rollback; gitGraph for release / hotfix branching |
 | D10 | Runner → job container → Deephaven and dependency containers → job network (one per execution model A–D); Kubernetes variants (kind in job, ephemeral namespace, ARC) | Job lifecycle: pull → start dependencies → wait healthy → build / test → collect logs → teardown → leak check | Workflow job → compose or Testcontainers → Deephaven → tests → teardown, with the failure and cancel paths drawn |
-| D11 | Config tree → `targets.yml` / ApplicationSet → Helm release per instance → Deployment + ConfigMap + Secret | Config or image change → PR → lint → merge → `deploy-dev` (`helm upgrade`) or controller sync → rolling update | Merge to `main` → build → publish → `helm upgrade --install` per instance → readiness → smoke test → tag write-back |
+| D11 | Config tree → `workflows-config.yml` / ApplicationSet → Helm release per instance → Deployment + ConfigMap + Secret | Config or image change → PR → lint → merge → `deploy-dev` (`helm upgrade`) or controller sync → rolling update | Merge to `main` → build → publish → `helm upgrade --install` per instance → readiness → smoke test → tag write-back |
 
 Tasks
 
@@ -296,11 +296,14 @@ Tasks
   instance, waits for readiness, runs a smoke test, and deletes the cluster.
 - **CD on merge to `main` (decided v0.7)**: the `main` workflow ends with a `deploy-dev` job (GitHub
   Environment `dev`) that deploys the images it just built to the targets in
-  `config/us-dev/targets.yml` — step 1: `run-compose.sh <env> <flow> <app> <inst> pull`, `start`,
+  `config/us-dev/cash/workflows-config.yml` — step 1: `run-compose.sh <env> <flow> <app> <inst> pull`, `start`,
   `health` on the compose hosts — **in the demo a placeholder (v1.1)**: the job runs
   `run-compose.sh ... start --dry-run` on the runner to validate each target and prints the SSH command
   it would run, next to a `TODO(DL-35)` comment describing the real transport; step 2:
   `helm upgrade --install` per AppInstance into the target cluster — then writes the deployed tag back into the instance config with a loop guard (§5.12).
+  **Host pools (decided v1.3, DL-39):** each flow's `config/<env>/<flow>/workflows-config.yml` may list its bare-metal boxes as a pool; every
+  box receives the whole configuration of the flow, any instance can run on any box, one box at a time, and the deploy
+  records the chosen box as `host`.
   qa and prod are never touched by this job.
 
 **Demo sequence and later phases**
@@ -677,11 +680,11 @@ stays in this monorepo under `config/` for now; merge to `main` auto-deploys to 
   split plus a source change in the deployer, not a redesign. Revisit when access control or change
   cadence demands it. Alternatives kept for the record: one repo per env; code repo holds
   `app-common` defaults + schema while an env repo holds env / instance values.
-- **Inventory**: `config/<env>/targets.yml` (decided v0.7) maps each `<flow>/<app>/<instance>` to its
+- **Inventory**: `config/<env>/<flow>/workflows-config.yml` (decided v0.7) maps each `<flow>/<app>/<instance>` to its
   deploy target — a compose host (demo step 1) or a cluster + namespace (step 2, EKS). On EKS with a
   GitOps controller the config tree itself becomes the inventory: an Argo CD `ApplicationSet`
   (git directory generator × cluster generator) creates one Application per instance directory and
-  `targets.yml` retires.
+  `workflows-config.yml` retires.
 - **Delivery mechanism (v0.4)**: a controller in each cluster (or a hub) watches the config repo and
   reconciles; nothing is pushed to machines.
   - **Argo CD**: ApplicationSets, sync waves, **sync windows** (maps directly to trading-hours
@@ -699,7 +702,7 @@ stays in this monorepo under `config/` for now; merge to `main` auto-deploys to 
 Tasks
 
 - [x] Config stays in this monorepo for now (decided v0.7, DL-06); add CODEOWNERS and path filters.
-- [x] `targets.yml` schema defined in D5 §6.6; loop guard decided v1.0: bot-author check + `[skip ci]` (DL-36).
+- [x] `workflows-config.yml` schema defined in D5 §6.6; loop guard decided v1.0: bot-author check + `[skip ci]` (DL-36).
 - [ ] Decide the GitOps controller (DL-30) and the ApplicationSet / Kustomization layout that mirrors
       the config tree (DL-33).
 - [ ] Define drift / self-heal policy, rollback and sync windows per env.
@@ -960,7 +963,7 @@ Tasks
   repos; no rebuild.
 - **Auto-deploy to dev on merge to `main` (decided v0.7)**: the `main` workflow is build → unit and
   integration tests → publish images (pre-release tag) → `deploy-dev` job under GitHub Environment
-  `dev` (no reviewers). The job reads `config/us-dev/targets.yml` and, per AppInstance: demo step 1
+  `dev` (no reviewers). The job reads `config/us-dev/cash/workflows-config.yml` and, per AppInstance: demo step 1
   runs `run-compose.sh <env> <flow> <app> <inst> pull`, `start`, `health` on the compose host
   (DL-35: SSH with a deploy key from the runner, or a self-hosted runner on the host) — **in the demo
   skeleton this adapter is a placeholder (v1.1)**: `run-compose.sh ... start --dry-run` on the runner
@@ -976,6 +979,12 @@ Tasks
   keeps running (`--rollback-on-failure`, Helm 4's `--atomic`, rolls back Helm; on the compose hosts `pull` runs first so a registry
   failure changes nothing, and a failed `health` re-runs `start` with the previous tag — D9 §6.9). qa
   and prod are never touched by this job.
+- **Bare-metal host pools (decided v1.3, DL-39)**: each flow's `config/<env>/<flow>/workflows-config.yml` (one
+  inventory per flow, owned by the flow team) declares its `pool` (`hosts`, `user`, `root`); on every deploy the job builds the flow's host bundle (compose runtime,
+  `config/_common`, `config/<env>/_common`, all of `config/<env>/<flow>`, `workflows-config.yml`, a `.platform-bundle` manifest)
+  and syncs it to every box over the DL-35 channel, so `run-compose.sh` works for any instance on any box; placement is
+  pinned → discovered → assigned and written back as `host`; `run-compose.sh start` refuses an instance already running
+  on another box of the pool. The demo runs it with the runner playing every box until the boxes exist.
 - Deploy mechanics on EKS (v0.4, consistent with §5.7): a merged bump in the config repo is
   reconciled by the GitOps controller into a rolling update of the instance Deployment; readiness
   probes gate traffic; `maxUnavailable` / `maxSurge` per instance; PodDisruptionBudgets; optional
@@ -999,7 +1008,7 @@ Tasks
 Tasks
 
 - [ ] Draw the dev → qa → prod flow and the prod-deploy sequence (incl. rollback) in D9.
-- [ ] Define `deploy-dev`: `targets.yml` schema, per-target adapter (compose / Helm), loop guard,
+- [ ] Define `deploy-dev`: `workflows-config.yml` schema, per-target adapter (compose / Helm), loop guard,
       health gate, GitHub Environment `dev` settings, rollback (`helm rollback` / previous tag).
 - [x] Decided v1.0: SSH from the GitHub-hosted runner with a deploy key when the host is reachable, otherwise a self-hosted runner on the host (DL-35). Hosts themselves still to confirm (§8).
 - [ ] Decide the GitOps controller for EKS and the qa / prod promotion mechanics (DL-30).
@@ -1080,6 +1089,7 @@ Tasks
 | DL-36 | Loop guard for bot write-backs in the same repo | skip bot author in workflow `if:` / `[skip ci]` / `paths-ignore` on `config/**` | **Decided (v1.0):** skip bot author + `[skip ci]`; config-only human merges still deploy | yes | decided (v1.0) |
 | DL-37 | AppInstance naming | numeric suffix / upstream name / business-logic name | **Business-logic name: the data source, optionally with target (`trades-db-to-amps`); kebab-case, unique per env + flow + AppName; AppName = code base; `<AppName>-<AppInstance>` ≤ 53 (Helm), AppInstance ≤ 32** | yes | decided (v0.8, budget corrected v0.9) |
 | DL-38 | Kubernetes namespace layout | namespace per `<flow>` in each `<region>-<stage>` cluster / per `<flow>-<app>` / one per env | namespace per `<flow>`; release name `<app>-<instance>` | no (deferred; the demo uses namespace = `<flow>` as a working assumption) | open — deferred to Phase 3 (v1.1), not needed for the demo skeleton |
+| DL-39 | Host pools for the bare-metal compose targets | host per instance (pinned) / pool per `<env>/<flow>` with recorded placement / deploy-time scheduler | **One inventory per flow, `config/<env>/<flow>/workflows-config.yml`, with the flow's `pool`; every box gets the flow's whole configuration (host bundle synced on deploy); placement pinned → discovered → assigned, recorded as `host` by the write-back; single-run rule on the boxes** | no | decided (v1.3) |
 
 ---
 
@@ -1142,7 +1152,7 @@ Tasks
 **CD on merge to `main` (§5.12)**
 
 - [x] Merging a PR to `main` runs build → tests → publish → `deploy-dev` with no manual step: step 1
-      resolves the compose targets in `config/us-dev/targets.yml`, runs `run-compose.sh ... --dry-run`
+      resolves the compose targets in `config/us-dev/cash/workflows-config.yml`, runs `run-compose.sh ... --dry-run`
       for each on the runner and prints the SSH command it would run (placeholder with a `TODO(DL-35)`
       comment; no host needed in the demo); step 2 runs `helm upgrade --install` into the target cluster
       — step 1 proven by the first `main` runs (`0.1.0-rc.39` deployed); step 2's Helm adapter in
@@ -1152,7 +1162,7 @@ Tasks
       trigger another deploy (loop guard verified) — `chore(config): us-dev deployed 0.1.0-rc.39 [skip ci]`
       started no run; step 2 writes `IMAGE_TAG` and `image.tag` together (v1.2).
 - [x] qa and prod are untouched by the `main` workflow; a failed deploy leaves the previous release
-      running and the job red — `deploy-dev` reads only `config/us-dev/targets.yml`, `run-compose.sh` and
+      running and the job red — `deploy-dev` reads only `config/us-dev/cash/workflows-config.yml`, `run-compose.sh` and
       `helm-deploy-instance.sh` refuse any env other than `local` / `*-dev`; the Helm rollback path
       (`--rollback-on-failure`, `helm rollback` after a failed `helm test`) is by construction and not yet
       drilled (follow-up in §8) (v1.2).
@@ -1207,8 +1217,10 @@ Product and domain
 - [ ] Which components publish to AMPS / Deephaven — part of `source-database`, or shared sinks in
       `connectors-framework`?
 - [ ] Do other repositories consume `connectors-framework` (needs Maven publishing to JFrog)?
-- [ ] Number of instances and hosts per env; are instances pinned to hosts? (sizes the sync / CD
-      design)
+- [x] Number of instances and hosts per env; are instances pinned to hosts? (sizes the sync / CD
+      design) — decided v1.3 (DL-39): instances are not pinned; each flow's `config/<env>/<flow>/workflows-config.yml` declares its host pool,
+      every box receives the flow's whole configuration, and the deploy records the chosen box. Counts per env still
+      to confirm.
 - [x] AppInstance = business-logic name (data source, optionally with target); AppName = code base
       (decided v0.8, DL-37).
 - [ ] Deephaven version and auth mode for CI tests (anonymous handler vs pre-shared key)? Must our
@@ -1264,7 +1276,8 @@ Process
 | IRSA | IAM Roles for Service Accounts: AWS identity for a pod without static keys |
 | kind | Kubernetes in Docker: a throw-away cluster inside a CI job or on a laptop |
 | Helm release | one installed instance of a chart; here one per AppInstance |
-| targets.yml | per-env file mapping each instance to its deploy target: compose host, or cluster + namespace |
+| workflows-config.yml | per-flow file (`config/<env>/<flow>/workflows-config.yml`) mapping each instance of the flow to its deploy target: a compose box (pinned, or recorded from the flow's host pool), or cluster + namespace |
+| host pool | the bare-metal boxes of one `<env>/<flow>` listed under `pool` in the flow's `workflows-config.yml`; every box holds the flow's whole configuration (host bundle), any instance may run on any box, one box at a time (DL-39) |
 | write-back | the CD job committing the deployed image tag into the config tree |
 | loop guard | the rule that a bot write-back commit does not trigger the deploy workflow again |
 
@@ -1286,6 +1299,7 @@ Process
 | v1.0 | 2026-09-26 | The eleven blocking decisions were walked through and decided, each as recommended: DL-03 hybrid scope, DL-04 Conventional Commits + release PR, DL-05 semver + sha tags, DL-07 explicit import list, DL-09 bot PRs for qa / prod, DL-13 company base JRE image, DL-14 Dockerfile with the Gradle-built jar, DL-27 layered teardown + leak check, DL-28 pinned `ci-build` image, DL-35 SSH from the runner (else self-hosted runner on the host), DL-36 bot-author check + `[skip ci]`. ADRs moved to Accepted; §5 tasks ticked; no blocking row remains open — the demo skeleton may start. |
 | v1.1 | 2026-09-26 | Demo simplifications for the skeleton: the `deploy-dev` compose adapter (SSH to the dev hosts, DL-35) is a placeholder — `run-compose.sh --dry-run` on the runner plus a `TODO(DL-35)` comment describing the transport; the dev-host question in §8 is closed for the demo. Deferred to Phase 3, not needed for the skeleton: Vault authentication and delivery (DL-11, DL-12, DL-31), namespace layout (DL-38, demo assumes namespace = `<flow>`), the EKS GitOps controller (DL-30) and the EKS registry (DL-34); the matching §8 platform questions are tagged Phase 3. |
 | v1.2 | 2026-09-27 | Demo step 2 (kind + Helm) implemented on top of the green step 1: a Helm chart per app (`deephaven-connectors/<AppName>/helm/<AppName>/`, three identical charts apart from name and `image.repository`), `values.yaml` layers for every app-common and instance directory in `local` and `us-dev`, `scripts/helm-deploy-instance.sh` as the one implementation of the Helm flag list (config-lint check 12, the kind deploy test and `deploy-dev` all call it), `scripts/helm-smoke-diff.sh`, `test-infra/kind/` (pinned kind v0.33.0 / kubectl v1.37.1 / Helm v4.3.0 / kubeconform v0.8.0, `kind.sh up|load|diagnostics|down|leak-check`), the reusable `_kind-deploy.yml` in `pr.yml` (when `deploy-test` matches) and `main.yml` (before `deploy-dev`), the `deploy-dev` Helm adapter for `cluster: kind-ci` with write-back of `image.tag` and `IMAGE_TAG` together, config-lint checks 3 / 4 / 10 / 12 with kubeconform. Corrections surfaced by the implementation: Helm 4 renamed `--atomic` to `--rollback-on-failure` (D6, D9, D10, D11, DL-29, DL-33 updated); `--set-string image.tag` (a numeric tag would become an integer); a first install runs without `--rollback-on-failure` so a failed one stays for diagnostics; Helm 4 prints Job test-hook logs only through `helm.sh/hook-output-log-policy`; `fsGroup: 10001` is needed to read the 0400 Secret files; `appFiles.<layer>.<file>` escapes `.` as `\\.`; a config-only PR builds no image, so its kind deploy runs on `main` (§8 follow-up). §7 step 2 and CD criteria ticked. |
+| v1.3 | 2026-09-27 | Decided: host pools per `<env>/<flow>` for the on-prem bare-metal compose boxes (DL-39), asked for after demo step 2 went green. the inventory moves to `config/<env>/<flow>/workflows-config.yml` (one per flow, owned by the flow team) and gains `pool` (`hosts`, `user`, `root`); a compose target's `host` becomes the recorded placement (optional, written back by the deploy); every box receives the flow's host bundle (compose runtime + `config/_common`, `config/<env>/_common`, `config/<env>/<flow>/**`, `workflows-config.yml`, `.platform-bundle` manifest) synced over the DL-35 channel; `scripts/pool-deploy.sh` (bundle, plan, sync, discover, deploy, status) with ssh / local / dry-run transports; placement pinned → discovered → assigned; `run-compose.sh` resolves its root from the bundle marker and refuses to start an instance running on another box of the pool; config-lint check 11 validates pools; DL-10 partly reopened for the compose path; §8 host question answered. Demo step 2 proven on `main` (kind deploy, Helm adapter, write-back of `0.1.0-rc.45`); `release-please` needs the repository setting that lets Actions open PRs. The inventory file is `workflows-config.yml` (renamed from `targets.yml`). |
 
 ---
 

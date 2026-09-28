@@ -30,7 +30,7 @@ config tree, sync windows for deployment windows, notifications and per-project 
 ## Consequences
 
 - No production cluster credentials in GitHub; the controller pulls (D9).
-- `targets.yml` retires on EKS in favour of an ApplicationSet (D11).
+- `workflows-config.yml` retires on EKS in favour of an ApplicationSet (D11).
 - DL-10 is superseded by this decision.
 
 ## References

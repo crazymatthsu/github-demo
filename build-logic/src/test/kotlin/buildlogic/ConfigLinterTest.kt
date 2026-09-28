@@ -69,8 +69,8 @@ class ConfigLinterTest {
     fun `a valid tree has no findings and passes placeholders for the secrets to the renderer`() {
         validInstance("local", "trades-db-to-amps")
         validInstance("us-dev", "trades-db-to-amps")
-        write("us-dev/targets.yml", "env: us-dev\ndefaults: { kind: compose, user: deploy }\ntargets:\n" +
-            "  - instance: cash/source-database/trades-db-to-amps\n    host: dev-01.example.com\n")
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: cash\ndefaults: { kind: compose, user: deploy }\ntargets:\n" +
+            "  - instance: source-database/trades-db-to-amps\n    host: dev-01.example.com\n")
         val requests = mutableListOf<ComposeRenderRequest>()
         val findings = lint { request -> requests += request; CommandResult(0, "") }
         assertEquals(emptyList<Finding>(), findings)
@@ -107,7 +107,7 @@ class ConfigLinterTest {
         val messages = lint().text()
         assertTrue(messages.contains("'source-nothing' is not a deployable Gradle subproject"), messages)
         assertTrue(messages.contains("trades-db-to-amps/compose.env: required file missing"), messages)
-        assertTrue(messages.contains("targets.yml: required for a *-dev env"), messages)
+        assertTrue(messages.contains("us-dev/cash/workflows-config.yml: required in every flow of a *-dev env"), messages)
     }
 
     @Test
@@ -126,12 +126,38 @@ class ConfigLinterTest {
     @Test
     fun `targets must match the instance directories`() {
         validInstance("us-dev", "trades-db-to-amps")
-        write("us-dev/targets.yml", "env: us-dev\ntargets:\n  - instance: cash/source-database/gone\n    kind: compose\n" +
-            "    host: h\n    user: Root!\n  - instance: cash/source-database/trades-db-to-amps\n    kind: helm\n")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: deriv\ntargets:\n  - instance: source-database/gone\n    kind: compose\n" +
+            "    host: h\n    user: Root!\n  - instance: source-database/trades-db-to-amps\n    kind: helm\n" +
+            "  - instance: cash/source-database/positions-db-to-deephaven\n    kind: helm\n    cluster: kind-ci\n")
         val messages = lint().filter { it.check == 11 }.text()
-        assertTrue(messages.contains("cash/source-database/gone has no directory"), messages)
+        assertTrue(messages.contains("source-database/gone has no directory config/us-dev/cash/source-database/gone/"), messages)
         assertTrue(messages.contains("kind helm needs cluster"), messages)
         assertTrue(messages.contains("user 'Root!' is not a valid login name"), messages)
+        assertTrue(messages.contains("flow: must be 'cash', the flow of its path (was 'deriv')"), messages)
+        assertTrue(messages.contains("instance must be <AppName>/<AppInstance>, relative to the flow " +
+            "(was 'cash/source-database/positions-db-to-deephaven')"), messages)
+        assertTrue(messages.contains("instance source-database/positions-db-to-deephaven has no target (inventory drift)"), messages)
+    }
+
+    @Test
+    fun `an env-level targets_yml is an error and every dev flow needs its own`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/workflows-config.yml", "env: us-dev\ntargets: []\n")
+        val findings = lint().filter { it.check == 11 || it.check == 3 }
+        val messages = findings.text()
+        assertTrue(messages.contains("config/us-dev/workflows-config.yml: moved to config/us-dev/<flow>/workflows-config.yml"), messages)
+        assertTrue(messages.contains("config/us-dev/cash/workflows-config.yml: required in every flow of a *-dev env"), messages)
+        assertTrue(findings.all { it.severity == Severity.ERROR }, messages)
+    }
+
+    @Test
+    fun `the old targets_yml name in a flow directory is reported as renamed`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/cash/targets.yml", "env: us-dev\nflow: cash\ntargets: []\n")
+        val messages = lint().filter { it.check == 11 || it.check == 3 }.text()
+        assertTrue(messages.contains("config/us-dev/cash/targets.yml: renamed: the flow's deploy inventory is workflows-config.yml"), messages)
+        assertTrue(messages.contains("config/us-dev/cash/workflows-config.yml: required in every flow of a *-dev env"), messages)
     }
 
     @Test
@@ -168,7 +194,7 @@ class ConfigLinterTest {
     @Test
     fun `check 4 compares identity, APP variables and image_tag with the path and compose_env`() {
         validInstance("us-dev", "trades-db-to-amps", tag = "0.1.0-rc.39")
-        write("us-dev/targets.yml", "env: us-dev\ntargets:\n  - instance: cash/source-database/trades-db-to-amps\n" +
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: cash\ntargets:\n  - instance: source-database/trades-db-to-amps\n" +
             "    kind: compose\n    host: h\n")
         write("us-dev/cash/source-database/trades-db-to-amps/values.yaml",
             "image:\n  tag: \"0.1.0-rc.38\"\nidentity:\n  env: us-dev\n  flow: cash\n  app: source-database\n" +
@@ -228,7 +254,7 @@ class ConfigLinterTest {
     fun `check 12 lints and renders every instance through the deploy script, then runs kubeconform`() {
         validInstance("local", "trades-db-to-amps")
         validInstance("us-dev", "positions-db-to-deephaven", tag = "0.1.0-rc.39")
-        write("us-dev/targets.yml", "env: us-dev\ntargets:\n  - instance: cash/source-database/positions-db-to-deephaven\n" +
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: cash\ntargets:\n  - instance: source-database/positions-db-to-deephaven\n" +
             "    kind: helm\n    cluster: kind-ci\n    namespace: \"{flow}\"\n")
         val validated = mutableListOf<File>()
         val findings = linter(validator = { file -> validated += file; CommandResult(0, kubeconform(valid = 5)) }).lint()
@@ -295,12 +321,117 @@ class ConfigLinterTest {
     fun `check 12 needs a chart per app, an error only in complete envs`() {
         validInstance("local", "trades-db-to-amps")
         validInstance("us-dev", "trades-db-to-amps")
-        write("us-dev/targets.yml", "env: us-dev\ntargets:\n  - instance: cash/source-database/trades-db-to-amps\n" +
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: cash\ntargets:\n  - instance: source-database/trades-db-to-amps\n" +
             "    kind: compose\n    host: h\n")
         val findings = linter(charts = emptyMap(), completeEnvs = setOf("local")).lint().filter { it.check == 12 }
         assertEquals(listOf("ERROR config/local/cash/source-database", "WARN config/us-dev/cash/source-database"),
             findings.map { "${it.severity} ${it.path}" }, findings.text())
         assertTrue(findings.all { it.message.contains("expected <subproject>/helm/source-database/Chart.yaml") })
         assertTrue(helmRequests.isEmpty(), "nothing to render without a chart: $helmRequests")
+    }
+
+    // --- host pools (DL-39): check 11 on config/<env>/<flow>/workflows-config.yml ---------------------------------------
+
+    private fun flowTargets(pool: String, targets: String, flow: String = "cash") =
+        "env: us-dev\nflow: $flow\n$pool\ntargets:\n$targets"
+    private val cashPool = "pool:\n  hosts: [dev-cash-01.example.com, dev-cash-02.example.com]\n"
+
+    @Test
+    fun `check 11 accepts a pool whose compose targets have no host or one of its boxes`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/cash/workflows-config.yml", flowTargets(
+            "pool:\n  hosts:\n    - dev-cash-01.example.com\n    - 10.0.0.2\n  user: deploy\n  root: /opt/platform\n" +
+                "defaults:\n  kind: compose\n  cluster: kind-ci",
+            "  - instance: source-database/trades-db-to-amps\n" +
+                "  - instance: source-database/positions-db-to-deephaven\n    host: 10.0.0.2\n"))
+        write("us-dev/known_hosts", "# pinned host keys\ndev-cash-01.example.com,10.0.0.2 ssh-ed25519 " +
+            "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n")
+        val findings = lint()
+        assertEquals(emptyList<Finding>(), findings.filter { it.check == 1 || it.check == 3 || it.check == 11 }, findings.text())
+    }
+
+    @Test
+    fun `check 11 rejects a host that is not a box of the flow's pool`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/cash/workflows-config.yml", flowTargets(cashPool,
+            "  - instance: source-database/trades-db-to-amps\n    kind: compose\n    host: dev-other-01.example.com\n"))
+        val findings = lint().filter { it.check == 11 }
+        assertEquals(1, findings.size, findings.text())
+        assertEquals(Severity.ERROR, findings[0].severity)
+        assertTrue(findings[0].message.contains("host 'dev-other-01.example.com' is not a box of the pool " +
+            "(dev-cash-01.example.com, dev-cash-02.example.com)"), findings.text())
+    }
+
+    @Test
+    fun `check 11 rejects bad host names, users and roots in a pool`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/cash/workflows-config.yml", flowTargets(
+            "pool:\n  hosts: [Dev_Cash_01.example.com, dev-cash-02.example.com., 42]\n  user: Root!\n  root: opt/platform\n" +
+                "  port: 22",
+            "  - instance: source-database/trades-db-to-amps\n    kind: compose\n"))
+        val messages = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        for (expected in listOf(
+            "pool.hosts[0]: 'Dev_Cash_01.example.com' is not a lower-case DNS name or IPv4 address",
+            "pool.hosts[1]: 'dev-cash-02.example.com.' is not a lower-case DNS name or IPv4 address",
+            "pool.hosts[2]: '42' is not a lower-case DNS name or IPv4 address",
+            "pool.user 'Root!' is not a valid login name",
+            "pool.root 'opt/platform' must be an absolute path",
+            "pool: unknown key 'port'",
+        )) {
+            assertTrue(messages.contains(expected), "missing '$expected' in:\n$messages")
+        }
+        write("us-dev/cash/workflows-config.yml", flowTargets("pool:\n  hosts: []\n  root: /opt/../etc",
+            "  - instance: source-database/trades-db-to-amps\n    kind: compose\n"))
+        val empty = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        assertTrue(empty.contains("pool.hosts must be a non-empty list"), empty)
+        assertTrue(empty.contains("pool.root '/opt/../etc' must be an absolute path"), empty)
+    }
+
+    @Test
+    fun `check 11 rejects a box listed twice, or shared by two flows under the same root`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        write("us-dev/cash/workflows-config.yml", flowTargets(
+            "pool:\n  hosts: [dev-01.example.com, dev-02.example.com, dev-01.example.com]",
+            "  - instance: source-database/trades-db-to-amps\n    kind: compose\n"))
+        write("us-dev/swap/workflows-config.yml", flowTargets("pool:\n  hosts: [dev-02.example.com, dev-03.example.com]",
+            "", flow = "swap").replace("targets:\n", "targets: []\n"))
+        write("us-dev/deriv/workflows-config.yml", flowTargets("pool:\n  hosts: [dev-03.example.com]\n  root: /opt/platform-deriv",
+            "", flow = "deriv").replace("targets:\n", "targets: []\n"))
+        val findings = lint().filter { it.check == 11 && it.severity == Severity.ERROR }
+        val messages = findings.text()
+        assertTrue(messages.contains("cash/workflows-config.yml: pool.hosts[2]: dev-01.example.com is listed twice"), messages)
+        assertTrue(messages.contains("swap/workflows-config.yml: pool.hosts: dev-02.example.com is also a box of flow 'cash' with the " +
+            "same root /opt/platform: their bundles would collide on it"), messages)
+        assertEquals(2, findings.size, "dev-03 serves deriv and swap under different roots, which is allowed:\n$messages")
+    }
+
+    @Test
+    fun `check 11 needs a host or a pool for every compose target`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/cash/workflows-config.yml", "env: us-dev\nflow: cash\ndefaults:\n  kind: compose\ntargets:\n" +
+            "  - instance: source-database/trades-db-to-amps\n" +
+            "  - instance: source-database/positions-db-to-deephaven\n    host: Not_A_Host\n")
+        val messages = lint().filter { it.check == 11 && it.severity == Severity.ERROR }.text()
+        assertTrue(messages.contains("targets[0]: kind compose needs host, or a pool in this file"), messages)
+        assertTrue(messages.contains("targets[1]: host 'Not_A_Host' is not a lower-case DNS name or IPv4 address"), messages)
+    }
+
+    @Test
+    fun `check 11 warns about a pool without compose targets and checks namespaces and known_hosts`() {
+        validInstance("us-dev", "trades-db-to-amps")
+        validInstance("us-dev", "positions-db-to-deephaven")
+        write("us-dev/cash/workflows-config.yml", flowTargets(cashPool + "defaults:\n  kind: helm\n  cluster: kind-ci",
+            "  - instance: source-database/trades-db-to-amps\n" +
+                "  - instance: source-database/positions-db-to-deephaven\n    namespace: Cash_NS\n"))
+        write("us-dev/known_hosts", "dev-cash-01.example.com ssh-ed25519\n")
+        val findings = lint().filter { it.check == 11 }
+        val warning = findings.single { it.severity == Severity.WARN }
+        assertTrue(warning.message.contains("pool: flow 'cash' has no compose target"), findings.text())
+        val errors = findings.filter { it.severity == Severity.ERROR }.map { "${it.path}: ${it.message}" }
+        assertEquals(2, errors.size, findings.text())
+        assertTrue(errors.any { it.contains("targets[1]: namespace 'Cash_NS' is not a DNS label") }, findings.text())
+        assertTrue(errors.any { it.contains("known_hosts: line 1: expected") }, findings.text())
     }
 }
