@@ -31,4 +31,5 @@ defaults:
 targets:
   - instance: source-database/trades-db-to-amps # <AppName>/<AppInstance>, relative to this flow
     kind: compose # any box of the pool; `host` is the placement the write-back records
+    host: dev-cash-01.us-dev.example.com
   - instance: source-database/positions-db-to-deephaven # inherits the helm defaults
