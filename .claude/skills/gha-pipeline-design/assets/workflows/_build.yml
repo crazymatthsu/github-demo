@@ -23,6 +23,12 @@
 #                         (skill gha-versioning-release); called as `<script> --field version` and
 #                         `<script> --field tags`
 #
+# One version line: every image gets the same version and tags, which fits a repository released as one
+# unit. With several version lines (for example `v1.2.3` for the services and `tool/v0.4.0` for a tool),
+# compute the tags per image with the script's line options (--prefix / --path) inside the image loop.
+# The build pushes all tags at once, including the moving `main`; `publish` in main.yml re-asserts them on
+# the tested digests. To move `main` only after the tests, leave it out here and let publish add it.
+#
 # To run the build inside a pinned CI image instead of on the runner host, see skill gha-build-images
 # (probe job + `container:` + `defaults.run.shell: bash`).
 # If the Dockerfiles build FROM a base image that this job builds locally (the first-run bootstrap of

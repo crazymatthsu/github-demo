@@ -66,9 +66,9 @@ Example: last release `v1.4.2`, seven commits since, one of them `feat:`, HEAD `
 
 Bump from the commits since the last release tag: `type!:` or a `BREAKING CHANGE:` footer → major, `feat:`
 → minor, anything else → patch; no tag yet → `0.1.0`. The release path in one line: main builds and tests
-the digest and `publish` re-asserts its tags; a tag `vX.Y.Z` on that commit makes release.yml assert the version, find
-the passing main run, add the release tags to the same digest, attach SBOMs to the GitHub Release and open
-the bump pull request. Details: references/version-scheme.md and references/release-flow.md.
+the digest and `publish` re-asserts its tags; a tag `vX.Y.Z` on that commit makes release.yml assert the
+version, find the passing main run, add the release tags to the same digest, attach SBOMs to the GitHub
+Release and open the bump pull request. Details: references/version-scheme.md and references/release-flow.md.
 
 ## Procedure
 
@@ -101,7 +101,8 @@ the bump pull request. Details: references/version-scheme.md and references/rele
 
 1. Copy `scripts/git-version.sh` to `scripts/ci/` and `scripts/test-git-version.sh` to
    `scripts/test/git-version-test.sh` (the tests find the script in `../ci/`; the entry-point skill's lint
-   job runs `scripts/test/*-test.sh`).
+   job runs `scripts/test/*-test.sh`). Keep every copied script executable (`git add --chmod=+x`): the
+   workflows and `retag-image.sh` call them directly.
 2. Remove version numbers from build files, or leave a fixed placeholder such as `0.0.0-dev` that every
    build overrides. Feed the computed version into the build per references/version-scheme.md §8 (Gradle,
    Maven, npm/pnpm, Go, Python, container labels).
