@@ -130,7 +130,7 @@ bump_case() { # bump_case <case> <base tag> <expected version> <message>...
   expect "$name" "$expected" "$(gv "${main_ci[@]}" -- -C "$R" --field version)"
 }
 bump_case "fix + chore -> patch" v1.4.1 1.4.2-rc.2 "fix: a" "chore: b"
-bump_case "feat(scope) -> minor" v1.4.1 1.5.0-rc.3 "fix: a" "feat(source-kafka): b" "chore: c"
+bump_case "feat(scope) -> minor" v1.4.1 1.5.0-rc.3 "fix: a" "feat(api): b" "chore: c"
 bump_case "feature: -> minor (as release-please)" v1.4.1 1.5.0-rc.1 "feature: x"
 bump_case "feat! -> major" v1.4.1 2.0.0-rc.2 "fix: a" "feat!: drop the v1 API"
 bump_case "type(scope)! -> major" v1.4.1 2.0.0-rc.1 "refactor(core)!: rename the keys"

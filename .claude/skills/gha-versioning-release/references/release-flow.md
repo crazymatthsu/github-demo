@@ -14,7 +14,7 @@ Contents: 1 The chain · 2 What main must publish · 3 release.yml job by job ·
 flowchart TD
   M(["merge to main"]) --> B["main: build once, push<br/>X.Y.Z-rc.N and sha-abc1234"]
   B --> T["tests against that digest"]
-  T --> P["publish: main tag<br/>on the tested digest"]
+  T --> P["publish: re-assert the tags<br/>on the tested digest"]
   RP(["release PR merged<br/>(release-please)"]) -.->|"tag + dispatch"| R
   H(["annotated tag<br/>pushed by hand"]) --> R["release.yml"]
   P -.->|"release.yml waits<br/>for this run"| R
@@ -25,8 +25,8 @@ flowchart TD
 ```
 
 One build per commit, on main. Everything after it moves the same digest: the tests pull it by digest,
-`publish` tags it `main` once the tests pass, the release adds version tags to it, the bump pull request
-points the next environment at it. A release never compiles anything.
+`publish` re-asserts its tags (with `main`) once the tests pass, the release adds version tags to it, the
+bump pull request points the next environment at it. A release never compiles anything.
 
 ## 2. What main must publish
 
@@ -35,8 +35,8 @@ line**, a digest tagged `sha-<sha7>`:
 
 - main builds every image of a line (or, with affected builds, retags each unchanged image's previous
   digest with the new `sha-<sha7>` and rc tags; skill gha-affected-builds), pushes `<rc>` and `sha-<sha7>`,
-  runs the tests against those digests, then `publish` (`_promote.yml`) re-asserts the tag set and moves
-  `main` onto exactly the tested digests;
+  runs the tests against those digests, then `publish` (`_promote.yml`) re-asserts the tag set, `main`
+  included, on exactly the tested digests;
 - the build computes the pre-release form even if the commit already carries its release tag
   (`--ignore-head-tags`), because release-please may tag the commit before main's build starts;
 - `hotfix/**` branches run the same main workflow (without the dev deploy), so hotfix commits are tested
@@ -46,7 +46,7 @@ line**, a digest tagged `sha-<sha7>`:
 
 | Job | Does | Fails when | Permissions |
 |---|---|---|---|
-| `resolve` | parses the tag against `RELEASE_LINES`; runs the version command and compares; polls the main workflow's runs for the tag's sha (`gh api .../actions/workflows/<file>/runs?head_sha=`) up to `wait-minutes` (60); resolves `<image>:sha-<sha7>` per image to `repo:sha-…@sha256:…`; computes the release tag set, "newest" and the previous release of the line | not a release tag of a line; the build computes another version (wrong commit, wrong line, dirty tree); no run for the sha (5 minutes' grace for a run that is just starting); only failed runs; still running at the deadline; an image without `sha-<sha7>` | `contents: read`, `actions: read`, `packages: read` |
+| `resolve` | parses the tag against `RELEASE_LINES`; peels it to its commit (and checks the checkout is that commit); runs the version command and compares; polls the main workflow's runs for the tag's sha (`gh api .../actions/workflows/<file>/runs?head_sha=`) up to `wait-minutes` (60); resolves `<image>:sha-<sha7>` per image to `repo:sha-…@sha256:…`; computes the release tag set, "newest" and the previous release of the line | not a release tag of a line; the tag moved after the run started; the build computes another version (wrong commit, wrong line, dirty tree); no run for the sha (5 minutes' grace for a run that is just starting); only failed runs; still running at the deadline; an image without `sha-<sha7>` | `contents: read`, `actions: read`, `packages: read` |
 | `promote` | `_promote.yml`: `retag-image.sh` per image, verified writes | an immutable tag already points elsewhere (exit 3), a registry write fails | `packages: write` |
 | `sbom` | `anchore/sbom-action` on `repo@digest`, CycloneDX JSON, one artifact per image | the scan fails | `packages: read` |
 | `github-release` | `gh release view` → `create --verify-tag --generate-notes --notes-start-tag <previous of the line> --latest=<newest>` when missing; uploads the SBOMs with `--clobber` | the tag does not exist (`--verify-tag`) | `contents: write` |
@@ -131,7 +131,8 @@ Placeholders of the example config: `__ROOT_COMPONENT__` (name of the root packa
 `__SUB_PACKAGE_PATH__` (directory of the second line, e.g. `server`), `__SUB_COMPONENT__` (its name). With
 one line, delete the second package and the `exclude-paths` entry.
 
-Facts from running it (reference repository):
+Behaviour to plan for (the first two points were learned running it in the reference repository, the
+rest comes from release-please's source, v17):
 - It needs Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests",
   or the run fails creating the pull request.
 - Its pull request, tags and releases are created with `GITHUB_TOKEN`, so they start no workflow: the
@@ -149,9 +150,9 @@ To disable it: delete `release-please.yml`, `release-please-config.json` and the
 | Registry setup | How to promote | Notes |
 |---|---|---|
 | One repository per image (GHCR default) | retag inside the repository (`_promote.yml`) | GHCR has no promotion concept; the release tags are the promotion |
-| A repository path per stage (`<ns>/dev/app` → `<ns>/qa/app`) | `retag-image.sh --to <ns>/qa/app <ns>/dev/app@sha256:… 1.5.0` | copies the manifest and blobs, keeps the digest (verified with a multi-platform index); consumers of a stage pull only what was promoted there |
-| JFrog Artifactory | `jf rt docker-promote --copy <image> docker-dev-local docker-qa-local` (or the promotion REST API), with OIDC login | per-stage virtual repositories make it enforceable; keep the verify-after-write idea |
-| Amazon ECR / other registries | `imagetools create` across repositories works with both logins; ECR supports immutable tags per repository | enable the registry's tag immutability where it exists |
+| A repository path per stage (`<ns>/dev/app` → `<ns>/qa/app`) | `retag-image.sh --to <ns>/qa/app <ns>/dev/app@sha256:… 1.5.0` | copies the manifest and blobs, keeps the digest (verified between repositories of one registry, including a multi-platform index); a stage's consumers pull only what was promoted there |
+| JFrog Artifactory | its Docker promotion (`jf rt docker-promote` with `--copy`, or the promotion REST API; check the syntax of your CLI version), with OIDC login | per-stage virtual repositories make it enforceable; keep the verify-after-write idea |
+| Amazon ECR / another registry | `retag-image.sh --to <other-registry>/<repo>`: `imagetools create` copies between registries when the job is logged in to both (not verified here) | ECR can make tags immutable per repository: turn it on where the registry offers it |
 
 Guard qa and prod promotions with a GitHub Environment (required reviewers, deployment branches limited to
 tags `v*`) on the job that promotes, and pin tag and digest in their configuration.

@@ -4,7 +4,8 @@
 #
 # Usage: retag-image.sh [--to <repository>] <repository>[:<tag>]@sha256:<digest> <tag>...
 #   --to <repository>  write the tags into another repository (a promotion path such as <registry>/qa/app,
-#                      or another registry); the manifest and its blobs are copied, the digest stays the same
+#                      or another registry the job is logged in to); the manifest and its blobs are copied,
+#                      the digest stays the same
 # For each tag: "unchanged" when it already points at the digest, else "created" or "moved".
 # Version tags are immutable: a tag that points at another digest is refused (exit 3, after the other tags
 # are done) unless it matches RETAG_MUTABLE_REGEX, default '^(main|latest|[0-9]+|[0-9]+\.[0-9]+)$' (the

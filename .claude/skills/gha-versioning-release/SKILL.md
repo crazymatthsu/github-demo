@@ -60,13 +60,13 @@ Example: last release `v1.4.2`, seven commits since, one of them `feat:`, HEAD `
 |---|---|---|
 | HEAD carries `v1.5.0`, clean tree | `1.5.0` | `1.5.0`, `sha-2b3c4d5`; release.yml adds `1.5`, `1`, `latest` when newest |
 | pull request #123 (merge commit `9f8e7d6`) | `1.5.0-pr.123.9f8e7d6` | `pr-123-9f8e7d6` |
-| main | `1.5.0-rc.7` | `1.5.0-rc.7`, `sha-2b3c4d5`; `main` once the tests passed |
+| main | `1.5.0-rc.7` | `1.5.0-rc.7`, `sha-2b3c4d5`, `main` (re-asserted on the tested digest by `publish`) |
 | `hotfix/1.4.x`, 2 commits | `1.4.3-rc.2` (patch only) | `1.4.3-rc.2`, `sha-<sha7>` |
 | laptop, edited tracked file | `1.5.0-local.7.2b3c4d5.dirty` | `local`, the version (never pushed) |
 
 Bump from the commits since the last release tag: `type!:` or a `BREAKING CHANGE:` footer → major, `feat:`
 → minor, anything else → patch; no tag yet → `0.1.0`. The release path in one line: main builds and tests
-the digest and `publish` tags it; a tag `vX.Y.Z` on that commit makes release.yml assert the version, find
+the digest and `publish` re-asserts its tags; a tag `vX.Y.Z` on that commit makes release.yml assert the version, find
 the passing main run, add the release tags to the same digest, attach SBOMs to the GitHub Release and open
 the bump pull request. Details: references/version-scheme.md and references/release-flow.md.
 
@@ -91,7 +91,7 @@ the bump pull request. Details: references/version-scheme.md and references/rele
 |---|---|---|
 | Version computation | `scripts/ci/git-version.sh` | a build plugin with the same rules (references/version-scheme.md §7) |
 | Version lines | one line, tags `vX.Y.Z` | `<dir>/vX.Y.Z` per independently released unit |
-| Moving tags | `main` after the tests; `X.Y`, `X`, `latest` for the newest release | none (`CONVENIENCE_TAGS: 'false'`) |
+| Moving tags | `main` on main builds; `X.Y`, `X`, `latest` for the newest release | none (`CONVENIENCE_TAGS: 'false'`); `main` only after the tests (references/version-scheme.md §5) |
 | Release front end | annotated tags by hand | release-please release pull requests |
 | Promotion | retag inside the same repository (GHCR) | a repository path per stage (`retag-image.sh --to`), JFrog promotion |
 | After the release | bump pull request to the next environment | none: delete the `bump` job |
@@ -161,8 +161,8 @@ the bump pull request. Details: references/version-scheme.md and references/rele
 
 ### 8. Validate, then prove it
 
-Run the Validation commands, merge a change and read the first main run (rc tag, `sha-` tag, `main` moved
-by publish), then cut the first release (references/release-flow.md §4) and watch every job of it.
+Run the Validation commands, merge a change and read the first main run (rc tag, `sha-` tag and `main`,
+re-asserted by publish), then cut the first release (references/release-flow.md §4) and watch every job of it.
 
 ## Templates and scripts
 
@@ -204,7 +204,7 @@ the current major when adopting.
 | release pull request or bump pull request shows no checks | pull requests opened with `GITHUB_TOKEN` start no workflow | close and reopen it, or open it with a GitHub App token |
 | release.yml: "has no run for <sha>", or a hand-pushed tag started nothing | the tag sits on the bot's `[skip ci]` write-back commit: main never ran there, and `[skip ci]` in the tagged commit also suppresses the tag-push workflow | tag the tested merge commit (`gh run list --workflow main.yml --status success`), not `origin/main` blindly |
 | after a hand-pushed tag, release-please proposes the same version | release-please reads the last release from its manifest | a pull request that sets the manifest to the tagged version |
-| `latest` or GitHub's "Latest release" points at an old line's hotfix | convenience tags / `gh release create` defaults moved to whatever released last | move `X.Y`, `X`, `latest` only for the newest of the series; `--latest=false` otherwise (template does) |
+| `latest` or GitHub's "Latest release" points at an old line's hotfix | the moving tags followed whatever released last; `gh release create` without `--latest` lets GitHub mark the newly created release Latest | move `X.Y`, `X`, `latest` only for the newest of the series; pass `--latest=false` otherwise (the template does) |
 | GitHub Release created twice, or notes span two lines | release-please already created it; auto notes start at the previous release of any line | `gh release view` first; `--verify-tag`; `--notes-start-tag <previous tag of the line>` |
 | push, retag or retention delete gets 403 on GHCR | the package does not grant this repository Actions access | Package settings → Manage Actions access (write; admin to delete), or a dedicated token |
 | a PR build via `pull_request_target` is versioned as main | `GITHUB_REF` is the base branch there | set `PR_NUMBER` from `github.event.pull_request.number` |
@@ -227,7 +227,7 @@ scripts/ci/git-version.sh --ci --ref main --format json    # what main builds fr
 scripts/ci/git-version.sh --ci --ref main --prefix server/v --path server --field version   # per extra line
 ```
 
-Then on GitHub: the first main run publishes `<rc>`, `sha-<sha7>` and moves `main` after the tests; the
+Then on GitHub: the first main run publishes `<rc>`, `sha-<sha7>` and `main`, re-asserted after the tests; the
 first release (hand-pushed tag on that tested commit, or a merged release pull request) shows the version
 assert, the tested run's URL, the promoted tags, the SBOMs on the GitHub Release and the bump pull request.
 

@@ -46,7 +46,7 @@ HEAD `2b3c4d5`.
 | laptop, clean | `1.5.0-local.7.2b3c4d5` | `local`, `1.5.0-local.7.2b3c4d5` |
 | laptop, edited tracked file | `1.5.0-local.7.2b3c4d5.dirty` | never pushed |
 | PR #123 (merge commit `9f8e7d6`) | `1.5.0-pr.123.9f8e7d6` | `pr-123-9f8e7d6` |
-| main | `1.5.0-rc.7` | `1.5.0-rc.7`, `sha-2b3c4d5`, `main` (after the tests) |
+| main | `1.5.0-rc.7` | `1.5.0-rc.7`, `sha-2b3c4d5`, `main` |
 | tag `v1.5.0` on `2b3c4d5` | `1.5.0` | release.yml adds `1.5.0` (+ `1.5`, `1`, `latest` when newest) to the digest `sha-2b3c4d5` names |
 | `hotfix/1.4.x` from `v1.4.2`, 2 commits incl. a `feat` | `1.4.3-rc.2` | `1.4.3-rc.2`, `sha-<sha7>` |
 
@@ -98,13 +98,16 @@ Notes:
 |---|---|---|---|---|
 | PR build | `pr-<n>-<sha7>` | no | PR closed + 7 days | PR build (same-repository PRs only; forks cannot push) |
 | main build | `<next>-rc.<n>`, `sha-<sha7>` | no | newest 20, and all younger than 30 days | main build job |
-| main, tests passed | `main` | moves | while newest | main `publish` (`_promote.yml`) |
+| main build | `main` | moves | while newest | main build job; `publish` (`_promote.yml`) re-asserts it on the tested digest |
 | hotfix build | `<patch>-rc.<n>`, `sha-<sha7>` | no | as rc | main workflow on `hotfix/**` |
 | release | `X.Y.Z` (+ the existing `sha-<sha7>`) | no | forever | release.yml `promote` |
 | release, newest of its series | `X.Y`, `X`, `latest` | move | while newest | release.yml `promote` |
 | laptop | `local`, `<version>` | local only | never pushed | developer |
 
 - One immutable version tag and one `sha-<sha7>` tag per commit; `retag-image.sh` refuses to move them.
+- The reference's build pushed `main` together with the immutable tags (the test jobs on other runners pull
+  by tag) and `publish` re-asserted the whole set after the tests. Stricter: let the build push only `<rc>`
+  and `sha-<sha7>` and let `publish` add `main`, so `main` never names an untested digest.
 - `sha-<sha7>` joins an image to its commit (and to the `org.opencontainers.image.revision` label); the
   release workflow finds the tested image through it.
 - Moving tags are for humans and dev only. qa and prod configuration pins `X.Y.Z` plus the digest; a lint
@@ -192,6 +195,8 @@ the release, so never deploy PR or local builds to a Maven repository.
 
 **npm / pnpm**: `npm version "$VERSION" --no-git-tag-version` in the CI workspace (edits `package.json`,
 never committed; works in pnpm workspaces per package), or pass it to the bundler as `APP_VERSION`.
+Compute the version before this edit: a modified tracked file makes the checkout dirty, and a tag checkout
+would then compute the `local` form.
 
 **Go**: `go build -ldflags "-X main.version=$VERSION" ./cmd/app`. Module versions are the git tags
 themselves (`vX.Y.Z`; `<dir>/vX.Y.Z` for a nested module; `/v2` in the module path from 2.0.0 on).

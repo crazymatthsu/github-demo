@@ -7,7 +7,7 @@
 #
 # Callers:
 #   main.yml     job `publish`, after the tests: re-asserts the build's tag set on exactly the tested digests
-#                (the moving `main` tag lands on a digest only once it passed)
+#                (when the build pushes only the immutable tags, this is where `main` moves)
 #   release.yml  job `promote`: adds the release tag set to the tested digests of the release commit
 # Contract:
 #   inputs.images      JSON object key -> image pinned by digest, "repository[:tag]@sha256:<digest>"
