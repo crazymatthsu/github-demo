@@ -10,15 +10,17 @@ Contents: 1 The chain · 2 What main must publish · 3 release.yml job by job ·
 ## 1. The chain
 
 ```mermaid
-flowchart LR
-  M["merge to main"] --> B["main: build once,<br/>push X.Y.Z-rc.N + sha-abc1234"]
-  B --> T["tests against<br/>that digest"]
+flowchart TD
+  M(["merge to main"]) --> B["main: build once, push<br/>X.Y.Z-rc.N and sha-abc1234"]
+  B --> T["tests against that digest"]
   T --> P["publish: main tag<br/>on the tested digest"]
-  RP["release PR merged<br/>(release-please)"] -.->|"tag + dispatch"| R
-  H["annotated tag pushed<br/>by hand"] --> R["release.yml"]
+  RP(["release PR merged<br/>(release-please)"]) -.->|"tag + dispatch"| R
+  H(["annotated tag<br/>pushed by hand"]) --> R["release.yml"]
   P -.->|"release.yml waits<br/>for this run"| R
-  R --> PR2["promote: X.Y.Z (+X.Y, X, latest)<br/>on the same digest"]
-  PR2 --> S["SBOM per image"] --> G["GitHub Release"] --> BP["bump PR to<br/>the next environment"]
+  R --> PR2["promote: X.Y.Z, plus X.Y, X, latest<br/>when newest, on the same digest"]
+  PR2 --> S["SBOM per image"]
+  S --> G["GitHub Release"]
+  G --> BP[/"bump PR to the<br/>next environment"/]
 ```
 
 One build per commit, on main. Everything after it moves the same digest: the tests pull it by digest,

@@ -28,7 +28,8 @@
 #   __BUMP_DIR__         the directory holding that environment's image tags, e.g. config/qa; the bump job is
 #                        skipped with a notice while it does not exist
 #   __BUMP_COMMAND__     sets the release tag for the released images under BUMP_DIR and prints the changed
-#                        files, one per line (env: VERSION, TAG, IMAGES = JSON image -> digest-pinned ref), e.g.
+#                        files, one per line (env: VERSION, TAG, APPS = the images' last path segments,
+#                        space-separated, IMAGES = JSON image -> digest-pinned ref), e.g.
 #                        bash scripts/ci/set-image-tag.sh "$VERSION" "$BUMP_DIR"/*/*/values.yaml (gha-config-deploy)
 # Delete the bump job when there is no next environment. Actions are pinned to a major version: update to the
 # current major when adopting.
@@ -79,6 +80,7 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
       sha: ${{ steps.tag.outputs.sha }}
       image-names: ${{ steps.tag.outputs.image-names }}
+      apps: ${{ steps.tag.outputs.apps }}
       main-run: ${{ steps.wait.outputs.url }}
       images: ${{ steps.images.outputs.images }}
       tags: ${{ steps.images.outputs.tags }}
@@ -111,6 +113,7 @@ jobs:
             echo "version=$version"
             echo "sha=$GITHUB_SHA"
             echo "image-names=$(jq -c --arg p "$prefix" '.[$p]' <<<"$RELEASE_LINES")"
+            echo "apps=$(jq -r --arg p "$prefix" '.[$p] | map(split("/") | last) | join(" ")' <<<"$RELEASE_LINES")"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v7
@@ -345,6 +348,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
           VERSION: ${{ needs.resolve.outputs.version }}
+          APPS: ${{ needs.resolve.outputs.apps }}
           IMAGES: ${{ needs.resolve.outputs.images }}
           MAIN_RUN: ${{ needs.resolve.outputs.main-run }}
           BASE: ${{ github.event.repository.default_branch }}
