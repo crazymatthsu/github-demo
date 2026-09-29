@@ -21,10 +21,11 @@ services:
     working_dir: /workspace
     environment:
       HOME: /tmp
-      # The build-tool cache: the host cache the workflow restored, mounted at /cache (read-write).
-      # Gradle form; Maven: MAVEN_OPTS: "-Dmaven.repo.local=/cache/repository"; npm: npm_config_cache: /cache;
-      # pnpm: npm_config_store_dir: /cache/pnpm-store; Go: GOMODCACHE: /cache/mod, GOCACHE: /cache/build;
-      # pip: PIP_CACHE_DIR: /cache.
+      # The build-tool cache: the host cache directory the workflow restored (TEST_CACHE_DIR), mounted at
+      # /cache read-write. Gradle form (TEST_CACHE_DIR=~/.gradle). Others, with TEST_CACHE_DIR set to the
+      # tool's cache: Maven (~/.m2/repository) MAVEN_OPTS: "-Dmaven.repo.local=/cache"; npm (~/.npm)
+      # npm_config_cache: /cache; pnpm (its store dir) npm_config_store_dir: /cache; Go (~/go/pkg/mod)
+      # GOMODCACHE: /cache; pip (~/.cache/pip) PIP_CACHE_DIR: /cache.
       GRADLE_USER_HOME: /cache
       # Endpoints on the stack network: service name and CONTAINER port (a test process on a laptop host
       # uses localhost and the ports of <stack>.local.yml instead). Adapt to your stacks.

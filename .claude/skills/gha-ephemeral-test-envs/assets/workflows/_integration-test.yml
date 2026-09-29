@@ -150,8 +150,9 @@ jobs:
           password: ${{ github.token }}
 
       # The test-runner's build cache: the host cache, restored read-only here (only the build job writes
-      # it) and mounted at /cache. Gradle form. Maven: actions/cache@v4 on ~/.m2/repository and
-      # TEST_CACHE_DIR=$HOME/.m2/repository; npm / pnpm: the store directory; Go: ~/go/pkg/mod.
+      # it) and mounted at /cache. Gradle form. Others: actions/cache/restore on the tool's cache directory
+      # (Maven ~/.m2/repository, npm ~/.npm, pnpm its store, Go ~/go/pkg/mod, pip ~/.cache/pip), point
+      # TEST_CACHE_DIR at it, and set the matching variable in test-runner.yml.
       - name: Build cache for the test runner
         uses: gradle/actions/setup-gradle@v6
         with:

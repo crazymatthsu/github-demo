@@ -219,12 +219,12 @@ test-infra/compose/stack.sh down                                    # finds the 
 
 ## 12. Build-tool variants
 
-| Tool | `__TEST_COMMAND__` (runs in /workspace) | Host cache mounted at /cache | Runner env |
+| Tool | `__TEST_COMMAND__` (runs in /workspace) | `TEST_CACHE_DIR` (mounted at /cache) | Runner env |
 |---|---|---|---|
 | Gradle | `./gradlew "${PROJECT}:integrationTest" --no-daemon` | `~/.gradle` (setup-gradle, read-only) | `GRADLE_USER_HOME=/cache` |
-| Maven | `mvn -B -ntp -pl "$PROJECT" verify -Pintegration-tests` | `~/.m2/repository` (actions/cache) | `MAVEN_OPTS=-Dmaven.repo.local=/cache` |
-| npm / pnpm | `pnpm --filter "./$PROJECT" run test:integration` | the pnpm store / `~/.npm` | `npm_config_store_dir=/cache` / `npm_config_cache=/cache` |
-| Go | `go test -tags=integration "./$PROJECT/..."` | `~/go/pkg/mod` | `GOMODCACHE=/cache/mod`, `GOCACHE=/cache/build` |
+| Maven | `mvn -B -ntp -pl "$PROJECT" verify -Pintegration-tests` | `~/.m2/repository` (actions/cache/restore) | `MAVEN_OPTS=-Dmaven.repo.local=/cache` |
+| npm / pnpm | `pnpm --filter "./$PROJECT" run test:integration` | `~/.npm` / the pnpm store | `npm_config_cache=/cache` / `npm_config_store_dir=/cache` |
+| Go | `go test -tags=integration "./$PROJECT/..."` | `~/go/pkg/mod` | `GOMODCACHE=/cache` (the build cache stays under HOME=/tmp) |
 | Python | `python -m pytest "$PROJECT/tests/integration" --junitxml=...` | `~/.cache/pip` | `PIP_CACHE_DIR=/cache` |
 
 JUnit XML: Gradle and Maven write `TEST-*.xml` (junit-summary.sh's default); jest needs jest-junit, Go

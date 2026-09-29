@@ -110,6 +110,7 @@ and `ci/versions.env`:
 }
 ```
 
+- Replace `ghcr.io/acme` with your namespace.
 - `extractVersion=^v(?<version>.+)$` in a hint strips the `v` of tags such as `v29.8.1` when the ARG holds
   `29.8.1` (the Docker packages).
 - The same dependency pinned in the Dockerfile and in `ci/versions.env` is updated in one PR, which keeps

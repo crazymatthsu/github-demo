@@ -138,7 +138,7 @@ compose stacks and kind clusters in host jobs.
 ## 8. Test runners from the same image
 
 Integration tests run their test process as a container from the CI image on the compose stack's network
-(the reference's `it-runner` service; gha-ephemeral-test-envs calls it `test-runner`):
+(a compose service; gha-ephemeral-test-envs calls it `test-runner`):
 - the image reference is the probe's digest, passed down as a workflow output, so the build and the tests of
   one run share one environment;
 - `user: "<runner uid>:<runner gid>"`, `HOME: /tmp`, the workspace and the host's build-tool cache
