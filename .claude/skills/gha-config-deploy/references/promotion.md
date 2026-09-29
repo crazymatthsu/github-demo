@@ -178,6 +178,12 @@ flowchart TD
 - **Trigger**: a push to `main` that changed `config/**`; only envs matching `PROMOTED_ENV_PATTERN` deploy (dev
   paths are ignored, `deploy-dev` owns dev). Not a required check, so its path filter blocks nothing. A dispatch
   (`gh workflow run deploy.yml -f env=prod`) re-applies what `main` records, optionally for a few instances.
+- **Plan from the last successful deploy**: each deploy job records a GitHub Deployment (with its commit) in the
+  env's Environment, and the plan diffs `config/<env>/` from the newest successful one (from the push's own base
+  for an env never deployed this way). GitHub keeps one pending run per concurrency group, so a newer run can
+  replace a pending one; a failed or rejected deploy leaves its change undeployed too. Either way the next run
+  still finds the change and deploys it: nothing a skipped run carried is lost. A rejected deploy is therefore
+  requested again by the next run; revert the bump PR to withdraw it.
 - **Order**: one env at a time in `STAGE_ORDER` (qa, staging, prod); a failure stops the later envs.
 - **Approval before credentials**: each env's job runs in the GitHub Environment named like the env. Its required
   reviewers approve before any step runs, its deployment branch rule admits only `main`, and its secret
@@ -185,8 +191,8 @@ flowchart TD
   in `DEPLOY_ALLOW_ENV`, so a dev job or a PR job cannot deploy prod even by mistake.
 - **What is deployed**: every instance of the env, each as release `<app>-<instance>` in namespace `<flow>`, with
   the tag and digest its `values.yaml` pins; instances that record no tag yet are skipped. Every instance, not
-  only the changed ones: GitHub keeps one pending run per concurrency group, so a newer pending deploy can replace
-  an older one, and only a full deploy converges. Unchanged releases get a new Helm revision without a rollout.
+  only the changed ones, so a run also repairs drift a lost run left behind. Unchanged releases get a new Helm
+  revision without a rollout.
 - **Next env**: after a successful deploy, `NEXT_ENV` (`{"qa": "prod"}`) opens or updates the rolling PR
   `release-bump/<next>/from-<env>` with exactly what the env now runs. Its CODEOWNERS (and a change ticket for
   prod) approve it; the merge starts this workflow again.

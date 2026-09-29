@@ -16,8 +16,8 @@
 #            pull request set them). An instance that records no tag yet is skipped. Every instance is attempted;
 #            a failed one was rolled back by Helm (a failed first install stays for diagnostics), the job fails, and
 #            git still names the version that should run: re-run the job, or revert the bump pull request.
-#            Deploying every instance, not only the changed ones, makes each run converge: GitHub keeps one pending
-#            run per concurrency group, so an older pending deploy can be replaced by a newer one.
+#            Every instance, not only the changed ones, so a run also repairs what a lost run left behind; the
+#            automatic Deployment this job records (commit and result) is what deploy.yml plans the next run from.
 # bump-next  after a successful deploy: set-image-tag.sh --from config/<env> config/<next-env> for the apps just
 #            deployed, then opens or updates the pull request "chore(release): deploy <tags> to <next-env>" on the
 #            branch release-bump/<next-env>/from-<env>. It always proposes what <env> runs now, never recomputed.

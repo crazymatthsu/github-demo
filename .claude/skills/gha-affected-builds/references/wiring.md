@@ -370,15 +370,17 @@ jobs:
             jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
           } >> "$GITHUB_STEP_SUMMARY"
           fail=0
-          if [[ $(jq -r '."detect-affected".result' <<<"$NEEDS") != success ]]; then
+          detected=$(jq -r '."detect-affected".result' <<<"$NEEDS")
+          if [[ $detected != success ]]; then
             echo "::error::detect-affected did not succeed"; fail=1
           fi
           bad=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<<"$NEEDS")
           if [[ -n $bad ]]; then
             echo "::error::failed or cancelled: $bad"; fail=1
           fi
+          # Skips are explained only when the detector said what to run.
           tested=false
-          [[ $EVENT == pull_request || $EVENT == merge_group ]] && tested=true
+          [[ ($EVENT == pull_request || $EVENT == merge_group) && $detected == success ]] && tested=true
           if [[ $DOCS_ONLY == true ]]; then
             echo "- docs-only change: build and tests skipped" >> "$GITHUB_STEP_SUMMARY"
           elif [[ $tested == true && $MATRIX != '[]' && ${IMAGES:-'{}'} == '{}' ]]; then

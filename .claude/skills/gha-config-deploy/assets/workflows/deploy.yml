@@ -11,12 +11,17 @@
 # hand to re-apply what main records: gh workflow run deploy.yml -f env=<env> [-f instances='<flow>/<app>/<instance> ...'].
 # It is not a required check, so its path filter blocks nothing.
 #
-# What a changed path deploys: any file under config/<env>/ of a promoted env deploys every instance of that env
-# (_deploy-env.yml explains why every instance). A change to config/_common/ (the platform layer, every env) is
-# reported, not deployed: dispatch each env to apply it after review. A deleted instance directory is reported
-# too: uninstall its release by hand (helm uninstall <app>-<instance> -n <flow>).
+# Which envs deploy: every promoted env whose config/<env>/ changed since that env's last successful deploy.
+# GitHub records one Deployment per deploy job in the env's Environment, with its commit, so the plan diffs from
+# there (from the push's own base for an env never deployed by this workflow). A run cancelled while pending,
+# or one that failed, therefore loses nothing: the next run still finds its changes undeployed. A deploy covers
+# every instance of the env (_deploy-env.yml explains why). A change to config/_common/ (the platform layer,
+# every env) is reported, not deployed: dispatch each env to apply it after review. A deleted instance directory
+# is reported too: uninstall its release by hand (helm uninstall <app>-<instance> -n <flow>).
+# Runs queue in one concurrency group, so a run waiting for an approval holds the queue: approve or reject it,
+# or cancel the run; nothing is lost, the next run plans again from the recorded deploys.
 #
-# Placeholders: none. Adapt the env block:
+# Placeholders: none. The GitHub Environments are named like the envs. Adapt the env block:
 #   PROMOTED_ENV_PATTERN  the envs this workflow deploys (bash ERE); dev and local never match
 #   STAGE_ORDER           stage suffixes in deploy order (<stage> or <region>-<stage>); one push touching two
 #                         stages deploys the earlier stage first, and a failure there stops the later one
@@ -59,6 +64,9 @@ jobs:
     name: which envs
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read # the last successful deploy of each env
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -69,6 +77,7 @@ jobs:
       - name: Promoted envs to deploy
         id: plan
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           INPUT_ENV: ${{ inputs.env }}
           INPUT_INSTANCES: ${{ inputs.instances }}
@@ -90,27 +99,54 @@ jobs:
             done
             envs=("$INPUT_ENV")
             instances=$INPUT_INSTANCES
-          elif [[ -z $BEFORE || $BEFORE =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            echo "::warning::no usable diff base for this push: nothing deployed; dispatch deploy.yml for each env to apply it"
           else
-            changed=$(git diff --name-only --no-renames "$BEFORE" "$GITHUB_SHA" -- "$CONFIG_DIR")
-            declare -A seen=()
-            while IFS= read -r path; do
-              [[ -n $path ]] || continue
-              rel=${path#"$CONFIG_DIR/"}
-              env=${rel%%/*}
-              if [[ $env == _common ]]; then
-                echo "::notice title=platform layer::$path changed: it reaches the promoted envs at their next deploy; dispatch deploy.yml per env to apply it now"
+            push_base=''
+            if [[ -n $BEFORE && ! $BEFORE =~ ^0+$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then push_base=$BEFORE; fi
+            # Notes about this push: the platform layer and deleted instances are never deployed automatically.
+            if [[ -n $push_base ]]; then
+              pushed=$(git diff --name-only --no-renames "$push_base" "$GITHUB_SHA" -- "$CONFIG_DIR")
+              while IFS= read -r path; do
+                [[ -n $path ]] || continue
+                rel=${path#"$CONFIG_DIR/"}
+                env=${rel%%/*}
+                if [[ $env == _common ]]; then
+                  echo "::notice title=platform layer::$path changed: it reaches the promoted envs at their next deploy; dispatch deploy.yml per env to apply it now"
+                  continue
+                fi
+                [[ $env =~ $PROMOTED_ENV_PATTERN ]] || continue
+                IFS=/ read -r flow app inst _ <<<"${rel#*/}"
+                if [[ -n $inst && $inst != app-common && $inst != _* && ! -d $CONFIG_DIR/$env/$flow/$app/$inst ]]; then
+                  echo "::warning title=removed instance::$env/$flow/$app/$inst was deleted: uninstall its release by hand (helm uninstall $app-$inst -n $flow)"
+                fi
+              done <<<"$pushed"
+            fi
+            # The commit of an env's last successful deploy, from its Environment's Deployments (newest first).
+            last_deployed() {
+              local list id sha state
+              list=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$1&per_page=30" --jq '.[] | "\(.id) \(.sha)"')
+              while read -r id sha; do
+                [[ -n $id ]] || continue
+                state=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')
+                if [[ $state == success ]]; then echo "$sha"; return; fi
+              done <<<"$list"
+            }
+            for dir in "$CONFIG_DIR"/*/; do
+              env=$(basename "$dir")
+              [[ $env =~ $PROMOTED_ENV_PATTERN ]] || continue
+              base=$(last_deployed "$env")
+              if [[ -n $base ]] && git merge-base --is-ancestor "$base" "$GITHUB_SHA" 2>/dev/null; then
+                from="its last deploy ${base::7}"
+              elif [[ -n $push_base ]]; then
+                base=$push_base from="this push (no earlier deploy recorded)"
+              else
+                echo "::warning::$env: no recorded deploy and no usable diff base for this push; dispatch deploy.yml -f env=$env to apply it"
                 continue
               fi
-              [[ $env =~ $PROMOTED_ENV_PATTERN ]] || continue
-              IFS=/ read -r flow app inst _ <<<"${rel#*/}"
-              if [[ -n $inst && $inst != app-common && $inst != _* && ! -d $CONFIG_DIR/$env/$flow/$app/$inst ]]; then
-                echo "::warning title=removed instance::$env/$flow/$app/$inst was deleted: uninstall its release by hand (helm uninstall $app-$inst -n $flow)"
+              if [[ -n $(git diff --name-only "$base" "$GITHUB_SHA" -- "$CONFIG_DIR/$env") ]]; then
+                envs+=("$env")
+                echo "$env: config/$env changed since $from"
               fi
-              seen[$env]=1
-            done <<<"$changed"
-            mapfile -t envs < <(printf '%s\n' "${!seen[@]}" | sed '/^$/d')
+            done
           fi
           # Stage order, then name: qa before staging before prod; unknown stages last.
           rank() {

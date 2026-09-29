@@ -20,8 +20,8 @@ needs, generates the trigger workflows and the build, and wires the rest togethe
    promotion. Schedules do maintenance. Why: each event carries a different risk and a different time budget;
    one workflow full of `if: github.event_name == ...` fits none of them. Table: references/event-model.md.
 2. **Thin trigger workflows, logic below them.** Trigger workflows (`pr.yml`, `main.yml`, `release.yml`,
-   `deploy.yml`, the scheduled ones, `base-image.yml`) only decide what runs in which order. Multi-job stages live in reusable
-   workflows named `_*.yml` (the underscore says "never triggered by an event"). Step sequences that several jobs
+   `deploy.yml`, the scheduled ones, `base-image.yml`) only decide what runs in which order. Multi-job stages
+   live in reusable workflows named `_*.yml` (the underscore says "never triggered by an event"). Step sequences that several jobs
    repeat live in composite actions. Real logic lives in `scripts/` with `--help`, documented exit codes and
    tests. Why: the same build runs from PRs and main with different inputs, laptops run the same scripts, and
    YAML stays declarative enough to review.

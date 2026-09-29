@@ -247,8 +247,8 @@ part must meet (the IT workflow takes `project` and `images`; the build returns 
 
 Distilled from the reference repository crazymatthsu/github-demo: `.github/affected-map.yml`,
 `scripts/ci/affected.py`, `.github/actions/affected-matrix/action.yml`, the detect-affected, build,
-integration-test, kind-deploy (named deploy-test in the templates) and pr-gate jobs of `.github/workflows/pr.yml`, the "Plan the Gradle
-tasks" step of `.github/workflows/_gradle-build.yml` with `main.yml` passing `projects: all`, and the
+integration-test, kind-deploy (named deploy-test in the templates) and pr-gate jobs of
+`.github/workflows/pr.yml`, the "Plan the Gradle tasks" step of `.github/workflows/_gradle-build.yml` with `main.yml` passing `projects: all`, and the
 design notes in `docs/07-ci-pipeline-github-actions.md` (sections 4.2, 5.3, 5.4, 6.3) and
 `.github/README.md`; there the pipeline ran green on GitHub for pull requests and main. The portable
 script keeps the reference's rule order, flags and output contract, and adds NUL-separated git
