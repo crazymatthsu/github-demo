@@ -1,0 +1,255 @@
+# _deploy-env.yml — reusable: deploy ONE promoted env (qa, staging, prod) exactly as the config tree on main records
+# it, inside the GitHub Environment of that env; then open the bump pull request for the next env. Template of the
+# gha-config-deploy skill (references/promotion.md section 6); copy it to .github/workflows/_deploy-env.yml.
+#
+# Interface (deploy.yml calls it once per env, with `secrets: inherit` and permissions contents: write,
+# pull-requests: write):
+#   inputs   env (required: a promoted env, config/<env>/) · instances (space-separated <flow>/<app>/<instance>;
+#            empty = every instance of the env) · next-env (empty = no bump pull request) · environment (the
+#            GitHub Environment; empty = named like env)
+#   outputs  deployed ("<flow>/<app>/<instance>=<tag> ...")
+#
+# deploy     waits for the Environment's required reviewers (nothing below runs, and no credential is exposed,
+#            before they approve), then deploys each instance with
+#              scripts/ci/helm-deploy-instance.sh <env> <flow> <app> <instance> [--kube-context $KUBE_CONTEXT]
+#            as release <app>-<instance> in namespace <flow>, with the tag and digest its values.yaml pins (the bump
+#            pull request set them). An instance that records no tag yet is skipped. Every instance is attempted;
+#            a failed one was rolled back by Helm (a failed first install stays for diagnostics), the job fails, and
+#            git still names the version that should run: re-run the job, or revert the bump pull request.
+#            Deploying every instance, not only the changed ones, makes each run converge: GitHub keeps one pending
+#            run per concurrency group, so an older pending deploy can be replaced by a newer one.
+# bump-next  after a successful deploy: set-image-tag.sh --from config/<env> config/<next-env> for the apps just
+#            deployed, then opens or updates the pull request "chore(release): deploy <tags> to <next-env>" on the
+#            branch release-bump/<next-env>/from-<env>. It always proposes what <env> runs now, never recomputed.
+#
+# Needs on the runner: helm and kubectl (the setup-kube-tools action of skill gha-ephemeral-test-envs or
+# gha-build-images, or run the job in the CI image), mikefarah yq v4 and jq (preinstalled on GitHub-hosted
+# runners), scripts/ci/helm-release.sh, helm-deploy-instance.sh and set-image-tag.sh.
+# Settings per promoted env (Settings > Environments > <env>): required reviewers (two distinct people for prod),
+# deployment branches `main` only, secret DEPLOY_KUBECONFIG (a kubeconfig for the env's cluster), and optionally
+# the variable KUBE_CONTEXT (else the kubeconfig's current context). With a cloud OIDC login (EKS / GKE / AKS),
+# replace the kubeconfig lines with that login step and add `id-token: write` here and in the caller. The bump
+# pull request needs "Allow GitHub Actions to create and approve pull requests"; opened with GITHUB_TOKEN it starts
+# no checks until someone closes and reopens it (an App token avoids that). Actions are pinned to a major version:
+# update to the current major.
+name: _deploy-env
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: Promoted env to deploy (config/<env>/), e.g. prod or eu-prod.
+        type: string
+        required: true
+      instances:
+        description: Space-separated <flow>/<app>/<instance> to deploy; empty = every instance of the env.
+        type: string
+        default: ''
+      next-env:
+        description: Env whose bump pull request follows a successful deploy; empty = none.
+        type: string
+        default: ''
+      environment:
+        description: GitHub Environment with the reviewers and the credentials; empty = named like env.
+        type: string
+        default: ''
+    outputs:
+      deployed:
+        description: Space-separated <flow>/<app>/<instance>=<tag> of the instances deployed.
+        value: ${{ jobs.deploy.outputs.deployed }}
+
+permissions:
+  contents: read
+
+env:
+  CONFIG_DIR: config
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.env }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Required reviewers, the branch rule and the credentials live in the Environment; the automatic deployment
+    # record it creates is the history of the env (Code > Deployments).
+    environment:
+      name: ${{ inputs.environment || inputs.env }}
+    # One deploy per env at a time, never cancelled half-way.
+    concurrency:
+      group: deploy-${{ inputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      DEPLOY_ENV: ${{ inputs.env }}
+    outputs:
+      deployed: ${{ steps.deploy.outputs.deployed }}
+    steps:
+      - name: Guard
+        env:
+          INSTANCES: ${{ inputs.instances }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ ! $DEPLOY_ENV =~ ^[a-z][a-z0-9-]*$ || $DEPLOY_ENV =~ ^(local|([a-z][a-z0-9]*-)?dev)$ ]]; then
+            echo "::error::_deploy-env deploys promoted envs (qa, staging, prod), got '$DEPLOY_ENV'; dev deploys itself (_deploy-dev.yml)"
+            exit 1
+          fi
+          if [[ $GITHUB_REF != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::$DEPLOY_ENV deploys only what $DEFAULT_BRANCH records, not $GITHUB_REF"
+            exit 1
+          fi
+          for instance in $INSTANCES; do
+            [[ $instance =~ ^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$ ]] || { echo "::error::'$instance' is not <flow>/<app>/<instance>"; exit 1; }
+          done
+
+      - uses: actions/checkout@v7
+
+      - name: Kubernetes tools (pinned, checksum-verified)
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: kubectl,helm
+
+      - name: Deploy every instance as the tree records it
+        id: deploy
+        env:
+          DEPLOY_KUBECONFIG: ${{ secrets.DEPLOY_KUBECONFIG }}
+          KUBE_CONTEXT: ${{ vars.KUBE_CONTEXT }}
+          INSTANCES: ${{ inputs.instances }}
+          # helm-deploy-instance.sh refuses a promoted env unless the job names it: only this job does, inside the
+          # Environment whose reviewers approved it.
+          DEPLOY_ALLOW_ENV: ${{ inputs.env }}
+        run: |
+          set -euo pipefail
+          if [[ -z ${DEPLOY_KUBECONFIG:-} ]]; then
+            echo "::error::the Environment of $DEPLOY_ENV has no secret DEPLOY_KUBECONFIG"
+            exit 1
+          fi
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          (umask 077 && printf '%s\n' "$DEPLOY_KUBECONFIG" > "$KUBECONFIG")
+          context=()
+          if [[ -n ${KUBE_CONTEXT:-} ]]; then context=(--kube-context "$KUBE_CONTEXT"); fi
+          if [[ -z $INSTANCES ]]; then
+            # Every instance directory of the env with a values.yaml (layers and helper directories excluded).
+            INSTANCES=$(cd "$CONFIG_DIR/$DEPLOY_ENV" && find . -mindepth 4 -maxdepth 4 -name values.yaml -printf '%h\n' |
+              sed 's|^\./||' | grep -Ev '(^|/)(app-common|_[^/]*|\.[^/]*)(/|$)' | sort || true)
+          fi
+          {
+            echo "### deploy $DEPLOY_ENV"
+            echo ""
+            echo "| instance | tag | digest | result |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          deployed=() failed=0 count=0
+          for instance in $INSTANCES; do
+            values=$CONFIG_DIR/$DEPLOY_ENV/$instance/values.yaml
+            if [[ ! -f $values ]]; then
+              echo "::error::$values not found"
+              failed=1
+              continue
+            fi
+            count=$((count + 1))
+            tag=$(yq '.image.tag // ""' "$values")
+            digest=$(yq '.image.digest // ""' "$values")
+            if [[ -z $tag ]]; then
+              echo "| \`$instance\` | — | — | skipped: no release recorded yet |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            IFS=/ read -r flow app inst <<<"$instance"
+            echo "::group::$instance $tag"
+            rc=0
+            scripts/ci/helm-deploy-instance.sh "$DEPLOY_ENV" "$flow" "$app" "$inst" "${context[@]}" </dev/null || rc=$?
+            echo "::endgroup::"
+            if [[ $rc -eq 0 ]]; then
+              deployed+=("$instance=$tag")
+              echo "| \`$instance\` | \`$tag\` | \`${digest:-—}\` | deployed |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              failed=1
+              echo "::error::$instance: the helm deployer exited $rc (an upgrade was rolled back; the previous release runs)"
+              echo "| \`$instance\` | \`$tag\` | \`${digest:-—}\` | **failed** (exit $rc) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          if [[ $count -eq 0 ]]; then echo "::warning::$CONFIG_DIR/$DEPLOY_ENV has no instance: nothing to deploy"; fi
+          echo "deployed=${deployed[*]}" >> "$GITHUB_OUTPUT"
+          if [[ $failed -ne 0 ]]; then
+            echo "- git still records the failed releases: re-run this job, or revert the bump pull request" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$failed"
+
+  bump-next:
+    name: bump pull request for ${{ inputs.next-env }}
+    needs: deploy
+    if: inputs.next-env != '' && needs.deploy.outputs.deployed != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      FROM_ENV: ${{ inputs.env }}
+      NEXT_ENV: ${{ inputs.next-env }}
+      DEPLOYED: ${{ needs.deploy.outputs.deployed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Open or update the bump pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          notice() { echo "::notice title=bump $NEXT_ENV::$1"; echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+          if [[ ! $NEXT_ENV =~ ^[a-z][a-z0-9-]*$ || $NEXT_ENV == "$FROM_ENV" ]]; then
+            echo "::error::invalid next env '$NEXT_ENV'"
+            exit 1
+          fi
+          if [[ ! -d $CONFIG_DIR/$NEXT_ENV ]]; then
+            notice "$CONFIG_DIR/$NEXT_ENV does not exist: nothing to bump"
+            exit 0
+          fi
+          # The apps just deployed: <flow>/<app>/<instance>=<tag> -> <app>.
+          apps=$(for entry in $DEPLOYED; do instance=${entry%%=*}; app=${instance#*/}; echo "${app%%/*}"; done | sort -u | paste -sd ' ')
+          changed=$(bash scripts/ci/set-image-tag.sh --from "$CONFIG_DIR/$FROM_ENV" --apps "$apps" "$CONFIG_DIR/$NEXT_ENV")
+          if [[ -z $changed ]]; then
+            notice "$CONFIG_DIR/$NEXT_ENV already runs what $FROM_ENV runs: no bump pull request"
+            exit 0
+          fi
+          # What the next env gets, per app, read back from the files just changed.
+          releases=$(while read -r file; do
+              [[ $file == */values.yaml ]] || continue
+              app=${file%/*/values.yaml}
+              echo "${app##*/} $(yq '.image.tag' "$file") $(yq '.image.digest // "-"' "$file")"
+            done <<<"$changed" | sort -u)
+          tags=$(awk '{ print $2 }' <<<"$releases" | sort -u)
+          if [[ $(wc -l <<<"$tags") -eq 1 ]]; then label=$tags; else label=$(awk '{ print $1 "=" $2 }' <<<"$releases" | paste -sd ' '); fi
+          branch="release-bump/$NEXT_ENV/from-$FROM_ENV"
+          title="chore(release): deploy $label to $NEXT_ENV"
+          git switch --quiet -c "$branch"
+          git add -A -- "$CONFIG_DIR/$NEXT_ENV"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "$title"
+          git push --quiet --force origin "HEAD:refs/heads/$branch"
+          body=$(mktemp)
+          {
+            echo "What **$FROM_ENV** runs now, for \`$CONFIG_DIR/$NEXT_ENV\`: tag and digest copied from \`$CONFIG_DIR/$FROM_ENV\`, never recomputed."
+            echo "Approving and merging this pull request is the deploy intent for $NEXT_ENV; the deploy then waits for the reviewers of its Environment."
+            echo ""
+            echo "| app | tag | digest |"
+            echo "|---|---|---|"
+            awk '{ printf "| `%s` | `%s` | `%s` |\n", $1, $2, $3 }' <<<"$releases"
+            echo ""
+            echo "Changed files:"
+            while read -r file; do echo "- \`$file\`"; done <<<"$changed"
+            echo ""
+            echo "- Deployed to $FROM_ENV by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo ""
+            echo "> Opened with GITHUB_TOKEN, which starts no workflow: close and reopen this pull request to run its checks (a GitHub App token removes this step)."
+          } > "$body"
+          if [[ $(gh pr view "$branch" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || true) == OPEN ]]; then
+            gh pr edit "$branch" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
+            notice "updated the open bump pull request for $NEXT_ENV: $label"
+          else
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" --title "$title" --body-file "$body")
+            notice "opened $url"
+          fi

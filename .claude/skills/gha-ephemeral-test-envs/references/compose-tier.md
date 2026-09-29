@@ -219,16 +219,60 @@ test-infra/compose/stack.sh down                                    # finds the 
 
 ## 12. Build-tool variants
 
-| Tool | `__TEST_COMMAND__` (runs in /workspace) | `TEST_CACHE_DIR` (mounted at /cache) | Runner env |
+| Tool | `test-command` (`sh -c` in /workspace, `PROJECT` set) | `cache` input (mounted at /cache) | Runner env |
 |---|---|---|---|
-| Gradle | `./gradlew "${PROJECT}:integrationTest" --no-daemon` | `~/.gradle` (setup-gradle, read-only) | `GRADLE_USER_HOME=/cache` |
-| Maven | `mvn -B -ntp -pl "$PROJECT" verify -Pintegration-tests` | `~/.m2/repository` (actions/cache/restore) | `MAVEN_OPTS=-Dmaven.repo.local=/cache` |
-| npm / pnpm | `pnpm --filter "./$PROJECT" run test:integration` | `~/.npm` / the pnpm store | `npm_config_cache=/cache` / `npm_config_store_dir=/cache` |
-| Go | `go test -tags=integration "./$PROJECT/..."` | `~/go/pkg/mod` | `GOMODCACHE=/cache` (the build cache stays under HOME=/tmp) |
-| Python | `python -m pytest "$PROJECT/tests/integration" --junitxml=...` | `~/.cache/pip` | `PIP_CACHE_DIR=/cache` |
+| Gradle | `./gradlew ":$(echo "$PROJECT" \| tr / :):integrationTest" --no-daemon` | `gradle` (setup-gradle, read-only) | `GRADLE_USER_HOME=/cache` |
+| Maven | `mvn -B -ntp -pl "$PROJECT" verify -Pintegration-tests` | `restore`, `cache-path: ~/.m2/repository` | `MAVEN_OPTS=-Dmaven.repo.local=/cache` |
+| npm / pnpm | `pnpm --filter "./$PROJECT" run test:integration` | `restore`, `~/.npm` / the pnpm store | `npm_config_cache=/cache` / `npm_config_store_dir=/cache` |
+| Go | `go test -tags=integration "./$PROJECT/..."` | `restore`, `~/go/pkg/mod` | `GOMODCACHE=/cache` (the build cache stays under HOME=/tmp) |
+| Python | `python -m pytest "$PROJECT/tests/integration" --junitxml=...` | `restore`, `~/.cache/pip` | `PIP_CACHE_DIR=/cache` |
+
+With `cache: restore`, the build job saves the same directory with `actions/cache` under
+`<cache-key-prefix>-${{ hashFiles(<cache-key-files>) }}` (the `cache:` options of `setup-node` and `setup-java`
+use keys of their own, so save it with `actions/cache` directly). `cache: none` mounts an empty directory: the
+tests download their dependencies, slower but correct.
 
 JUnit XML: Gradle and Maven write `TEST-*.xml` (junit-summary.sh's default); jest needs jest-junit, Go
-needs gotestsum, pytest `--junitxml`: then set `JUNIT_GLOB='*.xml'` on the summary step.
+needs gotestsum, pytest `--junitxml`: then set `JUNIT_GLOB='*.xml'` on the summary step. Node's built-in runner
+writes JUnit with `--test-reporter=junit --test-reporter-destination=<file>`, and those flags must come before
+the test files (after them they are taken as files); `NODE_OPTIONS` also carries them.
+
+### Several toolchains in one repository
+
+A Node service and a Python worker need different commands and, usually, different runner images. Keep one
+`_integration-test.yml` and vary the two inputs per project:
+
+```bash
+#!/usr/bin/env bash
+# scripts/ci/integration-test.sh <project>: the test-command of every project (runs in the test-runner container).
+set -euo pipefail
+project=${1:?project}
+if [[ -f $project/package.json ]]; then
+  pnpm --filter "./$project" run test:integration
+elif [[ -f $project/pyproject.toml ]]; then
+  python -m pytest "$project/tests/integration" --junitxml="$project/build/it/TEST-integration.xml"
+elif [[ -f $project/go.mod || -f go.mod ]]; then
+  go test -tags=integration "./$project/..."
+else
+  echo "integration-test.sh: no known toolchain in $project" >&2
+  exit 2
+fi
+```
+
+```yaml
+# pr.yml / main.yml: the caller of _integration-test.yml
+    with:
+      project: ${{ matrix.project }}
+      images: ${{ needs.build.outputs.images }}
+      test-command: scripts/ci/integration-test.sh "$PROJECT"
+      # one runner image per toolchain, keyed by project (a repository variable holding JSON, or a literal)
+      test-runner-image: ${{ fromJSON(vars.IT_RUNNER_IMAGES || '{}')[matrix.project] || '' }}
+```
+
+An empty `test-runner-image` keeps `TEST_RUNNER_IMAGE` of `versions.env`. Pin each runner image by digest like
+the other lines of `versions.env` (a JSON value such as
+`{"services/api": "docker.io/library/node:22@sha256:...", "services/worker": "docker.io/library/python:3.12@sha256:..."}`),
+and make the stack files of each project name the endpoints its tests read.
 
 ## 13. Seeding test data
 

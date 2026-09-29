@@ -5,13 +5,16 @@
 # Placeholders (replace each one; `grep -n '__[A-Z0-9_]*__'` must find nothing afterwards):
 #   __DEV_ENV__             the config env deployed by default: a dev env, config/<env>/  e.g. us-dev
 #   __COMPOSE_DEPLOY_CMD__  deploys ONE compose target on its host (contract below)       e.g. scripts/deploy/compose-target.sh
-#   __HELM_DEPLOY_SCRIPT__  deploys ONE helm target into its cluster (contract below)     e.g. scripts/helm-deploy-instance.sh
+#   __HELM_DEPLOY_SCRIPT__  deploys ONE helm target into its cluster (contract below)     e.g. scripts/ci/helm-deploy-instance.sh
+#                           (the skill's assets/scripts/helm-deploy-instance.sh, on top of helm-release.sh)
 # Optional: POOL_DEPLOY_CMD (flows whose inventory declares a `pool`), e.g. scripts/pool-deploy.sh.
 #
 # Interface (main.yml calls this as job `deploy-dev`, only on refs/heads/main and not for the write-back bot's actor,
 # with permissions contents: write, deployments: write, packages: read, and `secrets: inherit`):
 #   inputs   env (default __DEV_ENV__) · tag (required: the version / image tag to deploy) ·
-#            images (default '{}': JSON object project -> image pinned by digest)
+#            images (default '{}': JSON object project -> image pinned by digest) ·
+#            environment (default '': the GitHub Environment, named like env; pass e.g. dev when several dev
+#            envs share one Environment)
 #   outputs  deployed (JSON list of <flow>/<app>/<instance>) · placements ("<flow>/<app>/<instance>=<host> ...")
 #
 # Inventory: config/<env>/<flow>/workflows-config.yml, one per flow (schema in the skill's
@@ -32,9 +35,9 @@
 #   helm     $HELM_DEPLOY_SCRIPT <env> <flow> <app> <instance> --tag <tag> --namespace <ns> --kube-context <cluster>
 #            typically: helm upgrade --install <app>-<instance> ... --rollback-on-failure --wait, rollout status, helm test
 #
-# Environment `dev` (Settings > Environments): deployment branches `main` only; secrets DEV_DEPLOY_SSH_KEY (the
-# private key of the deploy user on the hosts) and DEV_KUBECONFIG (a kubeconfig with one context per `cluster`
-# named in the inventories). Write-back identity: GITHUB_TOKEN (pushes as github-actions[bot], starts no run),
+# GitHub Environment named like the env (or the `environment` input), e.g. `dev` (Settings > Environments):
+# deployment branches `main` only; secrets DEV_DEPLOY_SSH_KEY (the private key of the deploy user on the hosts) and
+# DEV_KUBECONFIG (a kubeconfig with one context per `cluster` named in the inventories). Write-back identity: GITHUB_TOKEN (pushes as github-actions[bot], starts no run),
 # or a GitHub App when the repository variable WRITE_BACK_APP_ID and the secret WRITE_BACK_APP_PRIVATE_KEY exist
 # (give that App the bypass of the ruleset on main). qa and prod are never deployed here: the guard refuses
 # them and so does write-back-tag.sh. Actions are pinned to a major version: update to the current major.
@@ -55,6 +58,10 @@ on:
         description: JSON object project -> image pinned by digest; recorded in the deployment and passed to the deployers.
         type: string
         default: '{}'
+      environment:
+        description: GitHub Environment with the deploy secrets and the branch rule; empty = the env's name.
+        type: string
+        default: ''
     outputs:
       deployed:
         description: JSON list of the instances deployed (<flow>/<app>/<instance>).
@@ -71,10 +78,10 @@ jobs:
     name: deploy ${{ inputs.env }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Environment `dev`: its branch rule (main only) and its secrets. `deployment: false` keeps both without an
+    # The Environment's branch rule (main only) and its secrets. `deployment: false` keeps both without an
     # automatic deployment object, so the record created below (with its payload) is the only one per run.
     environment:
-      name: dev
+      name: ${{ inputs.environment || inputs.env }}
       deployment: false
     # One deploy per env at a time, never cancelled half-way (a cancelled deploy is worse than a late one).
     concurrency:
@@ -86,6 +93,7 @@ jobs:
       packages: read # deployers may read this repository's images (digests, pulls)
     env:
       DEPLOY_ENV: ${{ inputs.env }}
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment || inputs.env }}
       DEPLOY_TAG: ${{ inputs.tag }}
       DEPLOY_IMAGES: ${{ inputs.images }}
       DEPLOY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -203,8 +211,9 @@ jobs:
             --slurpfile targets "$RUNNER_TEMP/targets.json" '{env: $env, tag: $tag, images: $images, targets: $targets[0]}')
           # auto_merge false and required_contexts [] because this run's own checks are still pending: the API
           # would otherwise refuse (409) or merge the default branch into the ref.
-          id=$(jq -n --arg ref "$GITHUB_SHA" --arg desc "deploy-dev $DEPLOY_ENV $DEPLOY_TAG" --argjson payload "$payload" '{
-                ref: $ref, environment: "dev", description: $desc, auto_merge: false, required_contexts: [],
+          id=$(jq -n --arg ref "$GITHUB_SHA" --arg environment "$DEPLOYMENT_ENVIRONMENT" --arg desc "deploy-dev $DEPLOY_ENV $DEPLOY_TAG" \
+              --argjson payload "$payload" '{
+                ref: $ref, environment: $environment, description: $desc, auto_merge: false, required_contexts: [],
                 payload: $payload, transient_environment: false, production_environment: false
               }' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
@@ -379,4 +388,4 @@ jobs:
           [[ $JOB_STATUS == success ]] && state=success
           gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
             -f state="$state" -f log_url="$DEPLOY_RUN_URL" -f description="deploy-dev $DEPLOY_TAG: $JOB_STATUS" >/dev/null
-          echo "- GitHub Deployment $DEPLOYMENT_ID in Environment \`dev\`: **$state**" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub Deployment $DEPLOYMENT_ID in Environment \`$DEPLOYMENT_ENVIRONMENT\`: **$state**" >> "$GITHUB_STEP_SUMMARY"

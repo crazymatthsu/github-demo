@@ -20,7 +20,7 @@ needs, generates the trigger workflows and the build, and wires the rest togethe
    promotion. Schedules do maintenance. Why: each event carries a different risk and a different time budget;
    one workflow full of `if: github.event_name == ...` fits none of them. Table: references/event-model.md.
 2. **Thin trigger workflows, logic below them.** Trigger workflows (`pr.yml`, `main.yml`, `release.yml`,
-   `nightly.yml`, `base-image.yml`) only decide what runs in which order. Multi-job stages live in reusable
+   `deploy.yml`, the scheduled ones, `base-image.yml`) only decide what runs in which order. Multi-job stages live in reusable
    workflows named `_*.yml` (the underscore says "never triggered by an event"). Step sequences that several jobs
    repeat live in composite actions. Real logic lives in `scripts/` with `--help`, documented exit codes and
    tests. Why: the same build runs from PRs and main with different inputs, laptops run the same scripts, and
@@ -99,8 +99,11 @@ A single small project may need only `pr.yml`, `main.yml` and `_build.yml` from 
     _promote.yml           reusable: point tags at tested digests              (gha-versioning-release)
     release.yml            release tags                                        (gha-versioning-release)
     _deploy-dev.yml        reusable: deploy the dev environment                (gha-config-deploy)
+    deploy.yml             qa / prod: deploy merged bump PRs, per env          (gha-config-deploy)
+    _deploy-env.yml        reusable: one promoted env, behind its Environment  (gha-config-deploy)
     base-image.yml         CI and runtime base images                          (gha-build-images)
-    nightly.yml            retention, teardown drill                           (companion skills)
+    teardown-drill.yml     scheduled: teardown and leak check still work       (gha-ephemeral-test-envs)
+    retention.yml          scheduled: registry cleanup, dry run first          (gha-versioning-release)
     README.md              diagrams: what runs when                            (this skill)
   actions/<name>/action.yml  composite actions: affected-matrix, registry-login, setup-build-env, compose-stack, ...
   affected-map.yml           path map and project registry                     (gha-affected-builds)
@@ -121,8 +124,10 @@ scripts/ci/                  logic the workflows call; scripts/test/*-test.sh te
 
 ### 5. Validate, then prove it on a branch
 
-- Run `scripts/lint-pipeline.sh --install` from the target repository: actionlint, ShellCheck, hadolint, YAML
-  parsing and `scripts/test/*-test.sh`.
+- Run `bash <this skill>/scripts/lint-pipeline.sh --install --repo <target repository>`: actionlint,
+  ShellCheck, hadolint, YAML parsing and `scripts/test/*-test.sh`, on committed and new (not yet staged) files.
+  Nothing in it is repository-specific; also copy it to the target's `scripts/ci/` so contributors run what
+  the lint job runs.
 - Push a branch and expect `push-gate` green. Open a PR and expect `pr-gate` green, with the jobs you expect
   skipped. Read each job summary, not only the colour.
 - Merge and watch the first main run end to end; the first release and the first deploy each deserve a watched run.
@@ -147,19 +152,21 @@ check it with `scripts/render-mermaid.cjs`. GitHub renders it below the workflow
 
 | File | Purpose | Adapt |
 |---|---|---|
-| `assets/workflows/pr.yml` | push / pull_request / merge_group pipeline: detect-affected, lint, build, integration-test, gate | drop optional jobs (and their gate `needs`); lint versions |
-| `assets/workflows/main.yml` | main and hotfix pipeline: build all, integration tests, publish, deploy-dev, loop guard | `__BOT_LOGIN__`; add system-test and kind-deploy if the repo has them |
+| `assets/workflows/pr.yml` | push / pull_request / merge_group pipeline: detect-affected, lint, build, integration-test, deploy-test (kind), gate | `__APP_PROJECT__` (deploy-test); drop optional jobs (and their gate `needs` and env lines); lint versions |
+| `assets/workflows/main.yml` | main and hotfix pipeline: build all, integration tests, deploy-test (kind), publish, deploy-dev, loop guard | `__BOT_LOGIN__`, `__APP_PROJECT__` (deploy-test); drop optional jobs; add a system test if the repo has one |
 | `assets/workflows/_build.yml` | reusable build: plan from the project registry, build + unit tests, version, images, digests | `__BUILD_COMMAND__`, `__IMAGE_NAMESPACE__`, `__VERSION_SCRIPT__`; container build per gha-build-images |
 | `scripts/lint-pipeline.sh` | run the lint job's checks locally (`--install` fetches pinned linters) | none |
-| `scripts/render-mermaid.cjs` | parse and render the README's Mermaid diagrams in headless Chromium | none |
+| `scripts/render-mermaid.cjs` | parse and render the README's Mermaid diagrams in headless Chromium; `--parse-only` checks the syntax in Node on jsdom when no browser can be installed | none |
 | `references/event-model.md` | triggers, filters, events that start nothing, concurrency, required checks, reusable-workflow boundaries | — |
 | `references/gotchas.md` | symptom → cause → fix catalogue | — |
 | `references/documenting-pipelines.md` | page structure, legend, Mermaid layout rules, validation | — |
 
 Interfaces the templates rely on (the companion skills implement them):
 - `_build.yml` outputs `version`, `images` (JSON project → `repo:tag@sha256:…`), `image-tags` (JSON project →
-  tags), `it-projects` (JSON list); it reads the project registry `projects:` from `.github/affected-map.yml`.
-- `_integration-test.yml` inputs `project`, `images`, `retention-days`.
+  tags), `it-projects` (JSON list), `all` (`'true'` when every project was selected); it reads the project
+  registry `projects:` from `.github/affected-map.yml`.
+- `_integration-test.yml` inputs `project`, `images`, `retention-days`. `_kind-deploy.yml` inputs `images`,
+  `retention-days` (the chart, instances and project default to its placeholders).
 - `_promote.yml` inputs `images`, `tags`. `_deploy-dev.yml` inputs `tag`, `images` (and `env`).
 - `.github/actions/affected-matrix` outputs `projects`, `matrix`, `docs-only`, `deploy-test`, `reason`.
 
@@ -169,7 +176,7 @@ Interfaces the templates rely on (the companion skills implement them):
   gate:
     name: ${{ github.event_name == 'push' && 'push-gate' || 'pr-gate' }}
     if: always()
-    needs: [detect-affected, lint, build, integration-test]   # every job of the workflow
+    needs: [detect-affected, lint, build, integration-test, deploy-test]   # every job of the workflow
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -184,8 +191,8 @@ Interfaces the templates rely on (the companion skills implement them):
           [[ -z $bad ]] || { echo "::error::failed or cancelled: $bad"; exit 1; }
 ```
 
-The template's gate also fails the merge queue when integration tests were skipped for lack of pushed images,
-and explains fork-PR and docs-only skips in the job summary.
+The template's gate also fails the merge queue when integration tests or the deploy test were skipped for
+lack of pushed images, and explains fork-PR, config-only and docs-only skips in the job summary.
 
 ## Gotchas
 
@@ -202,10 +209,9 @@ The five that bite first (full catalogue: references/gotchas.md):
 ## Validation
 
 ```bash
-scripts/lint-pipeline.sh --install                       # actionlint, ShellCheck, hadolint, YAML, script tests
-python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/workflows/*.yml
-grep -rn '__[A-Z_]*__' .github/ scripts/ || echo "no placeholders left"
-NODE_PATH=... node scripts/render-mermaid.cjs .github/workflows/README.md      # see references/documenting-pipelines.md
+bash <skill>/scripts/lint-pipeline.sh --install --repo .   # actionlint, ShellCheck, hadolint, YAML, script tests
+grep -rnE '__[A-Z0-9_]+__' .github/ scripts/ config/ || echo "no placeholders left"
+NODE_PATH=... node <skill>/scripts/render-mermaid.cjs .github/workflows/README.md   # references/documenting-pipelines.md
 ```
 
 Then the branch run (`push-gate`), the PR run (`pr-gate`), and the first main run, each read in full.

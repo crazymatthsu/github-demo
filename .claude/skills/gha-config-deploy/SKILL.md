@@ -1,6 +1,6 @@
 ---
 name: gha-config-deploy
-description: 'Configuration as code and deployment for GitHub Actions: a config tree per env/flow/app/instance with layered overrides, secrets kept out of git and config lint as a required check, a per-env/flow deploy inventory (compose hosts and pools, Helm releases), auto-deploy to dev after main passes with a `[skip ci]` tag write-back and bot loop guard, and qa/prod promotion through CODEOWNERS-approved bump PRs. Use it to build or review this, and when asked where environment config or image tags belong, how to promote dev to qa to prod, how CI records what it deployed, why a bot commit retriggers CI or a ruleset rejects it, or how to deploy to many hosts or clusters, even if nobody says config as code.'
+description: 'Configuration as code and deployment for GitHub Actions: a config tree per env/flow/app/instance with layered overrides, secrets kept out of git and config lint as a required check, a per-env/flow deploy inventory (compose hosts and pools, Helm releases), auto-deploy to dev after main passes with a `[skip ci]` tag write-back and bot loop guard, and qa/prod promotion through CODEOWNERS-approved bump PRs deployed behind GitHub Environment approvals. Use it to build or review this, and when asked where environment config or image tags belong, how to promote dev to qa to prod, how to deploy staging or prod only after approval, how CI records what it deployed, why a bot commit retriggers CI or a ruleset rejects it, or how to deploy to many hosts or clusters, even if nobody says config as code.'
 ---
 
 # gha-config-deploy
@@ -9,26 +9,29 @@ description: 'Configuration as code and deployment for GitHub Actions: a config 
 
 A proven way to keep every environment's configuration and deployed version in git, lint it on every pull
 request, deploy dev automatically after `main` passes and record what was deployed, and promote to qa and prod
-only through reviewed pull requests. You get a reusable deploy workflow, a tested write-back script, an example
-config tree, a CODEOWNERS file, and references for the tree, the lint checks, the deploy inventory and promotion.
+only through reviewed pull requests. You get the dev deploy workflow and the qa / prod promotion workflows, tested
+scripts (write-back, bump, one Helm release per instance), an example config tree, a CODEOWNERS file, and
+references for the tree, the lint checks, the deploy inventory and promotion.
 
 ## How the pieces fit
 
 ```mermaid
-flowchart LR
-  edit["PR: edit config/ or code"] --> lint["config lint, feeds the gate"]
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TD
+  edit["PR: edit config/ or code"] --> lint["config lint,<br/>feeds the gate"]
   lint --> merge["merge to main"]
-  merge --> main["main.yml: build, test, publish the tag"]
-  main --> dd["deploy-dev in Environment dev"]
-  dd --> inv["every config/ENV/FLOW/workflows-config.yml"]
-  inv --> cmp["compose: host, or pool of boxes"]
-  inv --> helm["helm: one release per instance"]
-  cmp --> wb["write-back by the bot: tag and host, [skip ci]"]
+  merge --> main["main.yml: build, test,<br/>publish the tag"]
+  main --> dd["deploy-dev in the<br/>dev Environment"]
+  dd --> inv["every config/ENV/FLOW/<br/>workflows-config.yml"]
+  inv --> cmp["compose: host,<br/>or pool of boxes"]
+  inv --> helm["helm: one release<br/>per instance"]
+  cmp --> wb["write-back by the bot:<br/>tag and host, [skip ci]"]
   helm --> wb
-  wb -. "loop guard: no new run" .-> main
-  rel["release tag"] --> bump["bump PR on config/QA-ENV"]
-  bump --> own{"CODEOWNERS approve"}
-  own -->|"merge = deploy intent"| qa["qa deployer: controller or promotion job"]
+  wb -. "loop guard:<br/>no new run" .-> main
+  rel["release tag"] --> bump["bump PR on<br/>config/QA-ENV"]
+  bump --> own{"CODEOWNERS<br/>approve"}
+  own -->|"merge = deploy intent"| qa["deploy.yml: qa, after its<br/>Environment reviewers approve"]
+  qa --> next["bump PR for prod:<br/>what qa runs"]
 ```
 
 Dev is deployed first and recorded afterwards; qa and prod are recorded first (a reviewed PR) and deployed
@@ -56,16 +59,18 @@ afterwards. Either way the tree in git is what runs, and config lint has checked
 6. **Config lint is a required check that also runs on a laptop.** Naming, required files, identity, allowed
    variables, rendering, tag policy, inventory, `helm template` per instance. Why: otherwise a config error
    surfaces at deploy time, in the target environment, after the merge.
-7. **dev deploys itself after `main` passes, and only dev.** The GitHub Environment `dev` (branch `main` only)
-   holds the deploy credentials; the workflow, the scripts and the Environment all refuse anything that is not a
+7. **dev deploys itself after `main` passes, and only dev.** The dev env's GitHub Environment (branch `main`
+   only) holds the deploy credentials; the workflow, the scripts and the Environment all refuse anything that is not a
    dev env. Why: every merge gets feedback on real targets, while qa and prod keep a reviewed deploy intent.
 8. **Record what was deployed, only what was deployed, without looping.** The bot writes the tag (and the box)
    of every successful instance back with `[skip ci]`; jobs skip the bot's actor; bot runs get their own
    concurrency group. Why: git must match reality, a failed instance keeps its last good tag, and a write-back
    must not start the next deploy.
 9. **qa and prod change only through reviewed bump PRs carrying the tested digest.** The release workflow opens
-   them, CODEOWNERS of the env approve them, the merge is the deploy intent. Why: approvals and change records
-   live on the PR, and nothing is rebuilt after `main` tested it.
+   them, CODEOWNERS of the env approve them, the merge is the deploy intent; the promotion job then deploys what
+   the tree records, inside the env's GitHub Environment once its reviewers approve, and proposes the next env.
+   Why: approvals and change records live on the PR, credentials only where reviewers gate them, and nothing is
+   rebuilt after `main` tested it.
 10. **One deploy unit per instance.** One Helm release (`<app>-<instance>`, `replicas: 1`) or one compose project
     per instance, one namespace per flow. Why: an upgrade, a failed rollout or a rollback touches one instance,
     not every instance of an app.
@@ -94,7 +99,7 @@ afterwards. Either way the tree in git is what runs, and config lint has checked
    | Dev compose hosts | the flow's hosts declared as a `pool` | a single fixed host that already holds the config |
    | Host access | SSH from GitHub-hosted runners, key in Environment `dev`, forced command | host unreachable: a self-hosted runner on it |
    | Write-back identity | `GITHUB_TOKEN` while `main` accepts it | a ruleset blocks direct pushes: a GitHub App with a bypass |
-   | qa / prod deployer | bump PR merged, then a GitOps controller or a promotion job applies it | never CI push with prod cluster credentials |
+   | qa / prod deployer | the promotion job (`deploy.yml` + `_deploy-env.yml`): the merged bump PR deploys inside the env's GitHub Environment (required reviewers, branch `main`, the only place its cluster credentials live) | a GitOps controller pulls the tree (promotion.md section 9): no cluster credentials in GitHub at all; never put prod credentials in repository secrets or in jobs PRs can run |
 
 3. **Create the tree.** Copy `assets/config-example/` to `config/`, rename the placeholder directories and fill
    the tokens (below). Move existing settings to the lowest layer where they are true: every env to
@@ -110,21 +115,28 @@ afterwards. Either way the tree in git is what runs, and config lint has checked
 5. **Config lint.** Implement the catalogue of `references/config-lint-checks.md` in the repository's language,
    runnable locally, and call it from the PR and main pipelines as a job that feeds the single gate check (see
    gha-pipeline-design); never a path-filtered required check.
-6. **Deployers.** Write the compose deployer (one target on its host) or a pool tool (one flow on its boxes), and
-   the Helm deployer (one release), to the contracts in the header of `_deploy-dev.yml`; sketches and the forced
-   SSH command are in `references/deploy-inventory.md`. Add `config/<env>/<flow>/workflows-config.yml` for every
+6. **Deployers.** The Helm deployer ships: `assets/scripts/helm-deploy-instance.sh` builds one release per
+   instance from the tree (values layers, tag, optional `appConfig` / `appFiles` layers) on top of
+   `helm-release.sh` (skill gha-ephemeral-test-envs); set `HELM_CHART_DIR`. Write the compose deployer (one target
+   on its host) or a pool tool (one flow on its boxes) to the contracts in the header of `_deploy-dev.yml`;
+   sketches and the forced SSH command are in `references/deploy-inventory.md`. Add `config/<env>/<flow>/workflows-config.yml` for every
    flow of every dev env and commit the reviewed `ssh-keyscan` lines as `config/<env>/known_hosts`.
 7. **Workflow and write-back.** Copy `assets/workflows/_deploy-dev.yml` to `.github/workflows/`, fill its
-   placeholders; copy `assets/scripts/write-back-tag.sh` and `write-back-tag-test.sh` to `scripts/ci/`. Call it
+   placeholders; copy the scripts of `assets/scripts/` to `scripts/ci/` and their `*-test.sh` files to
+   `scripts/test/` (the lint job of gha-pipeline-design runs `scripts/test/*-test.sh`; each test finds its script
+   next to itself or in `../ci/`); keep them executable (`git add --chmod=+x`). Call `_deploy-dev.yml`
    from `main.yml` as job `deploy-dev` (gha-pipeline-design's `main.yml` template has it) with the loop guard and
    the bot concurrency group, `references/promotion.md` section 2.
-8. **Repository settings.** Environment `dev` (branch `main`, secrets `DEV_DEPLOY_SSH_KEY`, `DEV_KUBECONFIG`);
+8. **Repository settings.** A GitHub Environment named like the dev env (`dev`; the `environment` input of
+   `_deploy-dev.yml` overrides it) with branch `main` and secrets `DEV_DEPLOY_SSH_KEY`, `DEV_KUBECONFIG`;
    ruleset on `main` with "Require review from Code Owners" and, once it blocks direct pushes, a bypass for the
    write-back App (`WRITE_BACK_APP_ID` variable, `WRITE_BACK_APP_PRIVATE_KEY` secret); `.github/CODEOWNERS` from
    `assets/CODEOWNERS.example`; "Allow GitHub Actions to create and approve pull requests" for bump PRs.
-9. **Promotion.** Create the qa and prod trees (same shape, no inventory, immutable tags pinned by digest), add
-   the bump-PR job to the release workflow, and plan the GitOps controller that applies merged bumps:
-   `references/promotion.md` sections 5 to 8.
+9. **Promotion.** Create the qa and prod trees (same shape, no inventory, immutable tags pinned by digest); in
+   the release workflow (gha-versioning-release) make the bump job call `set-image-tag.sh`; copy
+   `assets/workflows/deploy.yml` and `_deploy-env.yml` (set `PROMOTED_ENV_PATTERN`, `STAGE_ORDER`, `NEXT_ENV`) and
+   create one GitHub Environment per promoted env with required reviewers, branch `main` and `DEPLOY_KUBECONFIG`;
+   or plan the GitOps controller instead: `references/promotion.md` sections 5 to 9.
 10. **Validate and do a first run** (Validation below): merge a config-only change and watch one deploy, one
     write-back commit and no second run.
 
@@ -146,14 +158,21 @@ if grep -rnE '__[A-Z][A-Z0-9_]*__' config; then echo "placeholders left" >&2; fi
 |---|---|---|
 | `assets/workflows/_deploy-dev.yml` | Reusable deploy of one dev env: guard, resolve the inventory, deploy compose targets (per target, or per flow with a pool) and helm targets through pluggable commands, collect, write back, record a GitHub Deployment. Interface and contracts below | `__DEV_ENV__`, `__COMPOSE_DEPLOY_CMD__`, `__HELM_DEPLOY_SCRIPT__`; `POOL_DEPLOY_CMD` when a flow has a pool; the Guard regex if dev envs are named otherwise; a cloud OIDC login instead of `DEV_KUBECONFIG` if you use one (the caller then adds `id-token: write`) |
 | `assets/scripts/write-back-tag.sh` | Sets `IMAGE_TAG` in `compose.env` and `image.tag` in `values.yaml` of each deployed instance, records pool placements as `host`, commits `chore(config): <env> deployed <tag> [skip ci]` as the bot on the fresh remote tip in a scratch worktree, pushes, re-applies on a new tip when the branch moved, stops at once on a real rejection; idempotent; refuses non-dev envs. Exit 0/1/2/3/4, `--help` | nothing to edit: `WRITE_BACK_*` variables (branch, config dir, inventory name, tag variable, env pattern, author, attempts, dry run). Needs git, awk, mikefarah yq v4 (for YAML) |
-| `assets/scripts/write-back-tag-test.sh` | Plain-bash test of the script against a throwaway bare remote: edits, message, author, idempotency, race, rejected push, shallow clone, refusals | nothing; run in CI's lint job |
+| `assets/scripts/write-back-tag-test.sh` | Plain-bash test of the script against a throwaway bare remote: edits, message, author, idempotency, race, rejected push, shallow clone, refusals | nothing: install as `scripts/test/write-back-tag-test.sh` |
+| `assets/workflows/deploy.yml` | Promotion trigger: a push to `main` that changed `config/<promoted env>/` (a merged bump PR) or a dispatch; plans the envs in stage order and calls `_deploy-env.yml` per env, one at a time | the env block: `PROMOTED_ENV_PATTERN`, `STAGE_ORDER`, `NEXT_ENV` (JSON env → next env) |
+| `assets/workflows/_deploy-env.yml` | Reusable deploy of one promoted env inside its GitHub Environment (required reviewers, `DEPLOY_KUBECONFIG`): every instance with the tag and digest the tree pins, through `helm-deploy-instance.sh`; then the bump PR for the next env with exactly what this env runs | nothing; an OIDC cloud login instead of `DEPLOY_KUBECONFIG` if you use one (add `id-token: write`) |
+| `assets/scripts/helm-deploy-instance.sh` | One instance as one Helm release: chart, values layers, tag from `--tag` or the tree, `appConfig` / `appFiles` layers when the chart has `appConfig`, namespace = flow, `--kube-context`; modes deploy / template / lint; refuses promoted envs unless `DEPLOY_ALLOW_ENV` names them. The `__HELM_DEPLOY_SCRIPT__` of `_deploy-dev.yml`, the deployer of `_deploy-env.yml`, the renderer of config lint check 12 | `HELM_CHART_DIR` (`{app}` placeholder, e.g. `deploy/helm/{app}`): set it in the workflows or replace the default; needs `helm-release.sh` of gha-ephemeral-test-envs next to it, and mikefarah yq v4 |
+| `assets/scripts/helm-deploy-instance-test.sh` | 21 cases with a stub `helm-release.sh` (flag list, layers, env guard, exit codes), one with the real one in `--dry-run` when found | nothing: install as `scripts/test/helm-deploy-instance-test.sh` |
+| `assets/scripts/set-image-tag.sh` | The edit of a bump PR: `image.tag` (and `image.digest`, or removes a stale one) in `values.yaml` and `IMAGE_TAG` in `compose.env` of every instance of the given apps in one env, or `--from` another env; prints the changed files; idempotent. The `__BUMP_COMMAND__` of release.yml (gha-versioning-release) and the next-env bump of `_deploy-env.yml` | nothing: `SET_IMAGE_TAG_*` variables; `IMAGE_DIGESTS` carries the digests |
+| `assets/scripts/set-image-tag-test.sh` | 19 cases on a throwaway tree | nothing: install as `scripts/test/set-image-tag-test.sh` |
 | `assets/config-example/` | Two layers of `_common`, one flow inventory with a pool, one app with `app-common` and two instances (one compose, one helm), in yq layout | tokens `__DEV_ENV__`, `__FLOW__`, `__APP__`, `__INSTANCE_A__`, `__INSTANCE_B__`, `__IMAGE_REPO__`, `__IMAGE_TAG__`, `__HOST_1__`, `__HOST_2__`, `__KUBE_CONTEXT__`; keys under `app:` are illustrative |
 | `assets/CODEOWNERS.example` | Code, CI, config, per-flow and qa / prod ownership, last match wins | `__ORG__` and the team tokens; one line per flow |
 
 ### The `_deploy-dev.yml` contract
 
 - **Inputs** (`workflow_call`): `env` (string, default `__DEV_ENV__`), `tag` (string, required: the version /
-  image tag to deploy), `images` (string, default `'{}'`: JSON object project to image pinned by digest).
+  image tag to deploy), `images` (string, default `'{}'`: JSON object project to image pinned by digest),
+  `environment` (string, default `''`: the GitHub Environment, named like `env` when empty).
 - **Outputs**: `deployed` (JSON list of `<flow>/<app>/<instance>`), `placements` (`<instance>=<host> ...`).
 - **Caller**: `main.yml` job `deploy-dev`, only on `refs/heads/main` and not for the bot actor, with permissions
   `contents: write`, `deployments: write`, `packages: read`, and `secrets: inherit`. Keep the file name.
@@ -164,9 +183,23 @@ if grep -rnE '__[A-Z][A-Z0-9_]*__' config; then echo "placeholders left" >&2; fi
   - pool: `$POOL_DEPLOY_CMD <env> <flow> deploy --tag <tag>`, printing `deployed <flow>/<app>/<instance>@<host>=<tag>`
     per deployed instance;
   - helm: `$HELM_DEPLOY_SCRIPT <env> <flow> <app> <instance> --tag <tag> --namespace <ns> --kube-context <cluster>`.
-- **Secrets and variables**: Environment `dev` holds `DEV_DEPLOY_SSH_KEY` (loaded into an `ssh-agent` for the
+- **Secrets and variables**: the dev Environment holds `DEV_DEPLOY_SSH_KEY` (loaded into an `ssh-agent` for the
   compose step only) and `DEV_KUBECONFIG`; `WRITE_BACK_APP_ID` (variable) and `WRITE_BACK_APP_PRIVATE_KEY`
   (secret) switch the write-back from `GITHUB_TOKEN` to a GitHub App.
+
+### The `_deploy-env.yml` contract (promoted envs)
+
+- **Inputs**: `env` (required: a promoted env, never a dev env or `local`), `instances` (space-separated
+  `<flow>/<app>/<instance>`, default every instance of the env), `next-env` (the env whose bump PR follows a
+  successful deploy; empty for none), `environment` (the GitHub Environment; named like `env` when empty).
+  **Output**: `deployed` (`<flow>/<app>/<instance>=<tag> ...`).
+- **Caller**: `deploy.yml`, on `main` only, with permissions `contents: write` and `pull-requests: write` (the
+  next-env bump; the deploy job itself only reads) and `secrets: inherit`.
+- **Per promoted env** (Settings > Environments): required reviewers (two distinct people for prod), deployment
+  branches `main`, secret `DEPLOY_KUBECONFIG`, optional variable `KUBE_CONTEXT`. Nothing runs and no credential
+  is exposed before the reviewers approve.
+- Record first, deploy after: a failed instance was rolled back by Helm while git names the new tag, so the job
+  fails and says so; re-run it, or revert the bump PR (then the promotion job deploys the previous tag).
 
 References: `references/config-tree.md` (layout, layers, identity, naming, secrets, the two renderings, one release
 per instance, namespaces) · `references/config-lint-checks.md` (checks 1 to 13 with failure examples, running and
@@ -195,6 +228,9 @@ bypass, bump PRs, rollback, GitOps, settings checklist).
 | The bump PR has no checks and cannot merge, or cannot be created | PRs created with `GITHUB_TOKEN` start no workflow; PR creation needs a repository setting | close and reopen the PR, or open it with an App token; enable "Allow GitHub Actions to create and approve pull requests" |
 | Prod needs two teams but one approval merged it | CODEOWNERS needs one approval from any owner on the last matching line | Environment reviewers on the promotion job, or more required approvals; order rules general first, qa / prod last |
 | A PR waits forever for "config-lint" | a path-filtered workflow is a required check and did not run | feed config lint into the single gate job instead |
+| prod was bumped to a new tag but still runs the old image | the values kept the previous release's `image.digest`, and a digest wins over the tag | set tag and digest together, remove a digest that no longer applies (`set-image-tag.sh` does both); lint check 10 requires both in pinned envs |
+| A merged bump never reached the cluster, although later deploys ran | GitHub keeps one pending run per concurrency group: a newer pending deploy replaced it, and it only deployed its own instances | deploy every instance of the env on each run (`_deploy-env.yml` does), so any run converges on what `main` records |
+| `helm-deploy-instance.sh` exits 3 in a qa or prod job | the script deploys dev and `local` only, unless `DEPLOY_ALLOW_ENV` names the env | only the promotion job sets it, inside the env's Environment; never set it in a dev or PR job |
 | A failed first Helm install vanished with its pods | `--rollback-on-failure` (Helm 4; `--atomic` in Helm 3) uninstalls a failed first install | omit it when the release has no deployed revision; add it for upgrades |
 | Config changed, pod did not restart | a ConfigMap update does not change the pod template | `checksum/config` annotation; Reloader for `Secret`s owned by a secret operator |
 | Pool or lint tests went red after the first deploy | fixtures were copied from the live tree, which now records placements and tags | build fixtures in the test, or strip the recorded fields from the copy |
@@ -227,8 +263,11 @@ python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' \
   $(find config .github/workflows -name '*.yml' -o -name '*.yaml')        # YAML parses
 ! grep -rnE '__[A-Z][A-Z0-9_]*__' config .github scripts/ci                 # no placeholder left
 actionlint                                  # workflows; runs shellcheck on run: blocks when it is installed
-shellcheck --severity=style scripts/ci/*.sh
-bash scripts/ci/write-back-tag-test.sh      # needs git and mikefarah yq v4; every case must pass
+shellcheck --severity=style scripts/ci/*.sh scripts/test/*.sh
+for t in scripts/test/write-back-tag-test.sh scripts/test/set-image-tag-test.sh scripts/test/helm-deploy-instance-test.sh; do
+  bash "$t" || echo "FAILED: $t"            # need git, jq and mikefarah yq v4; every case must pass
+done
+scripts/ci/helm-deploy-instance.sh <dev env> <flow> <app> <instance> --mode template   # renders one release
 ./gradlew configLint                        # or your linter: zero ERROR findings
 WRITE_BACK_PUSH=false scripts/ci/write-back-tag.sh <dev env> 0.0.0-check   # what a write-back would commit
 t=$(mktemp); for f in $(find config -name '*.yml' -o -name '*.yaml'); do   # every YAML file in yq's layout
@@ -237,8 +276,9 @@ t=$(mktemp); for f in $(find config -name '*.yml' -o -name '*.yaml'); do   # eve
 
 Then on GitHub, once: merge a config-only change and check that `deploy-dev` deploys, one commit
 `chore(config): <env> deployed <tag> [skip ci]` by the bot lands on `main`, no main run starts for it, and the
-Environment `dev` shows one Deployment with state success; break one target and check the job goes red with no
-write-back for it; push a release tag and check the bump PR opens and requests the qa CODEOWNERS.
+dev Environment shows one Deployment with state success; break one target and check the job goes red with no
+write-back for it; push a release tag and check the bump PR opens and requests the qa CODEOWNERS; merge it and
+check that `deploy.yml` waits for the qa Environment's reviewers, deploys, and opens the prod bump PR.
 
 ## Related skills
 
@@ -264,3 +304,7 @@ helm targets into a kind cluster created in the job, compose targets through the
 (no real boxes existed), and the bot write-back of tag and placement with the loop guard. Not proven there: SSH
 to real boxes, the GitHub App identity, a qa bump PR against an existing qa tree, lint checks 7 and 8, and a
 GitOps controller. The templates are generalised rewrites and depend on nothing in that repository.
+`deploy.yml`, `_deploy-env.yml`, `set-image-tag.sh --from` and the shipped `helm-deploy-instance.sh` came later,
+from an end-to-end trial of these skills on another repository (which had to write them itself): their scripts
+are covered by the tests above and the workflows by actionlint and local runs of their steps, but no promoted
+env has been deployed with them on GitHub yet.

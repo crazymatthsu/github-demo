@@ -21,7 +21,8 @@ thing, or does not run at all.
 | `push` to main | `main.yml`, `release-please.yml` (optional), `base-image.yml` (path filter) | everything, publish, deploy dev | — |
 | `push` to `hotfix/**` | `main.yml` | everything except deploy dev | — |
 | `push` of a tag `v*` | `release.yml` | promote the tested digests, SBOM, GitHub Release, bump PR | — |
-| `schedule` | `nightly.yml`, `base-image.yml` | retention, teardown drill, weekly base image rebuild | — |
+| `push` to main changing `config/<qa or prod env>/**` | `deploy.yml` (path filter; not a required check) | deploy the promoted env behind its Environment's reviewers, open the next env's bump PR | — |
+| `schedule` | `teardown-drill.yml`, `retention.yml`, `base-image.yml` (or one `nightly.yml` calling them) | teardown drill, registry retention, weekly base image rebuild | — |
 | `workflow_dispatch` | any that must be startable by hand or by another workflow | same as its scheduled or tag run | — |
 | `workflow_call` | `_*.yml` | only as a job of a caller | — |
 
@@ -62,7 +63,8 @@ becomes unreadable, and its concurrency and permissions cannot fit every event.
 | `pr.yml` | `pr-${{ github.event.pull_request.number \|\| github.ref }}` | true | a newer push supersedes the run; the PR and the branch push are different groups, so both runs report |
 | `main.yml` | `main-${{ github.ref_name }}`; bot runs `main-bot-${{ github.run_id }}` | false | a cancelled deploy is worse than a late one; a bot run must never displace a queued merge |
 | `release.yml` | `release-${{ github.ref }}` | false | one release per tag, never half-done |
-| `base-image.yml`, `nightly.yml` | the workflow name | false | scheduled maintenance must finish |
+| `deploy.yml` | `deploy-promoted` (and `deploy-<env>` per env job) | false | a deploy is never cancelled half-way |
+| `base-image.yml`, scheduled workflows | the workflow name | false | scheduled maintenance must finish |
 
 A push to a branch with an open PR therefore shows two `pr.yml` runs on the same commit: `push-gate` and `pr-gate`.
 That is expected; name the gates differently so the branch run can never satisfy the PR's required check.

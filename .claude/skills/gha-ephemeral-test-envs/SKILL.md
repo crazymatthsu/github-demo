@@ -85,7 +85,8 @@ drill that fails and cancels runs on purpose to prove the teardown. Tested scrip
    - per project with an image, a compose file for the app under test like `app.compose.yml` (service `app`,
      `image: ${APP_IMAGE}`, `depends_on` healthy, laptop ports), at the path `app-compose-file` names.
 5. **Adapt the kind tier** (charts only): the pins in `test-infra/kind/versions.env`; an instances directory
-   with `_common/values.yaml` and `<instance>/values.yaml`; a `helm test` Job in the chart
+   with `app-common/values.yaml` and `<instance>/values.yaml` (with gha-config-deploy: its
+   `config/<dev env>/<flow>/<app>` directory, unchanged); a `helm test` Job in the chart
    (references/kind-tier.md, section 8); a probe endpoint that reports identity and effective configuration
    for the smoke diff.
 6. **Fill every placeholder** (`grep -rn '__[A-Z0-9_]*__' .github test-infra` must print nothing); each
@@ -108,7 +109,7 @@ drill that fails and cancels runs on purpose to prove the teardown. Tested scrip
 | `assets/compose/stacks.yml`, `versions.env` | project -> stacks map; digest-pinned images | `__PROJECT_ID__`; `__POSTGRES_IMAGE__`, `__TEST_RUNNER_IMAGE__` |
 | `assets/compose/app.compose.yml` (`<project>/compose.test.yml`) | the app under test from `APP_IMAGE` | environment, health probe, port |
 | `assets/actions/compose-stack/action.yml` (`.github/actions/compose-stack/`) | thin wrapper; requires `COMPOSE_PROJECT_NAME` from the job | `script` input if stack.sh lives elsewhere |
-| `assets/workflows/_integration-test.yml` (`.github/workflows/`) | reusable IT job for one project: login, cache, stack up, tests in the runner, diagnostics, `always()` down + leak check, JUnit summary and upload | `__REGISTRY__`, `__APP_COMPOSE_FILE__`, `__TEST_COMMAND__`, `__TEST_RESULTS__`; the cache step for non-Gradle tools |
+| `assets/workflows/_integration-test.yml` (`.github/workflows/`) | reusable IT job for one project: login, optional build-tool cache, stack up, tests in the runner, diagnostics, `always()` down + leak check, JUnit summary and upload | `__REGISTRY__`, `__APP_COMPOSE_FILE__`, `__TEST_COMMAND__` (the default of input `test-command`), `__TEST_RESULTS__`; inputs `cache` (`none`, `gradle`, `restore`) and, for several toolchains, `test-command` / `test-runner-image` per project (references/compose-tier.md section 12) |
 | `assets/scripts/junit-summary.sh` (`scripts/ci/`) | JUnit XML totals and failing suites into the job summary | `JUNIT_GLOB` for non-`TEST-*.xml` names |
 | `assets/scripts/kind.sh` (`test-infra/kind/kind.sh`) | kind lifecycle: `up`, `load` (digest in, tag on the node), `diagnostics`, `down`, `leak-check` | nothing; env: `KIND_WAIT`, `KIND_NODE_IMAGE` |
 | `assets/kind/cluster.yaml`, `versions.env` (`test-infra/kind/`) | one-node cluster, no port mappings; tool pins | bump the pins to current releases |
@@ -230,7 +231,7 @@ python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .g
 cd test-infra/compose && DB_PASSWORD=x TEST_WORKSPACE=/w TEST_CACHE_DIR=/c APP_IMAGE=r/a:t \
   docker compose --env-file versions.env -f base.yml -f postgres.yml -f test-runner.yml config -q; cd -
 # charts: lint and render every instance, validate the schemas
-scripts/ci/helm-release.sh api-eu-1 --chart <chart> --tag 1.0.0 -f <instances>/_common/values.yaml \
+scripts/ci/helm-release.sh api-eu-1 --chart <chart> --tag 1.0.0 -f <instances>/app-common/values.yaml \
   -f <instances>/eu-1/values.yaml --mode template --render-out build/render/api-eu-1.yaml
 kubeconform -strict -summary build/render/*.yaml
 ```

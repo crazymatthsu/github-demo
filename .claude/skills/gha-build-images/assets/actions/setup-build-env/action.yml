@@ -209,7 +209,8 @@ runs:
           if [[ ${repo##*/} == *:* ]]; then repo=${repo%:*}; fi
           query=$ref
           if [[ $ref == *@sha256:* ]]; then query="$repo@${ref##*@}"; fi
-          digest=$(docker buildx imagetools inspect "$query" --format '{{.Manifest.Digest}}' 2>/dev/null) || return 1
+          # '{{json .Manifest}}', not '{{.Manifest.Digest}}': buildx v0.31.1 prints its summary for the latter.
+          digest=$(docker buildx imagetools inspect "$query" --format '{{json .Manifest}}' 2>/dev/null | jq -r '.digest // empty') || return 1
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
           echo "$repo@$digest"
         }

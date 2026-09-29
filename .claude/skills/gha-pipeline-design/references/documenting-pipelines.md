@@ -39,22 +39,31 @@ Draw from the files, not from memory. Dump triggers, jobs, `needs`, `if`, reusab
 
 ```bash
 python3 - <<'PY'
-import glob, json, yaml
+import glob, json, subprocess
+def load(path):
+    try:
+        import yaml  # PyYAML turns the key `on` into True
+        data = yaml.safe_load(open(path))
+        if True in data: data['on'] = data.pop(True)
+        return data
+    except ImportError:  # mikefarah yq v4 instead (preinstalled on GitHub-hosted runners)
+        out = subprocess.run(['yq', '-o=json', '.', path], capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
 for f in sorted(glob.glob('.github/workflows/*.yml')):
-    d = yaml.safe_load(open(f)); on = d.get(True, d.get('on'))
-    print(f"\n## {f}\non: {json.dumps(on, default=str)}")
+    d = load(f)
+    print(f"\n## {f}\non: {json.dumps(d.get('on'), default=str)}")
     for jid, j in (d.get('jobs') or {}).items():
         print(f"  job {jid} needs={j.get('needs')} if={' '.join(str(j.get('if', '')).split())}")
         if j.get('uses'): print(f"    calls {j['uses']} with {json.dumps(j.get('with', {}), default=str)[:200]}")
         for s in j.get('steps') or []:
             if 'uses' in s: print(f"    step {s.get('name', '')!r} uses {s['uses']} if={s.get('if', '')}")
 for f in sorted(glob.glob('.github/actions/*/action.yml')):
-    d = yaml.safe_load(open(f))
+    d = load(f)
     print(f"\n## {f}: " + ', '.join(s['uses'] for s in d['runs'].get('steps', []) if 'uses' in s))
 PY
 ```
 
-(`yaml.safe_load` turns the key `on` into `True`, hence `d.get(True, ...)`.)
+It needs PyYAML or mikefarah yq v4, nothing else.
 
 ## 4. Legend and styles
 
@@ -106,12 +115,16 @@ Mermaid's dark theme would otherwise paint dark grey.
 ## 6. Validate before pushing
 
 ```bash
-npm install --no-save --prefix "${TMPDIR:-/tmp}/mmd" mermaid@11 playwright-core
+npm install --no-save --prefix "${TMPDIR:-/tmp}/mmd" mermaid@11 playwright-core jsdom
 NODE_PATH="${TMPDIR:-/tmp}/mmd/node_modules" node <skill>/scripts/render-mermaid.cjs .github/workflows/README.md --out /tmp/mmd-light
 NODE_PATH="${TMPDIR:-/tmp}/mmd/node_modules" node <skill>/scripts/render-mermaid.cjs .github/workflows/README.md --out /tmp/mmd-dark --theme dark
+# no Chromium available (blocked download, locked-down machine): the syntax at least, in Node on jsdom
+NODE_PATH="${TMPDIR:-/tmp}/mmd/node_modules" node <skill>/scripts/render-mermaid.cjs .github/workflows/README.md --parse-only
 ```
 
-It exits 1 on any diagram that does not parse and flags diagrams wider than ~1000 px. Look at a few PNGs: crossed
+It exits 1 on any diagram that does not parse and flags diagrams wider than ~1000 px. Rendering needs a
+Chromium (`CHROMIUM_PATH`, or `npx playwright install chromium`); `--parse-only` with jsdom installed needs none,
+but then widths and crossed edges stay unchecked, so say so when you report. Look at a few PNGs: crossed
 edges and labels attached to the wrong arrow are the usual layout problems. Then push and open the folder on
 github.com.
 

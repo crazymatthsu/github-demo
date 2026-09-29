@@ -1,7 +1,8 @@
 # Main pipeline: everything, on every merge.
 #
 #   build (every project, images pushed with the pre-release tags) -> integration-test (per project)
-#   -> publish (re-assert the tags on exactly the tested digests) -> deploy-dev (main only)
+#   and deploy-test (the chart in kind) -> publish (re-assert the tags on exactly the tested digests)
+#   -> deploy-dev (main only)
 #   -> the deploy writes the deployed tag back to the config tree as a `[skip ci]` commit.
 # hotfix/** branches run the same pipeline without deploy-dev.
 #
@@ -10,14 +11,16 @@
 # (With GITHUB_TOKEN a bot push starts no run at all; the guard matters once a GitHub App token pushes.)
 #
 # Placeholders:
-#   __BOT_LOGIN__   the identity that pushes write-back commits, e.g. github-actions[bot] or <app-slug>[bot]
+#   __BOT_LOGIN__     the identity that pushes write-back commits, e.g. github-actions[bot] or <app-slug>[bot]
+#   __APP_PROJECT__   deploy-test only: the key of the build's `images` output whose image the chart runs
 #
-# Optional jobs (delete them and their `needs:` entries if not adopted):
-#   integration-test  skill gha-ephemeral-test-envs
+# Optional jobs (delete them, their `needs:` entries and the conditions that name them if not adopted):
+#   integration-test  skill gha-ephemeral-test-envs (_integration-test.yml)
+#   deploy-test       skill gha-ephemeral-test-envs (_kind-deploy.yml), for repositories with Helm charts
 #   publish           skill gha-versioning-release (_promote.yml)
 #   deploy-dev        skill gha-config-deploy (_deploy-dev.yml)
-# Add a system-test (the integration workflow at a wider level) and kind-deploy (_kind-deploy.yml) between
-# integration-test and publish when the repository has them.
+# A system test (the integration workflow at a wider level) goes next to integration-test, and publish
+# needs it too.
 name: main
 
 on:
@@ -61,10 +64,24 @@ jobs:
       images: ${{ needs.build.outputs.images }}
       retention-days: 14
 
+  deploy-test:
+    needs: build
+    if: contains(needs.build.outputs.images, '"__APP_PROJECT__"')
+    uses: ./.github/workflows/_kind-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      images: ${{ needs.build.outputs.images }}
+      retention-days: 14
+
   publish:
-    # Nothing downstream (deploys, releases) consumes an image before this gate has passed.
-    needs: [build, integration-test]
-    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped') }}
+    # Nothing downstream (deploys, releases) consumes an image before these gates have passed.
+    needs: [build, integration-test, deploy-test]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success'
+      && (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped')
+      && (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped') }}
     uses: ./.github/workflows/_promote.yml
     permissions:
       contents: read

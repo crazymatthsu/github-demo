@@ -29,8 +29,9 @@
 #                        skipped with a notice while it does not exist
 #   __BUMP_COMMAND__     sets the release tag for the released images under BUMP_DIR and prints the changed
 #                        files, one per line (env: VERSION, TAG, APPS = the images' last path segments,
-#                        space-separated, IMAGES = JSON image -> digest-pinned ref), e.g.
-#                        bash scripts/ci/set-image-tag.sh "$VERSION" "$BUMP_DIR"/*/*/values.yaml (gha-config-deploy)
+#                        space-separated, IMAGES = JSON image -> digest-pinned ref). With the config tree of
+#                        skill gha-config-deploy (tag and digest on every instance of the released apps):
+#                        IMAGE_DIGESTS="$IMAGES" bash scripts/ci/set-image-tag.sh --apps "$APPS" "$BUMP_DIR" "$VERSION"
 # Delete the bump job when there is no next environment. Actions are pinned to a major version: update to the
 # current major when adopting.
 name: release

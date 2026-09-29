@@ -10,7 +10,8 @@
 #           images          string, required   JSON object project -> image pinned by digest, e.g.
 #                                              {"services/api":"ghcr.io/o/api:pr-4-abc1234@sha256:..."}
 #           retention-days  number, default 7  retention of reports and diagnostics (e.g. 14 on main)
-#           optional        image-required, app-compose-file, app-service, test-runner-image, timeout-minutes,
+#           optional        test-command, test-runner-image, cache (+ cache-path, cache-key-prefix,
+#                           cache-key-files), image-required, app-compose-file, app-service, timeout-minutes,
 #                           name-suffix
 #   callers grant: permissions: contents: read, packages: read
 #
@@ -18,15 +19,24 @@
 #   __REGISTRY__          registry of the image under test and the runner image, e.g. ghcr.io
 #   __APP_COMPOSE_FILE__  compose file of the app under test, {project} = the project id,
 #                         e.g. {project}/compose.test.yml
-#   __TEST_COMMAND__      the tests, run by `docker compose run --rm test-runner` in /workspace for "$PROJECT":
-#                           Gradle  ./gradlew "${PROJECT}:integrationTest" --no-daemon
+#   __TEST_COMMAND__      default of the test-command input: the tests, run as `sh -c "<command>"` in the
+#                         test-runner container in /workspace, with PROJECT set to the project id (use double
+#                         quotes inside it, the default is a single-quoted YAML string):
+#                           Gradle  ./gradlew ":$(echo "$PROJECT" | tr / :):integrationTest" --no-daemon
 #                           Maven   mvn -B -ntp -pl "$PROJECT" verify -Pintegration-tests
 #                           pnpm    pnpm --filter "./$PROJECT" run test:integration
 #                           Go      go test -tags=integration "./$PROJECT/..."
 #                           Python  python -m pytest "$PROJECT/tests/integration" --junitxml="$PROJECT/build/it/TEST-it.xml"
+#                         Several toolchains (a Node service and a Python worker): one dispatcher script as the
+#                         command, e.g. scripts/ci/integration-test.sh, and a runner image per project through
+#                         the test-runner-image input (references/compose-tier.md section 12).
 #   __TEST_RESULTS__      JUnit XML files, an upload-artifact glob, e.g. **/build/test-results/integrationTest/**
 #                         (Maven: **/target/failsafe-reports/**). junit-summary.sh looks for TEST-*.xml;
 #                         set JUNIT_GLOB on the summary step for other names.
+# Build-tool cache (input cache): none (default: an empty /cache), gradle (the Gradle user home, restored
+# read-only by gradle/actions/setup-gradle), or restore (actions/cache/restore of cache-path under the key
+# <cache-key-prefix>-<hashFiles(cache-key-files)>, which the build job saves with actions/cache). Only the build
+# job writes the cache, so parallel jobs never race to save it.
 # Third-party actions are pinned to the major that ran green in the reference; update to the current major.
 name: _integration-test
 
@@ -45,6 +55,26 @@ on:
         description: Retention of the uploaded reports and diagnostics (e.g. 7 on PRs, 14 on main).
         type: number
         default: 7
+      test-command:
+        description: The tests, run with `sh -c` in the test-runner container in /workspace (PROJECT is set).
+        type: string
+        default: '__TEST_COMMAND__'
+      cache:
+        description: "Build-tool cache mounted at /cache: none, gradle (setup-gradle, read-only) or restore (actions/cache/restore)."
+        type: string
+        default: none
+      cache-path:
+        description: "cache: restore - the host cache directory, e.g. ~/.m2/repository, ~/.npm, ~/.cache/pip, ~/go/pkg/mod."
+        type: string
+        default: ''
+      cache-key-prefix:
+        description: "cache: restore - the build job's key prefix; the key is <prefix>-<hashFiles(cache-key-files)>."
+        type: string
+        default: ''
+      cache-key-files:
+        description: "cache: restore - the lockfiles hashed into the key, e.g. **/pom.xml or pnpm-lock.yaml."
+        type: string
+        default: ''
       image-required:
         description: "false lets a project without an image (a library) run its stack without an app under test."
         type: boolean
@@ -109,12 +139,28 @@ jobs:
           APP_FILE_PATTERN: ${{ inputs.app-compose-file }}
           RUNNER_IMAGE_INPUT: ${{ inputs.test-runner-image }}
           NAME_SUFFIX: ${{ inputs.name-suffix }}
+          CACHE: ${{ inputs.cache }}
+          CACHE_PATH: ${{ inputs.cache-path }}
+          CACHE_KEY_PREFIX: ${{ inputs.cache-key-prefix }}
+          CACHE_KEY_FILES: ${{ inputs.cache-key-files }}
+          TEST_COMMAND: ${{ inputs.test-command }}
         run: |
           set -euo pipefail
           if [[ -n $NAME_SUFFIX && ! $NAME_SUFFIX =~ ^-[a-z0-9][a-z0-9_-]*$ ]]; then
             echo "::error::name-suffix must look like -<a-z 0-9 _ ->, got '$NAME_SUFFIX'"
             exit 2
           fi
+          [[ -n ${TEST_COMMAND// /} ]] || { echo "::error::test-command is empty"; exit 2; }
+          case $CACHE in
+            none | gradle) ;;
+            restore)
+              if [[ -z $CACHE_PATH || -z $CACHE_KEY_PREFIX || -z $CACHE_KEY_FILES ]]; then
+                echo "::error::cache: restore needs cache-path, cache-key-prefix and cache-key-files"
+                exit 2
+              fi
+              ;;
+            *) echo "::error::cache must be none, gradle or restore, got '$CACHE'"; exit 2 ;;
+          esac
           app_file=''
           if [[ -n $APP_IMAGE ]]; then
             if [[ ! $APP_IMAGE =~ @sha256:[0-9a-f]{64}$ ]]; then
@@ -149,17 +195,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # The test-runner's build cache: the host cache, restored read-only here (only the build job writes
-      # it) and mounted at /cache. Gradle form. Others: actions/cache/restore on the tool's cache directory
-      # (Maven ~/.m2/repository, npm ~/.npm, pnpm its store, Go ~/go/pkg/mod, pip ~/.cache/pip), point
-      # TEST_CACHE_DIR at it, and set the matching variable in test-runner.yml.
-      - name: Build cache for the test runner
+      # The test runner's build cache: restored read-only here (only the build job writes it) and mounted at
+      # /cache; set the tool's matching variable in test-runner.yml (GRADLE_USER_HOME, MAVEN_OPTS, ...).
+      - name: Build cache for the test runner (Gradle)
+        if: inputs.cache == 'gradle'
         uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: true
 
+      - name: Build cache for the test runner (actions/cache)
+        if: inputs.cache == 'restore'
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ${{ inputs.cache-key-prefix }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: ${{ inputs.cache-key-prefix }}-
+
       - name: Point the test runner at the cache
-        run: echo "TEST_CACHE_DIR=$HOME/.gradle" >> "$GITHUB_ENV"
+        if: inputs.cache != 'none'
+        env:
+          CACHE: ${{ inputs.cache }}
+          CACHE_PATH: ${{ inputs.cache-path }}
+        run: |
+          set -euo pipefail
+          dir=$HOME/.gradle
+          if [[ $CACHE == restore ]]; then dir=${CACHE_PATH/#\~/$HOME}; fi
+          mkdir -p "$dir"
+          echo "TEST_CACHE_DIR=$dir" >> "$GITHUB_ENV"
 
       - name: Start the stack (pull, up --wait)
         uses: ./.github/actions/compose-stack
@@ -170,10 +232,12 @@ jobs:
           app-service: ${{ steps.check.outputs.app-file != '' && inputs.app-service || '' }}
 
       - name: Integration tests in the test-runner container
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
         run: |
           set -euo pipefail
           read -r -a compose <<<"${COMPOSE_BIN:-docker compose}"
-          "${compose[@]}" run --rm test-runner __TEST_COMMAND__
+          "${compose[@]}" run --rm -e PROJECT test-runner sh -c "$TEST_COMMAND"
 
       - name: Diagnostics before teardown
         if: failure()

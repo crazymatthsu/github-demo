@@ -13,15 +13,20 @@
 #   inputs  images          string, required   JSON object project -> image pinned by digest (same shape as
 #                                              for _integration-test.yml)
 #           retention-days  number, default 7  retention of the diagnostics artifact
-#           optional        project, chart, instances-dir, release-prefix, namespace, tag, smoke-probe, timeout
+#           optional        project, chart, instances-dir, common-dir, release-prefix, namespace, tag,
+#                           smoke-probe, timeout
 #   callers grant: permissions: contents: read, packages: read
 #
 # Placeholders (list what is left with: grep -rn '__[A-Z0-9_]*__' .github):
 #   __REGISTRY__        registry of the image under test, e.g. ghcr.io
 #   __APP_PROJECT__     the key of `images` whose image the chart runs, e.g. services/api
 #   __CHART_DIR__       the chart, e.g. services/api/helm/api
-#   __INSTANCES_DIR__   one sub-directory per instance, each with a values.yaml; an optional _common/values.yaml
-#                       is applied first. e.g. deploy/dev/api (with deploy/dev/api/eu-1/values.yaml, ...)
+#   __INSTANCES_DIR__   one sub-directory per instance, each with a values.yaml; the shared layer
+#                       <common-dir>/values.yaml (default app-common, the name the gha-config-deploy tree uses) is
+#                       applied first. With that tree: config/<dev env>/<flow>/<app>, e.g. config/dev/payments/api
+#                       (config/dev/payments/api/app-common/values.yaml, .../eu-1/values.yaml, ...). The shared
+#                       layer, any other `_*` / `.*` directory and directories without a values.yaml are not
+#                       instances.
 #   __RELEASE_PREFIX__  release name = <prefix>-<instance directory>, e.g. api
 #   __NAMESPACE__       namespace of the releases, e.g. apps
 #   __SMOKE_PROBE__     command run inside each release's pod to tell the instances apart (smoke-diff.sh), e.g.
@@ -49,9 +54,13 @@ on:
         type: string
         default: '__CHART_DIR__'
       instances-dir:
-        description: One sub-directory per instance with a values.yaml (_common/values.yaml applied first).
+        description: One sub-directory per instance with a values.yaml (<common-dir>/values.yaml applied first).
         type: string
         default: '__INSTANCES_DIR__'
+      common-dir:
+        description: Name of the shared-values directory inside instances-dir; not an instance.
+        type: string
+        default: app-common
       release-prefix:
         description: Release name = <release-prefix>-<instance directory>.
         type: string
@@ -107,6 +116,7 @@ jobs:
           IMAGES: ${{ inputs.images }}
           PROJECT: ${{ inputs.project }}
           INSTANCES_DIR: ${{ inputs.instances-dir }}
+          COMMON_DIR: ${{ inputs.common-dir }}
           RELEASE_PREFIX: ${{ inputs.release-prefix }}
           TAG_INPUT: ${{ inputs.tag }}
         run: |
@@ -131,18 +141,21 @@ jobs:
             exit 2
           fi
           [[ -f $CHART/Chart.yaml ]] || { echo "::error::$CHART/Chart.yaml not found"; exit 2; }
+          [[ -d $INSTANCES_DIR ]] || { echo "::error::instances-dir $INSTANCES_DIR is not a directory"; exit 2; }
           targets='[]'
           for dir in "$INSTANCES_DIR"/*/; do
             [[ -f ${dir}values.yaml ]] || continue
             instance=$(basename "$dir")
-            case $instance in _* | .*) continue ;; esac
+            # The shared layer and the reserved names of the config tree (app-common, _common) are layers.
+            [[ $instance != "$COMMON_DIR" ]] || continue
+            case $instance in app-common | _* | .*) continue ;; esac
             release="$RELEASE_PREFIX-$instance"
             if [[ ! $release =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ || ${#release} -gt 53 ]]; then
               echo "::error::release name '$release' is not a DNS label of at most 53 characters"
               exit 2
             fi
             values=()
-            if [[ -f $INSTANCES_DIR/_common/values.yaml ]]; then values+=("$INSTANCES_DIR/_common/values.yaml"); fi
+            if [[ -f $INSTANCES_DIR/$COMMON_DIR/values.yaml ]]; then values+=("$INSTANCES_DIR/$COMMON_DIR/values.yaml"); fi
             values+=("${dir}values.yaml")
             targets=$(jq -c --arg r "$release" '. + [{release: $r, values: $ARGS.positional}]' --args "${values[@]}" <<<"$targets")
           done

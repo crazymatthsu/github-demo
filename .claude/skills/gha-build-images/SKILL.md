@@ -229,6 +229,10 @@ Symptom → cause → fix.
   kind cluster** → the socket is the host's daemon: mount sources and published ports resolve on the host,
   and kind's API server listens on the host's 127.0.0.1 → build images in the container (the context is
   streamed), run compose stacks and kind in host jobs with test runners on the stack network.
+- **A resolved "digest" is several lines (`Name: … MediaType: … Digest: …`) and the next `@sha256:` pin
+  breaks** → `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'`: some buildx versions (v0.31.1
+  seen) print their summary for any template that starts with `{{.Manifest` → `--format '{{json .Manifest}}' |
+  jq -r .digest`, validated against `^sha256:[0-9a-f]{64}$` (every template of this skill does so).
 - **An app build fails with `pull access denied` for `<namespace>/base/runtime-base:bootstrap-...`** → a
   docker-container buildx builder (what `setup-buildx-action` makes the default) cannot see images loaded into
   the engine → build apps with the default `docker` driver, or pass the base with `--build-context`.

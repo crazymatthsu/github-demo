@@ -32,6 +32,9 @@ Options
                            into a number that a string schema rejects.
   --set-file <key=path>    repeatable
   --kubeconfig <file>      deploy: kubeconfig for helm and kubectl (default: $KUBECONFIG)
+  --kube-context <name>    deploy: context of that kubeconfig, for helm (--kube-context) and kubectl
+                           (--context); default: its current context. How a deploy to a real cluster names
+                           the target cluster of an inventory (skill gha-config-deploy).
   --timeout <duration>     deploy: helm and rollout timeout (default 5m)
   --pss <level>            deploy: Pod Security Standard labels put on the namespace: restricted (default),
                            baseline, privileged, or none (leave the namespace labels alone)
@@ -70,7 +73,8 @@ quote_cmd() {
 
 # --- arguments --------------------------------------------------------------------------------------------
 
-RELEASE='' CHART='' TAG='' TAG_KEY=image.tag NS=default KUBECONFIG_ARG='' TIMEOUT=5m MODE=deploy PSS=restricted
+RELEASE='' CHART='' TAG='' TAG_KEY=image.tag NS=default KUBECONFIG_ARG='' KUBE_CONTEXT='' TIMEOUT=5m MODE=deploy
+PSS=restricted
 LOADED='' RUN_TEST=1 RENDER_OUT='' DRY_RUN=0
 VALUES=() SETS=()
 while [ $# -gt 0 ]; do
@@ -91,6 +95,8 @@ while [ $# -gt 0 ]; do
     --set-file=*) SETS+=(--set-file "${1#*=}") ;;
     --kubeconfig) need_value "$@"; KUBECONFIG_ARG=$2; shift ;;
     --kubeconfig=*) KUBECONFIG_ARG=${1#*=} ;;
+    --kube-context) need_value "$@"; KUBE_CONTEXT=$2; shift ;;
+    --kube-context=*) KUBE_CONTEXT=${1#*=} ;;
     --timeout) need_value "$@"; TIMEOUT=$2; shift ;;
     --timeout=*) TIMEOUT=${1#*=} ;;
     --mode) need_value "$@"; MODE=$2; shift ;;
@@ -145,6 +151,10 @@ if [ -n "$KUBECONFIG_ARG" ] && [ "$MODE" = deploy ]; then
   [ "$DRY_RUN" -eq 1 ] || [ -f "$KUBECONFIG_ARG" ] || die "$EXIT_USAGE" "--kubeconfig $KUBECONFIG_ARG: file not found"
   HK=(--kubeconfig "$KUBECONFIG_ARG")
   KK=(--kubeconfig "$KUBECONFIG_ARG")
+fi
+if [ -n "$KUBE_CONTEXT" ] && [ "$MODE" = deploy ]; then
+  HK+=(--kube-context "$KUBE_CONTEXT")
+  KK+=(--context "$KUBE_CONTEXT")
 fi
 ROLLBACK_FLAG=--rollback-on-failure
 check_tools() {

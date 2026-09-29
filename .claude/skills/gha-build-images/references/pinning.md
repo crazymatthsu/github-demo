@@ -125,10 +125,15 @@ and `ci/versions.env`:
 The probe job resolves each moving tag once and hands the digest to every later job:
 
 ```bash
-digest=$(docker buildx imagetools inspect "$NAMESPACE/base/ci-build:latest" --format '{{.Manifest.Digest}}')
+digest=$(docker buildx imagetools inspect "$NAMESPACE/base/ci-build:latest" --format '{{json .Manifest}}' | jq -r .digest)
+[[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for ci-build:latest"; exit 1; }
 echo "ci-build=$NAMESPACE/base/ci-build@$digest" >> "$GITHUB_OUTPUT"
 # equivalents: crane digest <ref>; resolve-image.sh of gha-versioning-release (also reads RepoDigests)
 ```
+
+Not `--format '{{.Manifest.Digest}}'`: some buildx versions (v0.31.1 seen) print their human-readable summary
+for any template that starts with `{{.Manifest`, so the "digest" becomes several lines of text. The JSON form
+works across versions; always validate the result against `^sha256:[0-9a-f]{64}$`.
 
 Why: `base-image.yml` may publish while a run is in flight; with digests, the build job, the test runners and
 the image builds of one run still share one environment. App images record the digest in

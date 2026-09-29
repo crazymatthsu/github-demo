@@ -40,7 +40,7 @@ test-infra/kind/
   .state/          kubeconfigs written by up (git-ignored, mode 600)
 scripts/ci/helm-release.sh   one release: lint | template | deploy
 scripts/ci/smoke-diff.sh     two releases answer differently
-<instances-dir>/_common/values.yaml, <instances-dir>/<instance>/values.yaml   one release per instance
+<instances-dir>/app-common/values.yaml, <instances-dir>/<instance>/values.yaml   one release per instance
 ```
 
 ## 3. Cluster name, kubeconfig and labels
@@ -94,8 +94,11 @@ node could fail to match it and try to pull. Keep digest references for real clu
 
 ## 6. One release per instance
 
-`_kind-deploy.yml` makes one release per sub-directory of `instances-dir` that holds a `values.yaml`
-(`_common/values.yaml`, when present, is applied first; `_*` and `.*` directories are skipped). Release
+`_kind-deploy.yml` makes one release per sub-directory of `instances-dir` that holds a `values.yaml`.
+The shared layer `<common-dir>/values.yaml` (input `common-dir`, default `app-common`), when present, is
+applied first; it, the reserved `_common`, and other `_*` and `.*` directories are not instances. The
+default matches the config tree of skill gha-config-deploy, so `instances-dir:
+config/<dev env>/<flow>/<app>` tests exactly the values the dev deploy installs. Release
 name `<prefix>-<instance>`, at most 53 characters (Helm's limit), all in one namespace. One release per
 instance means one failure is confined to one release, `helm history` is per instance, and the smoke
 diff can compare instances. Every instance is attempted; the step fails afterwards if any failed, and the
@@ -249,10 +252,10 @@ test-infra/kind/kind.sh up                                   # cluster local-kin
 export KUBECONFIG=$PWD/test-infra/kind/.state/local-kind.kubeconfig
 docker build -t ghcr.io/<org>/api:local services/api         # or your build tool's image task
 test-infra/kind/kind.sh load ghcr.io/<org>/api:local
-for dir in deploy/dev/api/*/; do
-  instance=$(basename "$dir"); [[ $instance == _* ]] && continue
+for dir in config/dev/apps/api/*/; do
+  instance=$(basename "$dir"); [[ $instance == app-common || $instance == _* ]] && continue
   scripts/ci/helm-release.sh "api-$instance" --chart services/api/helm/api --namespace apps --tag local \
-    -f deploy/dev/api/_common/values.yaml -f "${dir}values.yaml" --set-string image.repository=ghcr.io/<org>/api
+    -f config/dev/apps/api/app-common/values.yaml -f "${dir}values.yaml" --set-string image.repository=ghcr.io/<org>/api
 done
 scripts/ci/smoke-diff.sh -n apps api-eu-1 api-us-1 -- curl -fsS localhost:8080/info
 test-infra/kind/kind.sh down && test-infra/kind/kind.sh leak-check

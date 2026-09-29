@@ -153,7 +153,8 @@ jobs:
           set -euo pipefail
           docker push --quiet "$REPO:$TAG"
           docker push --quiet "$REPO:latest"
-          digest() { docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'; }
+          # '{{json .Manifest}}', not '{{.Manifest.Digest}}': buildx v0.31.1 prints its summary for the latter.
+          digest() { docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r '.digest // empty'; }
           dated=$(digest "$REPO:$TAG")
           latest=$(digest "$REPO:latest")
           if [[ ! $dated =~ ^sha256:[0-9a-f]{64}$ || $dated != "$latest" ]]; then

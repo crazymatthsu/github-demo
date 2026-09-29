@@ -138,8 +138,10 @@ Release and open the bump pull request. Details: references/version-scheme.md an
 4. The main workflow must run on `main` and `hotfix/**` and publish `sha-<sha7>` tags for every image of
    a line on every commit (with affected builds: retag unchanged images, skill gha-affected-builds).
 5. The `bump` job's command belongs to the configuration layout (skill gha-config-deploy); delete the job
-   if there is no next environment. The workflow's resolve job also outputs `apps` (space-separated image
-   names) for bump jobs written against the configuration tree.
+   if there is no next environment. With that skill's tree the command is its `set-image-tag.sh`:
+   `IMAGE_DIGESTS="$IMAGES" bash scripts/ci/set-image-tag.sh --apps "$APPS" "$BUMP_DIR" "$VERSION"` (tag and
+   digest on every instance of the released apps); its `deploy.yml` then deploys the merged bump and proposes
+   the next environment. The resolve job outputs `apps` (the images' last path segments, space-separated).
 
 ### 6. Optional: release-please
 

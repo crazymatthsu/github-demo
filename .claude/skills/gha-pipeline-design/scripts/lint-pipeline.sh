@@ -9,10 +9,15 @@
 #
 # Checks, each skipped with a notice when its tool is missing (unless --strict):
 #   actionlint   .github/workflows/*.yml, with ShellCheck on every run: block
-#   ShellCheck   every tracked *.sh at severity warning
-#   hadolint     every tracked Dockerfile / *.Dockerfile
-#   yaml         every tracked .github/**/*.yml and *.yaml parses (python3 + PyYAML, or yq v4)
+#   ShellCheck   every *.sh at severity warning
+#   hadolint     every Dockerfile / *.Dockerfile (with .hadolint.yaml when present)
+#   yaml         every .github/**/*.yml and *.yaml parses (python3 + PyYAML, or mikefarah yq v4)
 #   tests        every scripts/test/*-test.sh runs green
+# "Every" means the files git tracks plus new files it does not ignore yet, so work in progress that was never
+# staged is linted too (the CI lint job sees only committed files).
+#
+# Nothing in it is repository-specific: run it from the skill (bash <skill>/scripts/lint-pipeline.sh --repo .)
+# or copy it to scripts/ci/lint-pipeline.sh so contributors run what CI runs.
 #
 # Exit codes: 0 clean · 1 findings · 2 usage · 3 a linter is missing and --strict was given.
 set -euo pipefail
@@ -23,7 +28,7 @@ while [[ $# -gt 0 ]]; do
     --install) install=true ;;
     --strict) strict=true ;;
     --repo) repo=${2:?--repo needs a directory}; shift ;;
-    -h | --help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "lint-pipeline.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
   shift
@@ -46,6 +51,8 @@ fi
 
 status=0 missing=0
 section() { printf '\n== %s\n' "$1"; }
+# Tracked files plus untracked ones git does not ignore, that exist in the work tree, matching the pathspecs.
+list_files() { git ls-files --cached --others --exclude-standard -- "$@" | sort -u | while IFS= read -r f; do if [[ -f $f ]]; then printf '%s\n' "$f"; fi; done; }
 skip() {
   echo "skipped: $1 not found${2:+ ($2)}"
   missing=1
@@ -66,7 +73,7 @@ else
 fi
 
 section shellcheck
-mapfile -t scripts < <(git ls-files -- '*.sh')
+mapfile -t scripts < <(list_files '*.sh')
 if [[ ${#scripts[@]} -eq 0 ]]; then
   echo "no shell scripts"
 elif command -v shellcheck >/dev/null 2>&1; then
@@ -76,7 +83,7 @@ else
 fi
 
 section hadolint
-mapfile -t dockerfiles < <(git ls-files -- 'Dockerfile' '**/Dockerfile' '*.Dockerfile' '**/*.Dockerfile')
+mapfile -t dockerfiles < <(list_files 'Dockerfile' '**/Dockerfile' '*.Dockerfile' '**/*.Dockerfile')
 if [[ ${#dockerfiles[@]} -eq 0 ]]; then
   echo "no Dockerfiles"
 elif command -v hadolint >/dev/null 2>&1; then
@@ -88,7 +95,7 @@ else
 fi
 
 section yaml
-mapfile -t yamls < <(git ls-files -- '.github/*.yml' '.github/*.yaml' '.github/**/*.yml' '.github/**/*.yaml')
+mapfile -t yamls < <(list_files '.github/*.yml' '.github/*.yaml' '.github/**/*.yml' '.github/**/*.yaml')
 if [[ ${#yamls[@]} -eq 0 ]]; then
   echo "no YAML under .github"
 elif python3 -c 'import yaml' >/dev/null 2>&1; then
@@ -106,9 +113,11 @@ print(f"{len(sys.argv) - 1} files parsed" if not bad else "YAML errors found")
 sys.exit(bad)
 PY
 elif command -v yq >/dev/null 2>&1 && yq --version 2>/dev/null | grep -q 'mikefarah'; then
+  bad=0
   for file in "${yamls[@]}"; do
-    yq eval 'true' "$file" >/dev/null || { echo "$file: does not parse"; fail; }
+    yq eval 'true' "$file" >/dev/null || { echo "$file: does not parse"; bad=1; fail; }
   done
+  if [[ $bad -eq 0 ]]; then echo "${#yamls[@]} files parsed (yq)"; fi
 else
   skip "PyYAML or yq v4" "pip install pyyaml"
 fi

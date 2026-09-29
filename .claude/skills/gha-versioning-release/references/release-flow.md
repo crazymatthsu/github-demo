@@ -162,9 +162,10 @@ tags `v*`) on the job that promotes, and pin tag and digest in their configurati
 The release is not deployed by release.yml. Its last job edits the next environment's configuration
 (image tag, ideally with the digest) and opens a pull request; approval by that environment's CODEOWNERS is
 the deploy intent, and a revert of the merge is the rollback. The edit itself is the bump command
-(`__BUMP_COMMAND__`), which belongs to the configuration layout (skill gha-config-deploy). Opened with
-`GITHUB_TOKEN`, the pull request starts no checks until someone closes and reopens it; a GitHub App token
-removes that step.
+(`__BUMP_COMMAND__`), which belongs to the configuration layout (skill gha-config-deploy, whose
+`set-image-tag.sh` pins tag and digest per instance, and whose `deploy.yml` deploys the merged bump and opens the
+next environment's pull request). Opened with `GITHUB_TOKEN`, the pull request starts no checks until someone
+closes and reopens it; a GitHub App token removes that step.
 
 ## 9. Repository settings
 

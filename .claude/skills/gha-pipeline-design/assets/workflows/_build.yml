@@ -13,11 +13,16 @@
 #     libs/common:     { image: false, it: false }
 #
 # Placeholders (replace every one):
-#   __BUILD_COMMAND__     builds and unit-tests the projects in $PROJECTS (a JSON list), for example
-#                         Gradle: ./gradlew $(jq -r 'map(":" + gsub("/"; ":") + ":build") | join(" ")' <<<"$PROJECTS")
+#   __BUILD_COMMAND__     builds and unit-tests the projects in $PROJECTS (a JSON list); $ALL is 'true' when
+#                         every project is selected, so the tool's root aggregate also covers projects the map
+#                         does not list yet. One line, or a script such as scripts/ci/build.sh. For example
+#                         Gradle: if [[ $ALL == true ]]; then ./gradlew build; else ./gradlew $(jq -r 'map(":" + gsub("/"; ":") + ":build") | join(" ")' <<<"$PROJECTS"); fi
 #                         Maven:  ./mvnw -B verify -pl "$(jq -r 'join(",")' <<<"$PROJECTS")" -am
-#                         pnpm:   pnpm -r $(jq -r 'map("--filter ./" + .) | join(" ")' <<<"$PROJECTS") run build
+#                         pnpm:   pnpm install --frozen-lockfile && pnpm $(jq -r 'map("--filter ./" + .) | join(" ")' <<<"$PROJECTS") run build
 #                         Go:     go test $(jq -r 'map("./" + . + "/...") | join(" ")' <<<"$PROJECTS")
+#                         Polyglot repositories: a case per toolchain in scripts/ci/build.sh (skill
+#                         gha-affected-builds, references/wiring.md section 4); install each toolchain in a step
+#                         before this one (actions/setup-node, setup-python, setup-java, setup-go).
 #   __IMAGE_NAMESPACE__   registry namespace of the images, e.g. ghcr.io/<owner>
 #   __VERSION_SCRIPT__    prints the version and the image tags of this build, e.g. scripts/ci/git-version.sh
 #                         (skill gha-versioning-release); called as `<script> --field version` and
@@ -72,6 +77,9 @@ on:
       it-projects:
         description: JSON list of the selected projects that have integration tests.
         value: ${{ jobs.build.outputs.it-projects }}
+      all:
+        description: "'true' when every project of the map was selected (the root aggregate ran)."
+        value: ${{ jobs.build.outputs.all }}
 
 permissions:
   contents: read
@@ -92,6 +100,7 @@ jobs:
       images: ${{ steps.images.outputs.images }}
       image-tags: ${{ steps.images.outputs.image-tags }}
       it-projects: ${{ steps.plan.outputs.it-projects }}
+      all: ${{ steps.plan.outputs.all }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -104,19 +113,22 @@ jobs:
         run: |
           set -euo pipefail
           meta=$(yq -o=json -I=0 '.projects' .github/affected-map.yml)
-          all=$(jq -c 'keys_unsorted' <<<"$meta")
+          known=$(jq -c 'keys_unsorted' <<<"$meta")
           if [[ $PROJECTS == all ]]; then
-            selected=$all
+            selected=$known
           else
-            selected=$(jq -c --argjson known "$all" '
-              if type == "array" and all(.[]; . as $p | ($known | index($p)) != null) then .
-              else error("projects must be a JSON list of keys of .projects in .github/affected-map.yml") end
+            # A typo or a stale list fails loudly instead of building nothing (callers skip this workflow
+            # when the detector selects no project, so an empty list is an error too).
+            selected=$(jq -c --argjson known "$known" '
+              if type == "array" and length > 0 and all(.[]; . as $p | ($known | index($p)) != null) then .
+              else error("projects must be a non-empty JSON list of keys of .projects in .github/affected-map.yml") end
             ' <<<"$PROJECTS")
           fi
           {
             echo "projects=$selected"
             echo "image-projects=$(jq -c --argjson m "$meta" '[.[] | select($m[.].image == true)]' <<<"$selected")"
             echo "it-projects=$(jq -c --argjson m "$meta" '[.[] | select($m[.].it == true)]' <<<"$selected")"
+            echo "all=$(jq -r --argjson known "$known" 'sort == ($known | sort)' <<<"$selected")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Pre-release version even if HEAD is already tagged
@@ -132,6 +144,7 @@ jobs:
       - name: Build, unit tests, quality gates
         env:
           PROJECTS: ${{ steps.plan.outputs.projects }}
+          ALL: ${{ steps.plan.outputs.all }}
         run: |
           set -euo pipefail
           __BUILD_COMMAND__

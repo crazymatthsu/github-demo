@@ -447,6 +447,11 @@ check "helm-release.sh deploy: a failed first install stays for diagnostics" 1 e
 refute "a failed first install is not rolled back" '^helm rollback' "$STUB_LOG"
 check "helm-release.sh --dry-run" 0 bash "$HR" "${common[@]}" --dry-run --loaded-images "$LOADED"
 expect "--dry-run prints the upgrade" '^\+ helm upgrade --install api-eu-1 ' "$OUT"
+: >"$STUB_LOG"
+check "helm-release.sh deploy: --kube-context" 0 env STUB_HELM_HISTORY='[{"status":"deployed"}]' bash "$HR" "${common[@]}" --kube-context dev-eu
+expect "helm gets --kube-context" '^helm upgrade --install api-eu-1 .* --kube-context dev-eu$' "$STUB_LOG"
+expect "kubectl gets --context" '^kubectl --context dev-eu -n apps rollout status deployment.apps/api-eu-1' "$STUB_LOG"
+expect "helm test runs in that context" '^helm test api-eu-1 -n apps --logs --timeout 5m --kube-context dev-eu$' "$STUB_LOG"
 check "helm-release.sh --mode template --render-out" 0 env STUB_RENDER_IMAGES="$LOADED" bash "$HR" "${common[@]}" --mode template --render-out "$WORK/render/api-eu-1.yaml"
 expect "template mode writes the manifests" 'image: "ghcr.io/o/api:1.4.0-rc.3"' "$WORK/render/api-eu-1.yaml"
 

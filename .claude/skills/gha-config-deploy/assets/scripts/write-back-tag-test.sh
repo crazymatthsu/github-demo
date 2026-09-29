@@ -4,20 +4,29 @@
 # that is not a race (a protected branch), a shallow clone like actions/checkout makes, refusals and exit codes.
 # Nothing outside a temporary directory is touched; no network. Part of the gha-config-deploy skill.
 #
-# Usage: write-back-tag-test.sh [--help] [<path to write-back-tag.sh>]   (default: next to this file)
+# Usage: write-back-tag-test.sh [--help] [<path to write-back-tag.sh>]
+#   Default: write-back-tag.sh next to this file, else ../ci/write-back-tag.sh (the layout of a repository that
+#   keeps scripts in scripts/ci/ and their tests in scripts/test/, where the lint job runs scripts/test/*-test.sh).
 #   Needs git and mikefarah yq v4 (as `yq`, or WRITE_BACK_YQ=<path>).
 # Exit codes: 0 every case passed · 1 a case failed · 2 usage · 5 a tool is missing
 set -euo pipefail
 
 case "${1:-}" in
     -h | --help)
-        sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
 esac
 [ $# -le 1 ] || { echo "usage: $0 [<path to write-back-tag.sh>]" >&2; exit 2; }
-SCRIPT="${1:-$(cd "$(dirname "$0")" && pwd)/write-back-tag.sh}"
-[ -f "$SCRIPT" ] || { echo "write-back-tag-test: $SCRIPT not found" >&2; exit 2; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ $# -eq 1 ]; then
+    SCRIPT="$1"
+elif [ -f "$HERE/write-back-tag.sh" ]; then
+    SCRIPT="$HERE/write-back-tag.sh"
+else
+    SCRIPT="$HERE/../ci/write-back-tag.sh"
+fi
+[ -f "$SCRIPT" ] || { echo "write-back-tag-test: $SCRIPT not found (pass its path)" >&2; exit 2; }
 SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")"
 YQ="${WRITE_BACK_YQ:-yq}"
 command -v git >/dev/null 2>&1 || { echo "write-back-tag-test: git is needed" >&2; exit 5; }
