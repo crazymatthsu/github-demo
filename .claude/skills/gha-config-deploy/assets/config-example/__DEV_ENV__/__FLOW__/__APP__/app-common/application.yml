@@ -1,0 +1,12 @@
+# File layer 3 of 4 (app-common): __APP__ in __DEV_ENV__/__FLOW__, shared by every instance, mounted read-only
+# at /config/common/: the endpoints all instances of the flow use. Never a secret.
+app:
+  source:
+    port: 5432
+    poll-interval: 5s
+  sink:
+    host: broker.__FLOW__.__DEV_ENV__.example.com
+    port: 9092
+logging:
+  level:
+    root: "${LOG_LEVEL_ROOT:INFO}"

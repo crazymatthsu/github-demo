@@ -1,0 +1,4 @@
+# File layer 2 of 4 (env): settings of every app in __DEV_ENV__, mounted read-only at /config/env/: log format,
+# env-wide endpoints. Never a secret.
+logging:
+  format: json

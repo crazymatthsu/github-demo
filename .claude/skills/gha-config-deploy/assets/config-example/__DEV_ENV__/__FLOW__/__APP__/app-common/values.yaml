@@ -1,0 +1,11 @@
+# Helm values layer 2 (chart values.yaml < this file < <instance>/values.yaml): __APP__ in
+# __DEV_ENV__/__FLOW__, shared by every instance: sizing and the time zone (the compose rendering reads
+# MEM_LIMIT=1g and TZ=UTC from compose.env). No image.tag and no identity here: they belong to the instance.
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    memory: 1Gi
+env:
+  TZ: UTC

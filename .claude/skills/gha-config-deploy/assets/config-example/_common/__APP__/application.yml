@@ -1,0 +1,5 @@
+# File layer 1 of 4 (platform): defaults of __APP__ that are the same in every env, mounted read-only at
+# /config/platform/. The env, app-common and instance layers override it. Never a secret.
+app:
+  source:
+    poll-interval: 15s

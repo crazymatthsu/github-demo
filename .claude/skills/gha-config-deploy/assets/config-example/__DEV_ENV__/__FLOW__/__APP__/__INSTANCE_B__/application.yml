@@ -1,0 +1,10 @@
+# File layer 4 of 4 (instance): __INSTANCE_B__, mounted read-only at /config/instance/. The only layer in
+# which two instances of __APP__ differ. Never a secret: credentials come from the host environment (compose)
+# or a Secret mounted at /secrets/ (Kubernetes).
+app:
+  source:
+    host: db-b.__DEV_ENV__.example.com
+    database: db_b
+    table: public.table_b
+  sink:
+    topic: __FLOW__.__INSTANCE_B__
