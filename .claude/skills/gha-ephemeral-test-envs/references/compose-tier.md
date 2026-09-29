@@ -248,9 +248,9 @@ the classes of a suite share one stack.
 ## 14. Resource budget and measured timings
 
 The reference was sized for a 2 vCPU / 7 GB GitHub-hosted runner (check the current specification: it
-differs between public and private repositories). Give every service a `mem_limit`, sum them with the runner OS (~1 GB) and measure
-with `stats.txt` on the first real runs. If a stack does not fit: shrink heaps first, then split suites
-into separate jobs, then a larger runner class.
+differs between public and private repositories). Give every service a `mem_limit`, sum them with the
+runner OS (~1 GB) and measure with `stats.txt` on the first real runs. If a stack does not fit: shrink
+heaps first, then split suites into separate jobs, then a larger runner class.
 
 Measured on ubuntu-latest in the reference (2026-09), stacks of a database, a data server and the app:
 

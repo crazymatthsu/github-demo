@@ -221,7 +221,8 @@ shellcheck --severity=style test-infra/compose/stack.sh test-infra/kind/kind.sh 
 STACK_SH=test-infra/compose/stack.sh KIND_SH=test-infra/kind/kind.sh \
   HELM_RELEASE_SH=scripts/ci/helm-release.sh SMOKE_DIFF_SH=scripts/ci/smoke-diff.sh \
   JUNIT_SUMMARY_SH=scripts/ci/junit-summary.sh bash .claude/skills/gha-ephemeral-test-envs/scripts/selftest.sh
-for s in test-infra/compose/stack.sh test-infra/kind/kind.sh scripts/ci/*.sh; do bash "$s" --help >/dev/null || echo "FAIL $s"; done
+for s in test-infra/compose/stack.sh test-infra/kind/kind.sh scripts/ci/*.sh; do
+  bash "$s" --help >/dev/null || echo "FAIL $s"; done
 # workflows (actionlint runs shellcheck on run: blocks) and composite actions (YAML)
 actionlint .github/workflows/*.yml
 python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/actions/*/action.yml

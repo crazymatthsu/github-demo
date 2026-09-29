@@ -87,8 +87,10 @@ installing when any container (init containers and test hooks included) would ru
 on the node. Without that check a wrong tag shows up as `ImagePullBackOff` after the full Helm timeout.
 Load every image a release runs, e.g. the image a test hook uses, or use the app's own image there.
 
-The alternative, `image.digest` rendered as `repo@sha256:...`, does not work with kind's by-name loading;
-keep digests for real clusters (gha-versioning-release, gha-config-deploy).
+The alternative, a chart value `image.digest` rendered as `repo@sha256:...`, was not used: kind loads
+images by name from a `docker save` archive, which need not carry the registry's manifest digest, so the
+node could fail to match it and try to pull. Keep digest references for real clusters
+(gha-versioning-release, gha-config-deploy).
 
 ## 6. One release per instance
 
@@ -188,8 +190,8 @@ spec:
             limits: { memory: 128Mi }
 ```
 
-Check what identifies the instance, not only liveness: the reference's Job asserted readiness `UP` and
-that `/actuator/info` reported exactly the instance identity the values set. `podSecurityContext` and
+Check what identifies the instance, not only liveness: the reference's Job asserted that readiness was
+`UP` and that the app's info endpoint reported exactly the instance identity the values set. `podSecurityContext` and
 `securityContext` must satisfy `restricted` (`runAsNonRoot`, a numeric `runAsUser` when the image's user
 is a name, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`),
 or the namespace label rejects the pods. On Argo CD the same Job can double as a PostSync hook.
@@ -235,10 +237,10 @@ and the last events of a failing release to stderr, so the job log alone usually
 | test hook `activeDeadlineSeconds` | 180 |
 | job `timeout-minutes` | 25 |
 
-Measured on ubuntu-latest in the reference (2026-09), one chart, two releases: tools 6 s (three checksum-verified
-downloads), `kind up` 43 s, `load` 13 s, lint + render check + upgrade --install + rollout +
-helm test for both releases 22 s, smoke diff under 1 s, `down` 2 s, `leak-check` under 1 s: about 90 s
-for the whole job.
+Measured on ubuntu-latest in the reference (2026-09), one chart, two releases: tools 6 s (three
+checksum-verified downloads), `kind up` 43 s, `load` 13 s, lint + render check + upgrade --install +
+rollout + helm test for both releases 22 s, smoke diff under 1 s, `down` 2 s, `leak-check` under 1 s:
+about 90 s for the whole job.
 
 ## 13. Laptop flow
 
