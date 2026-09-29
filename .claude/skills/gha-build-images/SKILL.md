@@ -107,6 +107,7 @@ self-hosted fleets.
 | `assets/versions.env.example` | `ci/versions.env` |
 | `assets/snippets/container-build-job.yml` | merged into the build workflow (step 5) |
 | `scripts/verify-image.sh`, `scripts/check-pins.sh` | `scripts/ci/`, executable |
+| `scripts/image-scripts-test.sh` | `scripts/test/image-scripts-test.sh` (finds `../ci/`), executable |
 
 The image name is the Dockerfile's base name: `docker/base/<name>.Dockerfile` becomes
 `<namespace>/base/<name>`. Add CODEOWNERS rules so base images and the CA need platform and security review:
@@ -172,7 +173,7 @@ gha-pipeline-design):
 - Renovate: the `# renovate:` hints, the dated tag versioning and a group for kind + kubectl
   (references/pinning.md). Bump tool pins in the image and in `ci/versions.env` in the same PR.
 - The PR lint job: hadolint on `docker/base/*.Dockerfile` and every app Dockerfile, `check-pins.sh`,
-  ShellCheck on `scripts/ci/*.sh`.
+  ShellCheck on the scripts, and `scripts/test/image-scripts-test.sh` with the other script tests.
 - CA rotation is a rebuild cascade: references/enterprise-ca.md.
 - Watch the weekly run; scheduled workflows stop after 60 days without repository activity (public repos).
 
@@ -191,6 +192,7 @@ gha-pipeline-design):
 | `assets/snippets/container-build-job.yml` | probe job + build job in the CI image (empty image = host bootstrap) | `__IMAGE_NAMESPACE__`, `__BUILD_COMMAND__`, `__IMAGE_BUILD_COMMAND__`, `__IMAGE_PUSH_COMMAND__` |
 | `scripts/verify-image.sh` | checks a built image from the outside: non-root user (UID), every CA certificate in the OS store and JVM cacerts, tools, TLS; CI and laptops | nothing (options) |
 | `scripts/check-pins.sh` | fails when a Dockerfile `ARG` pin differs from the versions file | nothing |
+| `scripts/image-scripts-test.sh` | plain-bash tests of both scripts: stubbed `docker`, throwaway CA, no engine or network | nothing |
 | `references/containerised-ci.md` | why, what the runner does, bootstrap, UID / socket / shell, Docker-outside-of-Docker limits, laptops, Podman, self-hosted runners | read when wiring container jobs |
 | `references/enterprise-ca.md` | bundle handling and integrity, import per store and distribution, verification, rotation cascade | read when a CA is involved |
 | `references/pinning.md` | what to pin where, checksums, Renovate, digests per run, tags, weekly rebuild, hadolint config | read when choosing pins and tags |
@@ -266,7 +268,8 @@ Static checks, no container engine needed:
 hadolint --failure-threshold style docker/base/*.Dockerfile <app>/Dockerfile
 actionlint .github/workflows/base-image.yml .github/workflows/_build.yml
 python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/actions/*/action.yml
-shellcheck --severity=style scripts/ci/verify-image.sh scripts/ci/check-pins.sh
+shellcheck --severity=style scripts/ci/verify-image.sh scripts/ci/check-pins.sh scripts/test/image-scripts-test.sh
+scripts/test/image-scripts-test.sh
 scripts/ci/check-pins.sh docker/base/ci-build.Dockerfile ci/versions.env
 grep -rn '__[A-Z0-9_]*__' docker .github ci scripts || echo "no placeholders left"
 ! grep -l 'PRIVATE KEY' docker/ca/*                   # the bundle holds certificates only
@@ -309,5 +312,5 @@ the probe and container build job of `.github/workflows/_gradle-build.yml`, the 
 `setup-build-env`, `registry-login` and `setup-kube-tools`, `scripts/ci/resolve-image.sh`, `test-infra/ca/`,
 the app Dockerfiles, `.hadolint.yaml`, design documents D3 and D10 and decisions DL-13, DL-14, DL-17, DL-18,
 DL-19 and DL-28. Generalised here: any Debian/Ubuntu toolchain, the per-certificate `|| exit 1`, pull-request
-verification, the immutable-tag guard, the no-cache weekly run and the two scripts. Nothing depends on that
-repository.
+verification, the immutable-tag guard, the no-cache weekly run, and the scripts with their tests. Nothing
+depends on that repository.

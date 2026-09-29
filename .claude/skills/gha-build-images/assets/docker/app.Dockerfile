@@ -17,7 +17,8 @@
 ARG BASE_IMAGE=__IMAGE_NAMESPACE__/base/runtime-base:latest
 
 # Stage 1: explode the layered jar, so dependencies and application code become separate, cache-friendly
-# layers. It runs as the base's user 10001 and writes under /tmp only, so no stage needs root.
+# layers. It runs as the base's user 10001 and writes under /tmp only, so no stage needs root (the
+# reference switched this stage to root, which needs a hadolint DL3002 suppression).
 FROM ${BASE_IMAGE} AS layers
 ARG JAR_FILE=build/libs/__APP_NAME__.jar
 COPY ${JAR_FILE} /tmp/app.jar

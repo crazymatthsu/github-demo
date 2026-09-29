@@ -10,6 +10,7 @@
 # Triggers: a push to the default branch that changes the base images or the CA; a pull request that
 # changes them (build and verify only, nothing is pushed); weekly, without layer cache, so OS and upstream
 # patches land even when no file changed; manually, optionally with a new CA bundle version (rotation).
+# Path-filtered, so never make it a required status check: the pull-request gate stays the only one.
 #
 # Placeholders (grep -n '__[A-Z0-9_]*__'):
 #   __IMAGE_NAMESPACE__  registry namespace, lowercase; images go to <namespace>/base/<name>   ghcr.io/acme
@@ -36,7 +37,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main]
+    branches: [main] # the default branch
     paths:
       - 'docker/base/**'
       - 'docker/ca/**'

@@ -25,6 +25,10 @@
 #
 # To run the build inside a pinned CI image instead of on the runner host, see skill gha-build-images
 # (probe job + `container:` + `defaults.run.shell: bash`).
+# If the Dockerfiles build FROM a base image that this job builds locally (the first-run bootstrap of
+# gha-build-images), remove the docker/setup-buildx-action step: its docker-container builder cannot see
+# images in the local engine, while the default `docker` driver can. Otherwise pass the base in with
+# `--build-context`.
 name: _build
 
 on:
