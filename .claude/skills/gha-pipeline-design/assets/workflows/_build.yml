@@ -1,0 +1,196 @@
+# Reusable build: compile, unit tests, quality gates and, optionally, container images.
+#
+# Called by pr.yml (the affected projects; images only on pull requests and the merge queue) and by main.yml
+# (every project, images pushed). Its outputs feed the integration tests and the publish/promote step:
+#   version     the version computed from git            (skill gha-versioning-release)
+#   images      JSON object project -> repository:tag@sha256:digest, {} when nothing was pushed
+#   image-tags  JSON object project -> list of the tags this build pushed
+#   it-projects JSON list of the built projects that have integration tests (the IT matrix of main.yml)
+#
+# The project registry is the `projects:` section of .github/affected-map.yml (skill gha-affected-builds):
+#   projects:
+#     services/api:    { image: true,  it: true }   # key = project directory (holds its Dockerfile)
+#     libs/common:     { image: false, it: false }
+#
+# Placeholders (replace every one):
+#   __BUILD_COMMAND__     builds and unit-tests the projects in $PROJECTS (a JSON list), for example
+#                         Gradle: ./gradlew $(jq -r 'map(":" + gsub("/"; ":") + ":build") | join(" ")' <<<"$PROJECTS")
+#                         Maven:  ./mvnw -B verify -pl "$(jq -r 'join(",")' <<<"$PROJECTS")" -am
+#                         pnpm:   pnpm -r $(jq -r 'map("--filter ./" + .) | join(" ")' <<<"$PROJECTS") run build
+#                         Go:     go test $(jq -r 'map("./" + . + "/...") | join(" ")' <<<"$PROJECTS")
+#   __IMAGE_NAMESPACE__   registry namespace of the images, e.g. ghcr.io/<owner>
+#   __VERSION_SCRIPT__    prints the version and the image tags of this build, e.g. scripts/ci/git-version.sh
+#                         (skill gha-versioning-release); called as `<script> --field version` and
+#                         `<script> --field tags`
+#
+# To run the build inside a pinned CI image instead of on the runner host, see skill gha-build-images
+# (probe job + `container:` + `defaults.run.shell: bash`).
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: "'all' or a JSON list of project keys from the projects section of .github/affected-map.yml."
+        type: string
+        default: all
+      build-images:
+        description: Build the images of the selected projects that have one.
+        type: boolean
+        default: true
+      push-images:
+        description: "Push them (the caller grants `packages: write`); the integration tests need pushed images."
+        type: boolean
+        default: false
+      ignore-head-tags:
+        description: >-
+          Delete local tags that point at HEAD before computing the version, so main always builds the
+          pre-release form even when a release tag already sits on the commit (the release promotes this
+          build's digests instead of rebuilding).
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: Version computed from git.
+        value: ${{ jobs.build.outputs.version }}
+      images:
+        description: JSON object project -> repository:tag@sha256:digest ({} when nothing was pushed).
+        value: ${{ jobs.build.outputs.images || '{}' }}
+      image-tags:
+        description: JSON object project -> tags pushed by this build ({} when nothing was pushed).
+        value: ${{ jobs.build.outputs.image-tags || '{}' }}
+      it-projects:
+        description: JSON list of the selected projects that have integration tests.
+        value: ${{ jobs.build.outputs.it-projects }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAMESPACE: __IMAGE_NAMESPACE__
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      images: ${{ steps.images.outputs.images }}
+      image-tags: ${{ steps.images.outputs.image-tags }}
+      it-projects: ${{ steps.plan.outputs.it-projects }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the version is derived from tags and history
+
+      - name: Plan
+        id: plan
+        env:
+          PROJECTS: ${{ inputs.projects }}
+        run: |
+          set -euo pipefail
+          meta=$(yq -o=json -I=0 '.projects' .github/affected-map.yml)
+          all=$(jq -c 'keys_unsorted' <<<"$meta")
+          if [[ $PROJECTS == all ]]; then
+            selected=$all
+          else
+            selected=$(jq -c --argjson known "$all" '
+              if type == "array" and all(.[]; . as $p | ($known | index($p)) != null) then .
+              else error("projects must be a JSON list of keys of .projects in .github/affected-map.yml") end
+            ' <<<"$PROJECTS")
+          fi
+          {
+            echo "projects=$selected"
+            echo "image-projects=$(jq -c --argjson m "$meta" '[.[] | select($m[.].image == true)]' <<<"$selected")"
+            echo "it-projects=$(jq -c --argjson m "$meta" '[.[] | select($m[.].it == true)]' <<<"$selected")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Pre-release version even if HEAD is already tagged
+        if: inputs.ignore-head-tags
+        run: |
+          set -euo pipefail
+          mapfile -t head_tags < <(git tag --points-at HEAD)
+          if [[ ${#head_tags[@]} -gt 0 ]]; then
+            echo "::notice::ignoring tags on HEAD for the version (${head_tags[*]}); the release promotes this build"
+            git tag -d "${head_tags[@]}"
+          fi
+
+      - name: Build, unit tests, quality gates
+        env:
+          PROJECTS: ${{ steps.plan.outputs.projects }}
+        run: |
+          set -euo pipefail
+          __BUILD_COMMAND__
+
+      - name: Version and image tags
+        id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          version=$(__VERSION_SCRIPT__ --field version)
+          tags=$(__VERSION_SCRIPT__ --field tags)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "- version \`$version\`, image tags \`$tags\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Registry login
+        if: inputs.build-images && steps.plan.outputs.image-projects != '[]'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+        if: inputs.build-images && steps.plan.outputs.image-projects != '[]'
+
+      - name: Build and push images
+        id: images
+        if: inputs.build-images && steps.plan.outputs.image-projects != '[]'
+        env:
+          IMAGE_PROJECTS: ${{ steps.plan.outputs.image-projects }}
+          TAGS: ${{ steps.version.outputs.tags }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PUSH: ${{ inputs.push-images }}
+        run: |
+          set -euo pipefail
+          read -r -a tags <<<"$TAGS"
+          images='{}' image_tags='{}'
+          for project in $(jq -r '.[]' <<<"$IMAGE_PROJECTS"); do
+            repo="$IMAGE_NAMESPACE/${project##*/}"
+            args=()
+            for tag in "${tags[@]}"; do args+=(--tag "$repo:$tag"); done
+            output=type=docker # loaded locally: a fork PR still proves the image builds
+            [[ $PUSH == true ]] && output=type=registry
+            docker buildx build "${args[@]}" --output "$output" \
+              --label "org.opencontainers.image.version=$VERSION" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --file "$project/Dockerfile" "$project"
+            if [[ $PUSH == true ]]; then
+              digest=$(docker buildx imagetools inspect "$repo:${tags[0]}" --format '{{json .Manifest}}' | jq -r .digest)
+              images=$(jq -c --arg p "$project" --arg r "$repo:${tags[0]}@$digest" '. + {($p): $r}' <<<"$images")
+              image_tags=$(jq -c --arg p "$project" --arg t "$TAGS" '. + {($p): ($t | split(" "))}' <<<"$image_tags")
+              echo "- \`$repo:${tags[0]}@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          echo "image-tags=$image_tags" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+            **/target/surefire-reports/**
+            **/coverage/**
+          if-no-files-found: ignore
+          retention-days: 7
