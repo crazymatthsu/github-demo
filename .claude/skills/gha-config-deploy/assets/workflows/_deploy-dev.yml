@@ -1,0 +1,391 @@
+# _deploy-dev.yml — reusable: deploy the tag main.yml just published to every target of one dev env, record the
+# deployed tag (and the box of every pooled instance) back in the config tree with `[skip ci]`, and record a
+# GitHub Deployment. Template of the gha-config-deploy skill; copy it to .github/workflows/_deploy-dev.yml.
+#
+# Placeholders (replace each one; `grep -n '__[A-Z0-9_]*__'` must find nothing afterwards):
+#   __DEV_ENV__             the config env deployed by default: a dev env, config/<env>/  e.g. us-dev
+#   __COMPOSE_DEPLOY_CMD__  deploys ONE compose target on its host (contract below)       e.g. scripts/deploy/compose-target.sh
+#   __HELM_DEPLOY_SCRIPT__  deploys ONE helm target into its cluster (contract below)     e.g. scripts/ci/helm-deploy-instance.sh
+#                           (the skill's assets/scripts/helm-deploy-instance.sh, on top of helm-release.sh)
+# Optional: POOL_DEPLOY_CMD (flows whose inventory declares a `pool`), e.g. scripts/pool-deploy.sh.
+#
+# Interface (main.yml calls this as job `deploy-dev`, only on refs/heads/main and not for the write-back bot's actor,
+# with permissions contents: write, deployments: write, packages: read, and `secrets: inherit`):
+#   inputs   env (default __DEV_ENV__) · tag (required: the version / image tag to deploy) ·
+#            images (default '{}': JSON object project -> image pinned by digest) ·
+#            environment (default '': the GitHub Environment, named like env; pass e.g. dev when several dev
+#            envs share one Environment)
+#   outputs  deployed (JSON list of <flow>/<app>/<instance>) · placements ("<flow>/<app>/<instance>=<host> ...")
+#
+# Inventory: config/<env>/<flow>/workflows-config.yml, one per flow (schema in the skill's
+# references/deploy-inventory.md): env and flow restate the path; targets[].instance is <app>/<instance> (this job
+# prefixes the flow); kind compose | helm, host, user, cluster, namespace come from the target, else from
+# `defaults` (kind compose, user deploy, namespace the flow).
+#
+# Deployer contracts. Every deployer runs with stdin from /dev/null and gets DEPLOY_ENV, DEPLOY_TAG, DEPLOY_IMAGES,
+# DEPLOY_RUN_URL and DEPLOY_KNOWN_HOSTS (config/<env>/known_hosts: the reviewed host keys) in its environment.
+# Exit 0 means deployed and healthy; any other exit means not deployed, with the previous version still running
+# (a compose deployer starts the previous tag again, Helm rolls back), so it gets no write-back.
+#   compose  $COMPOSE_DEPLOY_CMD <env> <flow> <app> <instance> --tag <tag> --host <host> --user <user>
+#            typically: ssh <user>@<host> 'IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <instance> pull',
+#            then `start`, then `health`, through the SSH agent this job loads with DEV_DEPLOY_SSH_KEY
+#   pool     $POOL_DEPLOY_CMD <env> <flow> deploy --tag <tag>   (once per flow with a pool)
+#            syncs the flow's bundle to every box, places each instance (pinned > discovered > assigned) and prints
+#            one stdout line per deployed instance:  deployed <flow>/<app>/<instance>@<host>=<tag>
+#   helm     $HELM_DEPLOY_SCRIPT <env> <flow> <app> <instance> --tag <tag> --namespace <ns> --kube-context <cluster>
+#            typically: helm upgrade --install <app>-<instance> ... --rollback-on-failure --wait, rollout status, helm test
+#
+# GitHub Environment named like the env (or the `environment` input), e.g. `dev` (Settings > Environments):
+# deployment branches `main` only; secrets DEV_DEPLOY_SSH_KEY (the private key of the deploy user on the hosts) and
+# DEV_KUBECONFIG (a kubeconfig with one context per `cluster` named in the inventories). Write-back identity: GITHUB_TOKEN (pushes as github-actions[bot], starts no run),
+# or a GitHub App when the repository variable WRITE_BACK_APP_ID and the secret WRITE_BACK_APP_PRIVATE_KEY exist
+# (give that App the bypass of the ruleset on main). qa and prod are never deployed here: the guard refuses
+# them and so does write-back-tag.sh. Actions are pinned to a major version: update to the current major.
+name: _deploy-dev
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        description: Config env to deploy (a dev env; qa and prod change through bump pull requests).
+        type: string
+        default: __DEV_ENV__
+      tag:
+        description: Image tag to deploy (the version main.yml just published).
+        type: string
+        required: true
+      images:
+        description: JSON object project -> image pinned by digest; recorded in the deployment and passed to the deployers.
+        type: string
+        default: '{}'
+      environment:
+        description: GitHub Environment with the deploy secrets and the branch rule; empty = the env's name.
+        type: string
+        default: ''
+    outputs:
+      deployed:
+        description: JSON list of the instances deployed (<flow>/<app>/<instance>).
+        value: ${{ jobs.deploy.outputs.deployed }}
+      placements:
+        description: The boxes of the pooled compose instances, "<flow>/<app>/<instance>=<host> ...".
+        value: ${{ jobs.deploy.outputs.placements }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.env }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The Environment's branch rule (main only) and its secrets. `deployment: false` keeps both without an
+    # automatic deployment object, so the record created below (with its payload) is the only one per run.
+    environment:
+      name: ${{ inputs.environment || inputs.env }}
+      deployment: false
+    # One deploy per env at a time, never cancelled half-way (a cancelled deploy is worse than a late one).
+    concurrency:
+      group: deploy-${{ inputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: write # the write-back commit
+      deployments: write # the GitHub Deployment record
+      packages: read # deployers may read this repository's images (digests, pulls)
+    env:
+      DEPLOY_ENV: ${{ inputs.env }}
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment || inputs.env }}
+      DEPLOY_TAG: ${{ inputs.tag }}
+      DEPLOY_IMAGES: ${{ inputs.images }}
+      DEPLOY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      COMPOSE_DEPLOY_CMD: __COMPOSE_DEPLOY_CMD__
+      POOL_DEPLOY_CMD: ''
+      HELM_DEPLOY_SCRIPT: __HELM_DEPLOY_SCRIPT__
+    outputs:
+      deployed: ${{ steps.collect.outputs.json }}
+      placements: ${{ steps.collect.outputs.placements }}
+    steps:
+      - name: Write-back identity (a GitHub App, when configured)
+        id: app
+        if: vars.WRITE_BACK_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.WRITE_BACK_APP_ID }}
+          private-key: ${{ secrets.WRITE_BACK_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          # The write-back pushes with these credentials: the App's token when configured, else GITHUB_TOKEN.
+          token: ${{ steps.app.outputs.token || github.token }}
+
+      - name: Guard
+        run: |
+          set -euo pipefail
+          if [[ ! $DEPLOY_ENV =~ ^([a-z][a-z0-9]*-)?dev$ ]]; then
+            echo "::error::deploy-dev deploys dev envs only, got '$DEPLOY_ENV': qa and prod change through reviewed bump pull requests"
+            exit 1
+          fi
+          [[ $DEPLOY_TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "::error::invalid tag '$DEPLOY_TAG'"; exit 1; }
+          jq -e 'type == "object"' <<<"$DEPLOY_IMAGES" >/dev/null || { echo "::error::input images is not a JSON object"; exit 1; }
+
+      - name: Resolve the targets
+        id: targets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          echo '[]' > "$RUNNER_TEMP/targets.json"
+          echo '{}' > "$RUNNER_TEMP/pools.json"
+          : > "$RUNNER_TEMP/deployed.txt"
+          : > "$RUNNER_TEMP/placements.txt"
+          : > "$RUNNER_TEMP/failed.txt"
+          if [[ -f config/$DEPLOY_ENV/workflows-config.yml ]]; then
+            echo "::error::config/$DEPLOY_ENV/workflows-config.yml: the inventory is per flow, config/$DEPLOY_ENV/<flow>/workflows-config.yml"
+            exit 1
+          fi
+          files=()
+          for file in config/"$DEPLOY_ENV"/*/workflows-config.yml; do
+            [[ $file == "config/$DEPLOY_ENV/_common/"* ]] || files+=("$file")
+          done
+          [[ ${#files[@]} -gt 0 ]] || echo "::warning::no config/$DEPLOY_ENV/<flow>/workflows-config.yml: nothing to deploy"
+          for file in "${files[@]}"; do
+            flow=$(basename "$(dirname "$file")")
+            declared=$(yq '(.env // "") + "/" + (.flow // "")' "$file")
+            if [[ $declared != "$DEPLOY_ENV/$flow" ]]; then
+              echo "::error file=$file::declares env/flow '$declared', expected '$DEPLOY_ENV/$flow' (its path)"
+              exit 1
+            fi
+            # Every field from the target, else from defaults; the flow is prepended to every instance.
+            # shellcheck disable=SC2016 # $d is a yq variable
+            FLOW=$flow yq -o=json -I=0 '(.defaults // {}) as $d | [(.targets // [])[] | {
+                "instance": (strenv(FLOW) + "/" + (.instance // "")),
+                "kind": (.kind // $d.kind // "compose"),
+                "host": (.host // $d.host // ""),
+                "user": (.user // $d.user // "deploy"),
+                "cluster": (.cluster // $d.cluster // ""),
+                "namespace": (.namespace // $d.namespace // strenv(FLOW))
+              }]' "$file" > "$RUNNER_TEMP/flow.json"
+            jq -s 'add' "$RUNNER_TEMP/targets.json" "$RUNNER_TEMP/flow.json" > "$RUNNER_TEMP/merged.json"
+            mv "$RUNNER_TEMP/merged.json" "$RUNNER_TEMP/targets.json"
+            if [[ $(yq '.pool | tag' "$file") == '!!map' ]]; then
+              yq -o=json -I=0 '.pool' "$file" > "$RUNNER_TEMP/pool.json"
+              jq --arg flow "$flow" --slurpfile pool "$RUNNER_TEMP/pool.json" '. + {($flow): $pool[0]}' \
+                "$RUNNER_TEMP/pools.json" > "$RUNNER_TEMP/merged.json"
+              mv "$RUNNER_TEMP/merged.json" "$RUNNER_TEMP/pools.json"
+            fi
+          done
+          # What each kind needs. A compose target of a flow with a pool may omit host: the deploy places it.
+          # shellcheck disable=SC2016 # $flow, $h, $pool and $pools are jq variables
+          problems=$(jq -r --slurpfile pools "$RUNNER_TEMP/pools.json" '.[]
+              | (.instance | split("/")[0]) as $flow | .host as $h | ($pools[0][$flow] // null) as $pool
+              | if (.instance | test("^[a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+$") | not) then "\(.instance): instance must be <app>/<instance>"
+                elif .kind == "compose" then
+                  if $h == "" and $pool == null then "\(.instance): a compose target needs a host, or a pool in its flow"
+                  elif $h != "" and ($h | test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$") | not) then "\(.instance): host \($h) is not a DNS name"
+                  elif $h != "" and $pool != null and (any(($pool.hosts // [])[]; . == $h) | not) then "\(.instance): host \($h) is not a box of the pool"
+                  else empty end
+                elif .kind == "helm" then
+                  if .cluster == "" then "\(.instance): a helm target needs a cluster (a kube context)"
+                  elif (.namespace | test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$") | not) then "\(.instance): namespace \(.namespace) is not a DNS label"
+                  else empty end
+                else "\(.instance): kind must be compose or helm, not \(.kind)" end' "$RUNNER_TEMP/targets.json")
+          if [[ -n $problems ]]; then
+            while IFS= read -r problem; do echo "::error::config/$DEPLOY_ENV/<flow>/workflows-config.yml: $problem"; done <<<"$problems"
+            exit 1
+          fi
+          {
+            echo "total=$(jq 'length' "$RUNNER_TEMP/targets.json")"
+            echo "compose=$(jq '[.[] | select(.kind == "compose")] | length' "$RUNNER_TEMP/targets.json")"
+            echo "helm=$(jq '[.[] | select(.kind == "helm")] | length' "$RUNNER_TEMP/targets.json")"
+            # Flows whose compose targets go through POOL_DEPLOY_CMD: a pool and at least one compose target.
+            echo "pooled=$(jq -r --slurpfile pools "$RUNNER_TEMP/pools.json" '[.[] | select(.kind == "compose")
+                | .instance | split("/")[0]] | unique | map(select(. as $f | $pools[0] | has($f))) | join(" ")' \
+                "$RUNNER_TEMP/targets.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record the deployment (in progress)
+        id: deployment
+        if: steps.targets.outputs.total != '0'
+        run: |
+          set -euo pipefail
+          payload=$(jq -cn --arg env "$DEPLOY_ENV" --arg tag "$DEPLOY_TAG" --argjson images "$DEPLOY_IMAGES" \
+            --slurpfile targets "$RUNNER_TEMP/targets.json" '{env: $env, tag: $tag, images: $images, targets: $targets[0]}')
+          # auto_merge false and required_contexts [] because this run's own checks are still pending: the API
+          # would otherwise refuse (409) or merge the default branch into the ref.
+          id=$(jq -n --arg ref "$GITHUB_SHA" --arg environment "$DEPLOYMENT_ENVIRONMENT" --arg desc "deploy-dev $DEPLOY_ENV $DEPLOY_TAG" \
+              --argjson payload "$payload" '{
+                ref: $ref, environment: $environment, description: $desc, auto_merge: false, required_contexts: [],
+                payload: $payload, transient_environment: false, production_environment: false
+              }' | gh api --method POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+            -f state=in_progress -f log_url="$DEPLOY_RUN_URL" -f description="deploying $DEPLOY_TAG" >/dev/null
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy compose targets
+        if: steps.targets.outputs.compose != '0'
+        timeout-minutes: 20
+        env:
+          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          POOLED_FLOWS: ${{ steps.targets.outputs.pooled }}
+        run: |
+          set -euo pipefail
+          # The Environment's deploy key lives in this step's ssh-agent only; the deployers pin the hosts' keys
+          # with DEPLOY_KNOWN_HOSTS (StrictHostKeyChecking=yes, never an unknown key).
+          if [[ -n ${DEV_DEPLOY_SSH_KEY:-} ]]; then
+            key="$RUNNER_TEMP/deploy-key"
+            (umask 077 && printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key")
+            eval "$(ssh-agent -s)" >/dev/null
+            trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
+            ssh-add -q "$key"
+            rm -f "$key"
+          fi
+          export DEPLOY_KNOWN_HOSTS="$GITHUB_WORKSPACE/config/$DEPLOY_ENV/known_hosts"
+          read -r -a compose_cmd <<<"$COMPOSE_DEPLOY_CMD"
+          read -r -a pool_cmd <<<"$POOL_DEPLOY_CMD"
+          row() { echo "| \`$1\` | ${2:-—} | $3 |" >> "$GITHUB_STEP_SUMMARY"; }
+          { echo "### deploy-dev $DEPLOY_ENV $DEPLOY_TAG: compose targets"; echo ""
+            echo "| instance | host | result |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+
+          # jq output is captured in a variable before it is looped over: a failing filter inside `done < <(jq ...)`
+          # escapes set -e and would silently deploy nothing.
+          # Flows with a pool: one call per flow syncs the bundle and places every instance on one box.
+          for flow in $POOLED_FLOWS; do
+            expected=$(jq -r --arg f "$flow" \
+              '.[] | select(.kind == "compose") | .instance | select(startswith($f + "/"))' "$RUNNER_TEMP/targets.json")
+            done_here=" "
+            if [[ ${#pool_cmd[@]} -eq 0 ]]; then
+              echo "::error::flow $flow declares a pool, but POOL_DEPLOY_CMD is not set in _deploy-dev.yml"
+            else
+              echo "::group::pool $DEPLOY_ENV/$flow"
+              rc=0
+              "${pool_cmd[@]}" "$DEPLOY_ENV" "$flow" deploy --tag "$DEPLOY_TAG" </dev/null >"$RUNNER_TEMP/pool-$flow.out" || rc=$?
+              echo "::endgroup::"
+              [[ $rc -eq 0 ]] || echo "::error::pool deploy of $DEPLOY_ENV/$flow exited $rc"
+              while IFS= read -r line; do
+                if [[ $line =~ ^deployed\ ([a-z0-9-]+/[a-z0-9-]+/[a-z0-9-]+)@([a-z0-9.-]+)=(.+)$ && ${BASH_REMATCH[3]} == "$DEPLOY_TAG" ]]; then
+                  echo "${BASH_REMATCH[1]}" >> "$RUNNER_TEMP/deployed.txt"
+                  echo "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}" >> "$RUNNER_TEMP/placements.txt"
+                  done_here+="${BASH_REMATCH[1]} "
+                  row "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" deployed
+                fi
+              done < "$RUNNER_TEMP/pool-$flow.out"
+            fi
+            for instance in $expected; do
+              if [[ $done_here != *" $instance "* ]]; then
+                echo "$instance" >> "$RUNNER_TEMP/failed.txt"
+                row "$instance" "" "**failed** (pool)"
+              fi
+            done
+          done
+
+          # Flows without a pool: one call per target, on the host the inventory names ("|", not a tab, as the
+          # separator: `read` would merge two tabs around an empty field).
+          # shellcheck disable=SC2016 # $flow is a jq variable
+          rows=$(jq -r --arg pooled " $POOLED_FLOWS " '.[] | select(.kind == "compose")
+              | (.instance | split("/")[0]) as $flow | select($pooled | contains(" " + $flow + " ") | not)
+              | [.instance, .host, .user] | join("|")' "$RUNNER_TEMP/targets.json")
+          while IFS='|' read -r instance host user; do
+            [[ -n $instance ]] || continue
+            IFS=/ read -r flow app inst <<<"$instance"
+            echo "::group::$instance on $host"
+            rc=0
+            "${compose_cmd[@]}" "$DEPLOY_ENV" "$flow" "$app" "$inst" --tag "$DEPLOY_TAG" --host "$host" --user "$user" </dev/null || rc=$?
+            echo "::endgroup::"
+            if [[ $rc -eq 0 ]]; then
+              echo "$instance" >> "$RUNNER_TEMP/deployed.txt"
+              row "$instance" "$host" deployed
+            else
+              echo "::error::$instance on $host: the compose deployer exited $rc"
+              echo "$instance" >> "$RUNNER_TEMP/failed.txt"
+              row "$instance" "$host" "**failed** (exit $rc)"
+            fi
+          done <<<"$rows"
+
+      - name: Deploy helm targets
+        if: steps.targets.outputs.helm != '0'
+        timeout-minutes: 20
+        env:
+          DEV_KUBECONFIG: ${{ secrets.DEV_KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          # The Environment's kubeconfig, one context per `cluster` of the inventories. With a cloud OIDC login
+          # (EKS / GKE / AKS) instead, replace this with that login step and give the caller id-token: write.
+          if [[ -n ${DEV_KUBECONFIG:-} ]]; then
+            export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+            (umask 077 && printf '%s\n' "$DEV_KUBECONFIG" > "$KUBECONFIG")
+          fi
+          export DEPLOY_KNOWN_HOSTS="$GITHUB_WORKSPACE/config/$DEPLOY_ENV/known_hosts"
+          read -r -a helm_cmd <<<"$HELM_DEPLOY_SCRIPT"
+          { echo "### deploy-dev $DEPLOY_ENV $DEPLOY_TAG: helm targets"; echo ""
+            echo "| instance | cluster / namespace | result |"; echo "|---|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          rows=$(jq -r '.[] | select(.kind == "helm") | [.instance, .cluster, .namespace] | join("|")' "$RUNNER_TEMP/targets.json")
+          while IFS='|' read -r instance cluster namespace; do
+            [[ -n $instance ]] || continue
+            IFS=/ read -r flow app inst <<<"$instance"
+            echo "::group::$instance in $cluster/$namespace"
+            rc=0
+            "${helm_cmd[@]}" "$DEPLOY_ENV" "$flow" "$app" "$inst" --tag "$DEPLOY_TAG" --namespace "$namespace" \
+              --kube-context "$cluster" </dev/null || rc=$?
+            echo "::endgroup::"
+            if [[ $rc -eq 0 ]]; then
+              echo "$instance" >> "$RUNNER_TEMP/deployed.txt"
+              echo "| \`$instance\` | $cluster / $namespace | deployed |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::$instance: the helm deployer exited $rc (the release was rolled back or never replaced)"
+              echo "$instance" >> "$RUNNER_TEMP/failed.txt"
+              echo "| \`$instance\` | $cluster / $namespace | **failed** (exit $rc) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done <<<"$rows"
+
+      - name: Collect the deployed instances
+        id: collect
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          deployed=$(sort -u "$RUNNER_TEMP/deployed.txt" 2>/dev/null || true)
+          placements=$(sort -u "$RUNNER_TEMP/placements.txt" 2>/dev/null || true)
+          {
+            echo "list=$(paste -sd ' ' <<<"$deployed")"
+            echo "json=$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$deployed")"
+            echo "placements=$(paste -sd ' ' <<<"$placements")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write back the deployed tag
+        # Also after a failed target (what did deploy is recorded, failed targets are not in the list); never
+        # after a cancel. `[skip ci]` in the commit plus main.yml's actor check form the loop guard.
+        if: ${{ !cancelled() && steps.collect.outputs.list != '' }}
+        env:
+          DEPLOYED: ${{ steps.collect.outputs.list }}
+          WRITE_BACK_PLACEMENTS: ${{ steps.collect.outputs.placements }}
+          WRITE_BACK_BRANCH: ${{ github.ref_name }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          if [[ -n $APP_SLUG ]]; then
+            # Commit as the App's bot user: its login (<slug>[bot]) is the actor main.yml's loop guard skips.
+            bot_id=$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)
+            export WRITE_BACK_AUTHOR_NAME="${APP_SLUG}[bot]"
+            export WRITE_BACK_AUTHOR_EMAIL="${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          fi
+          read -r -a instances <<<"$DEPLOYED"
+          scripts/ci/write-back-tag.sh "$DEPLOY_ENV" "$DEPLOY_TAG" "${instances[@]}"
+
+      - name: Fail when a target failed
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -s $RUNNER_TEMP/failed.txt ]]; then
+            echo "::error::deploy-dev: $(sort -u "$RUNNER_TEMP/failed.txt" | paste -sd ' ') not deployed (no write-back for them)"
+            exit 1
+          fi
+
+      - name: Record the deployment result
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          state=failure
+          [[ $JOB_STATUS == success ]] && state=success
+          gh api --method POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+            -f state="$state" -f log_url="$DEPLOY_RUN_URL" -f description="deploy-dev $DEPLOY_TAG: $JOB_STATUS" >/dev/null
+          echo "- GitHub Deployment $DEPLOYMENT_ID in Environment \`$DEPLOYMENT_ENVIRONMENT\`: **$state**" >> "$GITHUB_STEP_SUMMARY"

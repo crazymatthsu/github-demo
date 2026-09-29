@@ -1,0 +1,21 @@
+# Deploy inventory of __DEV_ENV__/__FLOW__: one file per flow of a dev env, owned with the flow directory
+# (CODEOWNERS). One target per instance directory of the flow, checked by config lint; a target's fields come
+# from the target, else from defaults (kind: compose; namespace: the flow; user: deploy). Schema, placement
+# and host bundle: references/deploy-inventory.md of the gha-config-deploy skill. Kept in yq's layout (one
+# space before a trailing comment), so the write-back's yq edit is a one-line diff. Never a secret.
+env: __DEV_ENV__
+flow: __FLOW__
+pool: # optional: the boxes of this flow; each gets the whole flow, each instance runs on exactly one
+  hosts:
+    - __HOST_1__
+    - __HOST_2__
+  user: deploy # the SSH user; its authorized key has a forced command
+  root: /opt/platform # install root of the flow's bundle on every box
+defaults:
+  kind: helm # compose | helm
+  cluster: __KUBE_CONTEXT__ # helm targets: the kube context of the dev cluster
+  namespace: __FLOW__ # helm targets: one namespace per flow
+targets:
+  - instance: __APP__/__INSTANCE_A__ # <app>/<instance>, relative to this flow
+    kind: compose # on one box of the pool; the write-back records that box as `host`
+  - instance: __APP__/__INSTANCE_B__ # inherits the helm defaults

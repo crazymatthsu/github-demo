@@ -1,0 +1,126 @@
+# .github/actions/setup-kube-tools: pinned kind, kubectl, helm and kubeconform, checksum-verified.
+# (Template of the skill gha-ephemeral-test-envs; no placeholders: the defaults are the skill's layout.)
+# The same action ships with gha-build-images (identical inputs and behaviour): keep a single copy per
+# repository. The pins live in test-infra/kind/versions.env (or ci/versions.env when the CI build image
+# carries the same tools); downloads are checked against the SHA-256 file each project publishes.
+name: setup-kube-tools
+description: >-
+  Installs kind, kubectl, helm and kubeconform at the versions pinned in a versions file (KIND_VERSION=v...
+  lines) from their official download URLs, each checked against the SHA-256 file its project publishes
+  next to it. A tool already on PATH at the pinned version is kept; the runner image's own kind / kubectl /
+  helm (other versions) are shadowed, not replaced. The install directory is prepended to PATH for later
+  steps. Linux runners, amd64 or arm64; works on the runner host and inside the CI build image.
+inputs:
+  tools:
+    description: Comma-separated subset of kind, kubectl, helm, kubeconform.
+    required: false
+    default: kind,kubectl,helm,kubeconform
+  versions-file:
+    description: >-
+      The pins, relative to the workspace. Empty: the first of ci/versions.env and
+      test-infra/kind/versions.env that exists.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned Kubernetes tools
+      shell: bash
+      env:
+        KUBE_TOOLS: ${{ inputs.tools }}
+        VERSIONS_FILE: ${{ inputs.versions-file }}
+      run: |
+        set -euo pipefail
+        # stderr: also correct inside $(...), where stdout would be captured instead of shown
+        err() { echo "::error title=setup-kube-tools::$*" >&2; exit 1; }
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64) arch=amd64 ;;
+          Linux/aarch64 | Linux/arm64) arch=arm64 ;;
+          *) err "unsupported runner $(uname -s)/$(uname -m) (Linux amd64 or arm64)" ;;
+        esac
+        if [[ -z $VERSIONS_FILE ]]; then
+          for candidate in ci/versions.env test-infra/kind/versions.env; do
+            if [[ -f $GITHUB_WORKSPACE/$candidate ]]; then VERSIONS_FILE=$candidate; break; fi
+          done
+          [[ -n $VERSIONS_FILE ]] || err "no versions file: create ci/versions.env or pass versions-file"
+        fi
+        pins="${GITHUB_WORKSPACE}/${VERSIONS_FILE}"
+        [[ -f $pins ]] || err "$VERSIONS_FILE not found (check out the repository first)"
+        pin() { # the value of KEY=v... in the pins file
+          local value
+          value=$(sed -n "s/^$1=\\(v[0-9][0-9A-Za-z.+-]*\\)[[:space:]]*$/\\1/p" "$pins" | tail -n 1)
+          [[ -n $value ]] || err "$VERSIONS_FILE has no $1=v<version> line"
+          printf '%s' "$value"
+        }
+        current() { # the version the tool on PATH reports, or nothing
+          case $1 in
+            kind) kind version 2>/dev/null | awk '{ print $2; exit }' ;;
+            kubectl) kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion // empty' ;;
+            helm) helm version --template '{{.Version}}' 2>/dev/null ;;
+            kubeconform) kubeconform -v 2>/dev/null ;;
+          esac
+        }
+        fetch() { curl -fsSL --proto '=https' --retry 3 --retry-connrefused --retry-delay 2 "$@"; }
+        verify() { # verify <sha256> <file>
+          [[ $1 =~ ^[0-9a-f]{64}$ ]] || err "no SHA-256 published for $(basename "$2")"
+          echo "$1  $2" | sha256sum -c --quiet - || err "checksum mismatch for $(basename "$2")"
+        }
+
+        read -r -a tools <<<"${KUBE_TOOLS//,/ }"
+        [[ ${#tools[@]} -gt 0 ]] || err "the tools input is empty"
+        for tool in "${tools[@]}"; do
+          case $tool in
+            kind | kubectl | helm | kubeconform) ;;
+            *) err "unknown tool '$tool' (kind, kubectl, helm, kubeconform)" ;;
+          esac
+        done
+
+        bin="${RUNNER_TEMP}/kube-tools/bin"
+        mkdir -p "$bin"
+        export PATH="$bin:$PATH"
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        for tool in "${tools[@]}"; do
+          want=$(pin "$(tr '[:lower:]' '[:upper:]' <<<"$tool")_VERSION")
+          have=$(current "$tool" || true)
+          if [[ $have == "$want" ]]; then
+            echo "$tool $want: already on PATH ($(command -v "$tool"))"
+            continue
+          fi
+          echo "$tool $want: installing${have:+ (PATH has $have)}"
+          case $tool in
+            kind)
+              url="https://github.com/kubernetes-sigs/kind/releases/download/$want/kind-linux-$arch"
+              fetch -o "$tmp/kind" "$url"
+              verify "$(fetch "$url.sha256sum" | awk '{ print $1; exit }')" "$tmp/kind"
+              install -m 0755 "$tmp/kind" "$bin/kind"
+              ;;
+            kubectl)
+              url="https://dl.k8s.io/release/$want/bin/linux/$arch/kubectl"
+              fetch -o "$tmp/kubectl" "$url"
+              verify "$(fetch "$url.sha256" | awk '{ print $1; exit }')" "$tmp/kubectl"
+              install -m 0755 "$tmp/kubectl" "$bin/kubectl"
+              ;;
+            helm)
+              tgz="helm-$want-linux-$arch.tar.gz"
+              fetch -o "$tmp/$tgz" "https://get.helm.sh/$tgz"
+              verify "$(fetch "https://get.helm.sh/$tgz.sha256sum" | awk '{ print $1; exit }')" "$tmp/$tgz"
+              mkdir -p "$tmp/helm"
+              tar -xzf "$tmp/$tgz" -C "$tmp/helm"
+              install -m 0755 "$tmp/helm/linux-$arch/helm" "$bin/helm"
+              ;;
+            kubeconform)
+              tgz="kubeconform-linux-$arch.tar.gz"
+              base="https://github.com/yannh/kubeconform/releases/download/$want"
+              fetch -o "$tmp/$tgz" "$base/$tgz"
+              verify "$(fetch "$base/CHECKSUMS" | awk -v f="$tgz" '$2 == f { print $1; exit }')" "$tmp/$tgz"
+              mkdir -p "$tmp/kubeconform"
+              tar -xzf "$tmp/$tgz" -C "$tmp/kubeconform"
+              install -m 0755 "$tmp/kubeconform/kubeconform" "$bin/kubeconform"
+              ;;
+          esac
+          got=$(current "$tool" || true)
+          [[ $got == "$want" ]] || err "$tool reports '$got' after installing $want"
+          echo "$tool $got: installed in $bin"
+        done
+        echo "$bin" >> "$GITHUB_PATH"

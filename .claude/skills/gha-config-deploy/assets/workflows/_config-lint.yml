@@ -1,0 +1,88 @@
+# _config-lint.yml — reusable: lint the config tree with scripts/ci/config_lint.py (references/config-lint-checks.md
+# of the gha-config-deploy skill), put the findings in the job summary and as annotations, and upload the report
+# with the rendered Helm releases. Template of the gha-config-deploy skill; copy it to
+# .github/workflows/_config-lint.yml, the linter to scripts/ci/config_lint.py and its settings, from the skill's
+# config-lint.example.yml, to .github/config-lint.yml.
+#
+# Interface (the pull-request workflow and main.yml call it as a job whose result feeds the single gate check;
+# never make it a required check of its own, which a path filter would leave waiting forever):
+#   inputs   kube-tools (default 'helm,kubeconform': what ./.github/actions/setup-kube-tools installs for
+#            check 12; '' when no env runs Helm)
+#   outputs  none; the job fails when config lint reports an ERROR
+#
+# CI=true turns a missing docker compose, helm or kubeconform into an ERROR, so the job never passes because a
+# check silently did not run. Needs on the runner: python3 3.8+ with PyYAML or mikefarah yq v4, and docker compose
+# for check 6 (GitHub-hosted runners have all three); the setup-kube-tools composite action and its versions file
+# (skill gha-ephemeral-test-envs or gha-build-images); scripts/ci/helm-deploy-instance.sh with helm-release.sh
+# next to it for check 12. kubeconform downloads schemas from GitHub. The same command runs on a laptop:
+#   python3 scripts/ci/config_lint.py            (--no-render without docker, helm or kubeconform)
+# Actions are pinned to a major version: update to the current major.
+name: _config-lint
+
+on:
+  workflow_call:
+    inputs:
+      kube-tools:
+        description: Tools setup-kube-tools installs for check 12 (helm renders); empty when no env runs Helm.
+        type: string
+        default: helm,kubeconform
+
+permissions:
+  contents: read
+
+jobs:
+  config-lint:
+    name: config lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      REPORT: build/reports/config-lint/config-lint.txt
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: helm and kubeconform (pinned, checksum-verified)
+        if: inputs.kube-tools != ''
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: ${{ inputs.kube-tools }}
+
+      - name: Config lint
+        env:
+          CI: 'true'
+        run: python3 scripts/ci/config_lint.py --report "$REPORT"
+
+      - name: Findings in the job summary and as annotations
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ ! -f $REPORT ]]; then
+            echo "### config lint did not run: see the log of the step before" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### config lint: $(tail -n 1 "$REPORT" | sed 's/^config lint: //')"
+            echo '```'
+            head -n 300 "$REPORT"
+            echo '```'
+            if [[ $(wc -l < "$REPORT") -gt 300 ]]; then echo "The whole report is in the artifact config-lint-*."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # One annotation per ERROR / WARN (the first 50), shown on the pull request's files.
+          findings=$(grep -E '^(ERROR|WARN) check ' "$REPORT" | head -n 50 || true)
+          while IFS= read -r line; do
+            [[ $line =~ ^(ERROR|WARN)\ check\ ([0-9]+)\ \ ([^:]+):\ (.*)$ ]] || continue
+            level=error
+            if [[ ${BASH_REMATCH[1]} == WARN ]]; then level=warning; fi
+            echo "::${level} file=${BASH_REMATCH[3]},title=config lint check ${BASH_REMATCH[2]}::${BASH_REMATCH[4]//%/%25}"
+          done <<<"$findings"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: config-lint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/reports/config-lint/
+          if-no-files-found: ignore
+          retention-days: 7

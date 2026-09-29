@@ -30,6 +30,8 @@ docs:
   - "renovate.json"
   - "release-please-config.json"
   - ".release-please-manifest.json"
+  # Claude Code skills and settings: guidance for the assistant, never part of a build or an image.
+  - ".claude/**"
 
 # Config tree: config-lint only — no Gradle build, no image (D7 §5.4 rule 5, DL-06).
 # On main a config-only merge still runs the whole pipeline and deploy-dev (D9).

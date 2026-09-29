@@ -1,0 +1,88 @@
+# retention.yml — nightly registry retention: delete the GHCR image versions nothing needs any more
+# (skill gha-versioning-release; rules and algorithm in its references/retention.md).
+#
+# Runs scripts/ci/retention.sh on a checkout of the default branch: the configuration there decides what is in
+# use. pr-<n>-<sha7> images go once pull request <n> has been closed PR_GRACE_DAYS; pre-releases beyond the
+# RC_KEEP newest and RC_MIN_AGE_DAYS old go; releases, moving tags, untagged versions, unknown tags and every
+# tag or digest the configuration references stay. The decision table lands in the job summary: the audit trail.
+#
+# Dry run unless
+#   schedule           the repository variable RETENTION_DELETE is 'true' (Settings -> Secrets and variables ->
+#                      Actions -> Variables); set it after reviewing the reports of a few dry runs
+#   workflow_dispatch  the input dry-run is unticked (gh workflow run retention.yml -f dry-run=false)
+#
+# Token: GH_TOKEN is secrets.RETENTION_TOKEN when that secret exists, else github.token.
+#   github.token     the job's GITHUB_TOKEN with the permissions below: lists versions and reads pull requests,
+#                    but deletes only versions of packages that grant this repository the Admin role (package
+#                    settings -> Manage Actions access). Without that grant every DELETE fails with 403.
+#   RETENTION_TOKEN  a personal access token (classic: packages take no fine-grained tokens) with read:packages
+#                    and delete:packages, plus repo when this repository is private (its pull requests), of an
+#                    account that administers the packages. Use it when the grant is not possible, for
+#                    example for packages another repository publishes.
+#
+# Configure through the env block below (scripts/ci/retention.sh --help); the defaults are the skill's rules.
+# Needs scripts/ci/retention.sh (executable), gh and jq (preinstalled on GitHub-hosted runners), and yq with
+# .github/affected-map.yml (skill gha-affected-builds) unless RETENTION_PACKAGES names the packages.
+# A first run over a registry that grew for months can delete thousands of versions and hit the timeout or a
+# rate limit: the next run continues where it stopped.
+# Actions are pinned to a major version: update to the current major when adopting.
+name: retention
+
+on:
+  schedule:
+    - cron: '41 3 * * *' # nightly, off the full hour
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Only report what would be deleted.
+        type: boolean
+        default: true
+
+concurrency:
+  group: retention
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PR_GRACE_DAYS: '7' # pr-<n>-<sha7>: deleted once pull request <n> has been closed this many days
+  RC_KEEP: '20' # *-rc.<n>: the newest this many per package stay...
+  RC_MIN_AGE_DAYS: '30' # ...and every one younger than this many days
+  CONFIG_DIR: config # the configuration tree whose tags and digests are in use (skill gha-config-deploy)
+  # Packages to sweep, image paths below the owner, space-separated ('api worker', 'team/api'). Empty: every
+  # `image: true` project of .github/affected-map.yml, named by the last segment of its key.
+  RETENTION_PACKAGES: ''
+  # Prefix of those derived names when the images live below the owner, e.g. 'team/' for ghcr.io/<owner>/team.
+  IMAGE_PATH_PREFIX: ''
+
+jobs:
+  retention:
+    name: registry retention
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # the configuration for the in-use protection
+      packages: write # delete package versions
+      pull-requests: read # when the pull request of a pr-<n>-<sha7> image was closed
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The default branch's configuration decides what is in use, whatever ref the run was started on.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Sweep the registry
+        env:
+          GH_TOKEN: ${{ secrets.RETENTION_TOKEN || github.token }}
+          EVENT: ${{ github.event_name }}
+          DRY_RUN_INPUT: ${{ inputs.dry-run }}
+          RETENTION_DELETE: ${{ vars.RETENTION_DELETE }}
+        run: |
+          set -euo pipefail
+          mode=--dry-run
+          if [[ $EVENT == workflow_dispatch && $DRY_RUN_INPUT == false ]] ||
+            [[ $EVENT == schedule && $RETENTION_DELETE == true ]]; then
+            mode=--delete
+          fi
+          echo "event $EVENT: retention.sh $mode"
+          scripts/ci/retention.sh "$mode"

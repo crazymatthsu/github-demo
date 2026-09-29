@@ -1,0 +1,50 @@
+# test-runner.yml: the test process as a compose service on the stack network.
+# (Template of the skill gha-ephemeral-test-envs; no placeholders, adapt the environment block.)
+#
+# CI runs the tests inside this container, so no port is ever published and parallel jobs never clash:
+#   docker compose run --rm test-runner <test command>
+# (COMPOSE_FILE, COMPOSE_PROJECT_NAME, COMPOSE_ENV_FILES and the generated values come from $GITHUB_ENV,
+# written by `stack.sh up`.) The `tools` profile keeps `up --wait` from ever starting it.
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+services:
+  test-runner:
+    # Your CI build image (same toolchain as the build job and laptops), pinned in versions.env.
+    image: ${TEST_RUNNER_IMAGE:?TEST_RUNNER_IMAGE is not set - see versions.env}
+    profiles: [tools]
+    # The caller's UID/GID (stack.sh exports them): files the tests write into the bind-mounted workspace
+    # (reports, build outputs) keep the runner user's ownership (UID 1001 on GitHub-hosted runners).
+    user: "${TEST_RUNNER_UID:-1001}:${TEST_RUNNER_GID:-1001}"
+    init: true
+    working_dir: /workspace
+    environment:
+      HOME: /tmp
+      # The build-tool cache: the host cache directory the workflow restored (TEST_CACHE_DIR), mounted at
+      # /cache read-write. Gradle form (TEST_CACHE_DIR=~/.gradle). Others, with TEST_CACHE_DIR set to the
+      # tool's cache: Maven (~/.m2/repository) MAVEN_OPTS: "-Dmaven.repo.local=/cache"; npm (~/.npm)
+      # npm_config_cache: /cache; pnpm (its store dir) npm_config_store_dir: /cache; Go (~/go/pkg/mod)
+      # GOMODCACHE: /cache; pip (~/.cache/pip) PIP_CACHE_DIR: /cache.
+      GRADLE_USER_HOME: /cache
+      # Endpoints on the stack network: service name and CONTAINER port (a test process on a laptop host
+      # uses localhost and the ports of <stack>.local.yml instead). Adapt to your stacks.
+      TEST_DB_HOST: postgres
+      TEST_DB_PORT: "5432"
+      TEST_DB_PASSWORD: ${DB_PASSWORD:-}
+      # The app under test, when the stack includes it: service `app`, image APP_IMAGE.
+      TEST_APP_URL: http://app:8080
+      APP_IMAGE: ${APP_IMAGE:-}
+      # CI context passed through when set (versioning, CI-only guards in the tests).
+      CI:
+      GITHUB_ACTIONS:
+      GITHUB_REF:
+      GITHUB_SHA:
+      GITHUB_RUN_ID:
+      GITHUB_RUN_ATTEMPT:
+    volumes:
+      - ${TEST_WORKSPACE:?TEST_WORKSPACE is not set - stack.sh up sets it}:/workspace
+      - ${TEST_CACHE_DIR:?TEST_CACHE_DIR is not set - stack.sh up sets it}:/cache
+    # Measure with `docker stats` in CI (stack.sh diagnostics writes stats.txt) and adjust.
+    mem_limit: ${TEST_RUNNER_MEM_LIMIT:-2g}
+    labels: *ci-labels

@@ -1,0 +1,11 @@
+# stacks.yml: the dependency stacks each project declares for its integration tests.
+# (Template of the skill gha-ephemeral-test-envs.)
+#
+# Placeholders:
+#   __PROJECT_ID__   a project id exactly as the CI matrix passes it (the key of the build's `images` output),
+#                    e.g. services/api, or ":app:api" for a Gradle path (quote ids with ':' or '#').
+#
+# `stack.sh up --project <id>` reads this file WITHOUT yq, so keep one flow-style line per project:
+#   <id>: [<stack>, <stack>]      each <stack> is the file <stack>.yml in this directory, service <stack>.
+# A project without a line cannot start a stack (stack.sh exits 2), which is the point: declare it.
+__PROJECT_ID__: [postgres]

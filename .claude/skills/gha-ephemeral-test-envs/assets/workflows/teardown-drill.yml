@@ -1,0 +1,264 @@
+# teardown-drill.yml: scheduled proof that the teardown guarantee holds on a FAILING and on a CANCELLED run;
+# every green PR / main run is the passing-run proof. (Template of the skill gha-ephemeral-test-envs.)
+#
+#   drill-fail     starts a stack and fails a "test" on purpose; teardown and leak check must still succeed
+#   drill-cancel   dispatches a second run of this workflow (drill=cancel-target) that cancels ITSELF once its
+#                  stack is up, waits for it, and checks that its always() teardown and leak check succeeded
+#   cancel-target  only in the dispatched run: stack up, cancel the own run, teardown + leak check in always()
+#   report         the verdict: the run is red only when the teardown guarantee broke
+#
+# Placeholders (list what is left with: grep -rn '__[A-Z0-9_]*__' .github):
+#   __DRILL_PROJECT__  a project id of stacks.yml whose stack the drill starts (containers, named volumes and
+#                      a network: everything that could leak), e.g. services/api
+#   __REGISTRY__       registry of private stack / runner images, e.g. ghcr.io
+#
+# Before relying on it: the file must be on the default branch (schedules and `gh workflow run` use it from
+# there); drill-cancel finds the cancel-target steps by NAME ("Teardown (always)", "Leak check (always)"),
+# so rename them in both places. Third-party actions are pinned to the major that ran green in the
+# reference; update to the current major.
+name: teardown-drill
+run-name: ${{ inputs.drill == 'cancel-target' && format('teardown drill (self-cancel) for run {0}', inputs.parent-run) || 'teardown drill' }}
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      drill:
+        description: Internal - cancel-target runs only the self-cancelling job (dispatched by drill-cancel).
+        type: choice
+        options: [all, cancel-target]
+        default: all
+      parent-run:
+        description: Internal - <run id>-<attempt> of the run that dispatched the drill.
+        type: string
+        default: ''
+
+concurrency:
+  # The dispatched run must not queue behind the run that waits for it: that would deadlock both.
+  group: ${{ inputs.drill == 'cancel-target' && format('teardown-drill-target-{0}', github.run_id) || 'teardown-drill' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DRILL_PROJECT: '__DRILL_PROJECT__'
+
+jobs:
+  drill-fail:
+    if: inputs.drill != 'cancel-target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The failure is the point of the drill and must not turn the run red by itself: the job shows red,
+    # the run stays green, and `report` judges the step outcomes below.
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    env:
+      COMPOSE_PROJECT_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    outputs:
+      forced: ${{ steps.forced.outcome }}
+      down: ${{ steps.down.outcome }}
+      leak: ${{ steps.leak.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Registry login
+        uses: docker/login-action@v4
+        with:
+          registry: __REGISTRY__
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Stack up
+        uses: ./.github/actions/compose-stack
+        with:
+          command: up
+          project: ${{ env.DRILL_PROJECT }}
+
+      - name: Failing test (on purpose)
+        id: forced
+        run: |
+          read -r -a compose <<<"${COMPOSE_BIN:-docker compose}"
+          "${compose[@]}" run --rm test-runner sh -c 'echo "teardown drill: this test fails on purpose"; exit 1'
+
+      - name: Diagnostics before teardown
+        if: failure()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: diagnostics
+          diagnostics-dir: build/ci-logs
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: drill-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-logs/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Teardown (always)
+        id: down
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: down
+
+      - name: Leak check (always)
+        id: leak
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: leak-check
+
+  drill-cancel:
+    if: inputs.drill != 'cancel-target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write # dispatch the drill run, read its jobs
+    outputs:
+      verdict: ${{ steps.judge.outputs.verdict }}
+    steps:
+      - name: Dispatch the self-cancelling drill and judge it
+        id: judge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # This workflow's own file name, whatever it is called (owner/repo/.github/workflows/<file>@<ref>).
+          workflow=${GITHUB_WORKFLOW_REF%@*}
+          workflow=${workflow##*/}
+          # The attempt keeps the title unique when this drill is re-run: the first attempt's target has finished.
+          parent="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          title="teardown drill (self-cancel) for run $parent"
+          # workflow_dispatch is one of the events a GITHUB_TOKEN may trigger.
+          gh workflow run "$workflow" --ref "$GITHUB_REF_NAME" -f drill=cancel-target -f parent-run="$parent"
+          # The dispatch does not return the new run's id: find it by its run-name.
+          id=''
+          for _ in $(seq 1 30); do
+            id=$(gh run list --workflow "$workflow" --event workflow_dispatch --limit 30 --json databaseId,displayTitle \
+              --jq "map(select(.displayTitle == \"$title\"))[0].databaseId // empty")
+            if [[ -n $id ]]; then break; fi
+            sleep 10
+          done
+          [[ -n $id ]] || { echo "::error::the dispatched drill run did not appear"; exit 1; }
+          echo "drill run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
+          for _ in $(seq 1 240); do
+            if [[ $(gh run view "$id" --json status --jq .status) == completed ]]; then break; fi
+            sleep 10
+          done
+          view=$(gh run view "$id" --json conclusion,url,jobs)
+          conclusion=$(jq -r .conclusion <<<"$view")
+          step() { jq -r --arg n "$1" '[.jobs[] | select(.name == "cancel-target") | .steps[] | select(.name == $n) | .conclusion][0] // "missing"' <<<"$view"; }
+          down=$(step "Teardown (always)")
+          leak=$(step "Leak check (always)")
+          {
+            echo "### Teardown drill: cancelled run"
+            echo ""
+            echo "| run | conclusion | teardown | leak check |"
+            echo "|---|---|---|---|"
+            echo "| $(jq -r .url <<<"$view") | $conclusion | $down | $leak |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ $conclusion == cancelled && $down == success && $leak == success ]]; then
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=fail" >> "$GITHUB_OUTPUT"
+            echo "::error::cancelled-run drill: expected conclusion cancelled with teardown and leak check succeeding; got $conclusion / $down / $leak"
+            exit 1
+          fi
+
+  cancel-target:
+    # Only in the run drill-cancel dispatched: stack up, then cancel this very run.
+    if: inputs.drill == 'cancel-target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      actions: write # cancel this run
+    env:
+      COMPOSE_PROJECT_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Registry login
+        uses: docker/login-action@v4
+        with:
+          registry: __REGISTRY__
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Stack up
+        uses: ./.github/actions/compose-stack
+        with:
+          command: up
+          project: ${{ env.DRILL_PROJECT }}
+
+      - name: Cancel this run while the stack is up
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh run cancel "$GITHUB_RUN_ID"
+
+      - name: Wait to be cancelled
+        run: |
+          sleep 600
+          echo "::error::the run was not cancelled"
+          exit 1
+
+      - name: Teardown (always)
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: down
+
+      - name: Leak check (always)
+        if: always()
+        uses: ./.github/actions/compose-stack
+        with:
+          command: leak-check
+
+  report:
+    needs: [drill-fail, drill-cancel]
+    if: always() && inputs.drill != 'cancel-target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict
+        env:
+          FORCED: ${{ needs.drill-fail.outputs.forced }}
+          DOWN: ${{ needs.drill-fail.outputs.down }}
+          LEAK: ${{ needs.drill-fail.outputs.leak }}
+          CANCEL: ${{ needs.drill-cancel.outputs.verdict }}
+          CANCEL_RESULT: ${{ needs.drill-cancel.result }}
+        run: |
+          set -euo pipefail
+          fail_verdict=fail
+          if [[ $FORCED == failure && $DOWN == success && $LEAK == success ]]; then fail_verdict=pass; fi
+          {
+            echo "### Teardown drill"
+            echo ""
+            echo "| drill | verdict | detail |"
+            echo "|---|---|---|"
+            echo "| failing run | $fail_verdict | test: ${FORCED:-none}, teardown: ${DOWN:-none}, leak check: ${LEAK:-none} |"
+            echo "| cancelled run | ${CANCEL:-fail} | job: $CANCEL_RESULT |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          if [[ $fail_verdict != pass ]]; then
+            echo "::error::failing-run drill: expected a failed test followed by a successful teardown and a clean leak check"
+            status=1
+          fi
+          if [[ ${CANCEL:-fail} != pass ]]; then
+            echo "::error::cancelled-run drill failed (see drill-cancel)"
+            status=1
+          fi
+          exit "$status"

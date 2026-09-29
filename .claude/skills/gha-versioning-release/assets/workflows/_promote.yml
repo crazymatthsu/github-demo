@@ -1,0 +1,102 @@
+# _promote.yml — reusable: point tag sets at digests that were already built and tested
+# (skill gha-versioning-release).
+#
+# Promote, never rebuild: every tag is written by digest inside the registry (scripts/ci/retag-image.sh ->
+# `docker buildx imagetools create --prefer-index=false`), every write is verified, version tags are immutable
+# and only the moving tags (main, latest, X, X.Y) may move.
+#
+# Callers:
+#   main.yml     job `publish`, after the tests: re-asserts the build's tag set on exactly the tested digests
+#                (when the build pushes only the immutable tags, this is where `main` moves)
+#   release.yml  job `promote`: adds the release tag set to the tested digests of the release commit
+# Contract:
+#   inputs.images      JSON object key -> image pinned by digest, "repository[:tag]@sha256:<digest>"
+#   inputs.tags        JSON object key -> list of tags to point at that digest
+#   outputs.published  JSON object key -> list of "repository:tag" written or confirmed
+# The caller grants `packages: write` (GHCR): a called workflow never gets more than its caller has.
+# Needs scripts/ci/retag-image.sh and scripts/ci/resolve-image.sh (copied from this skill) in the repository.
+#
+# Placeholders:
+#   __REGISTRY__  registry host to log in to, e.g. ghcr.io (for JFrog or ECR replace the login step)
+# Actions are pinned to a major version: update to the current major when adopting.
+name: _promote
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: JSON object key -> image pinned by digest (repository[:tag]@sha256:...).
+        type: string
+        required: true
+      tags:
+        description: JSON object key -> list of tags to point at that digest.
+        type: string
+        required: true
+    outputs:
+      published:
+        description: JSON object key -> list of published references (repository:tag).
+        value: ${{ jobs.retag.outputs.published }}
+
+permissions:
+  contents: read
+
+jobs:
+  retag:
+    name: retag by digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      published: ${{ steps.retag.outputs.published }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci
+
+      - name: Registry login
+        uses: docker/login-action@v4
+        with:
+          registry: __REGISTRY__
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Retag by digest
+        id: retag
+        env:
+          IMAGES: ${{ inputs.images }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          jq -e 'type == "object" and length > 0' <<<"$IMAGES" >/dev/null ||
+            { echo "::error::images must be a non-empty JSON object"; exit 2; }
+          jq -e 'type == "object"' <<<"$TAGS" >/dev/null || { echo "::error::tags must be a JSON object"; exit 2; }
+          published='{}'
+          {
+            echo "### Published"
+            echo ""
+            echo "| key | digest | tag | action |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r key pinned; do
+            mapfile -t wanted < <(jq -r --arg k "$key" '.[$k] // [] | .[]' <<<"$TAGS")
+            if [[ ${#wanted[@]} -eq 0 ]]; then
+              echo "::error::no tags given for $key"
+              exit 2
+            fi
+            repo=${pinned%@*}
+            [[ ${repo##*/} != *:* ]] || repo=${repo%:*} # repository:tag@digest -> repository
+            status=0
+            result=$(scripts/ci/retag-image.sh "$pinned" "${wanted[@]}") || status=$?
+            while IFS=$'\t' read -r tag action; do
+              [[ -n $tag ]] || continue
+              echo "| \`$key\` | \`${pinned#*@}\` | \`$tag\` | $action |" >> "$GITHUB_STEP_SUMMARY"
+              published=$(jq -c --arg k "$key" --arg r "$repo:$tag" '.[$k] += [$r]' <<<"$published")
+            done <<<"$result"
+            if [[ $status -ne 0 ]]; then
+              echo "::error::retagging $key failed (exit $status; 3 = an immutable tag already points at another digest)"
+              exit "$status"
+            fi
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$IMAGES")
+          echo "published=$published" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,104 @@
+# Main pipeline: everything, on every merge.
+#
+#   build (every project, images pushed with the pre-release tags) -> integration-test (per project)
+#   and deploy-test (the chart in kind) -> publish (re-assert the tags on exactly the tested digests)
+#   -> deploy-dev (main only)
+#   -> the deploy writes the deployed tag back to the config tree as a `[skip ci]` commit.
+# hotfix/** branches run the same pipeline without deploy-dev.
+#
+# Loop guard: the write-back commit carries `[skip ci]`, every root job skips runs whose actor is the
+# write-back identity, and such runs get their own concurrency group so they never displace a queued merge.
+# (With GITHUB_TOKEN a bot push starts no run at all; the guard matters once a GitHub App token pushes.)
+#
+# Placeholders:
+#   __BOT_LOGIN__     the identity that pushes write-back commits, e.g. github-actions[bot] or <app-slug>[bot]
+#   __APP_PROJECT__   deploy-test only: the key of the build's `images` output whose image the chart runs
+#
+# Optional jobs (delete them, their `needs:` entries and the conditions that name them if not adopted):
+#   integration-test  skill gha-ephemeral-test-envs (_integration-test.yml)
+#   deploy-test       skill gha-ephemeral-test-envs (_kind-deploy.yml), for repositories with Helm charts
+#   publish           skill gha-versioning-release (_promote.yml)
+#   deploy-dev        skill gha-config-deploy (_deploy-dev.yml)
+# A system test (the integration workflow at a wider level) goes next to integration-test, and publish
+# needs it too.
+name: main
+
+on:
+  push:
+    branches: [main, 'hotfix/**']
+
+concurrency:
+  # Runs queue per branch and are never cancelled: a cancelled deploy is worse than a late one.
+  group: ${{ github.actor == '__BOT_LOGIN__' && format('main-bot-{0}', github.run_id) || format('main-{0}', github.ref_name) }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.actor != '__BOT_LOGIN__'
+    uses: ./.github/workflows/_build.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      projects: all
+      build-images: true
+      push-images: true
+      ignore-head-tags: true
+
+  integration-test:
+    needs: build
+    if: needs.build.outputs.it-projects != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.build.outputs.it-projects) }}
+    uses: ./.github/workflows/_integration-test.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      project: ${{ matrix.project }}
+      images: ${{ needs.build.outputs.images }}
+      retention-days: 14
+
+  deploy-test:
+    needs: build
+    if: contains(needs.build.outputs.images, '"__APP_PROJECT__"')
+    uses: ./.github/workflows/_kind-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      images: ${{ needs.build.outputs.images }}
+      retention-days: 14
+
+  publish:
+    # Nothing downstream (deploys, releases) consumes an image before these gates have passed.
+    needs: [build, integration-test, deploy-test]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success'
+      && (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped')
+      && (needs.deploy-test.result == 'success' || needs.deploy-test.result == 'skipped') }}
+    uses: ./.github/workflows/_promote.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      images: ${{ needs.build.outputs.images }}
+      tags: ${{ needs.build.outputs.image-tags }}
+
+  deploy-dev:
+    needs: [build, publish]
+    if: github.ref == 'refs/heads/main' && github.actor != '__BOT_LOGIN__'
+    uses: ./.github/workflows/_deploy-dev.yml
+    permissions:
+      contents: write
+      deployments: write
+      packages: read
+    with:
+      tag: ${{ needs.build.outputs.version }}
+      images: ${{ needs.build.outputs.images }}
+    secrets: inherit
