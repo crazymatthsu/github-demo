@@ -31,6 +31,7 @@ else
 fi
 [ -f "$SUT" ] || { echo "config-lint-test: $SUT not found (pass its path)" >&2; exit 2; }
 SUT=$(cd "$(dirname "$SUT")" && pwd)/$(basename "$SUT")
+EXAMPLE=$HERE/../config-lint.example.yml # in the skill's layout only
 command -v python3 >/dev/null 2>&1 || { echo "config-lint-test: python3 is needed" >&2; exit 5; }
 YQ_BIN=${YQ:-yq}
 READERS=()
@@ -132,7 +133,8 @@ instance() { # instance <env> <instance> <tag> <host port> [<digest>]: applicati
   values "$1" "$2" "$3" "${5:-}"
   put "config/$1/payments/api/$2/compose.env" "# compose variables of $1/payments/api/$2" \
     "IMAGE_REPO=ghcr.io/acme" "IMAGE_TAG=$3" "APP_ENV=$1" "APP_FLOW=payments" "APP_NAME=api" "APP_INSTANCE=$2" \
-    "JAVA_OPTS=-XX:MaxRAMPercentage=75" "TZ=UTC" "HTTP_HOST_PORT=$4" "MEM_LIMIT=1g"
+    "JAVA_OPTS=\"-XX:MaxRAMPercentage=75\" # quoted, then a comment: compose reads the value only" "TZ=UTC" \
+    "HTTP_HOST_PORT=$4" "MEM_LIMIT=1g"
 }
 inventory() { # inventory <kind of ledger> [pool|nopool]: config/dev/payments/workflows-config.yml
   put config/dev/payments/workflows-config.yml "env: dev" "flow: payments"
@@ -201,7 +203,7 @@ logged() { # logged <case> <log> <text>...: every text in $WORK/<log>.log
   local name=$1 log=$WORK/$2.log text
   shift 2
   for text in "$@"; do
-    if ! grep -qF -- "$text" "$log"; then fail "$name" "$2.log lacks: $text ($(cat "$log"))"; return 0; fi
+    if ! grep -qF -- "$text" "$log"; then fail "$name" "${log##*/} lacks: $text ($(cat "$log"))"; return 0; fi
   done
   pass "$name"
 }
@@ -214,7 +216,7 @@ suite() {
   # the good tree, rendered through the stubs
   fixture
   lint
-  expect good-tree 0 '!ERROR' "(YAML read with $READER)" \
+  expect good-tree 0 '!ERROR' '!WARN check 4' "(YAML read with $READER)" \
     "WARN check 10  $q/refunds/values.yaml: prod records no release yet" \
     "TODO check 7  config: " "TODO check 8  config: " "TODO check 13  config: " \
     "INFO check 12  build/rendered: kubeconform: 4 valid, 0 invalid"
@@ -530,6 +532,20 @@ suite() {
   append "$p/ledger/values.yaml" "  OTEL_SERVICE_NAME: api-ledger"
   lint --no-render
   expect tag-var-and-values-env-allow 0 '!ERROR'
+
+  fixture # a finding is one line, whatever a value holds: YAML decodes \n in a double-quoted string
+  values dev ledger '0.2.0\n::warning::forged'
+  lint --no-render
+  if [ "$RC" -eq 1 ] && grep -qF "image.tag is '0.2.0\n::warning::forged' but" "$WORK/out" && ! grep -q '^::' "$WORK/out"
+  then pass one-line-per-finding
+  else fail one-line-per-finding "exit $RC, the tag is not shown escaped, or a line starts with ::"; fi
+
+  if [ -f "$EXAMPLE" ]; then # the skill's documented example config (absent once copied into a repository)
+    fixture
+    cp "$EXAMPLE" "$T/.github/config-lint.yml"
+    lint --no-render
+    expect example-config 0 '!ERROR' "TODO check 6  config: compose renderings not checked: set compose_file"
+  fi
 
   # usage
   fixture

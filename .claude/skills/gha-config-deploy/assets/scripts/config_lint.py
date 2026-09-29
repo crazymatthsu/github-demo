@@ -264,10 +264,10 @@ class Lint:
         self.skip, self.findings, self.env_files, self.tmp = set(cfg["checks"]["skip"]), set(), {}, None
 
     # --- helpers --------------------------------------------------------------------------------------------
-    def add(self, severity, check, path, message, always=False):
-        """Records a finding; a skipped check reports nothing unless always (YAML that does not parse)."""
-        if check not in self.skip or always:
-            self.findings.add((self.rel(path), check, severity, message))
+    def add(self, severity, check, path, message):
+        """Records a finding, on one line whatever the tree's values hold."""
+        message = message.replace("\r", "\\r").replace("\n", "\\n")
+        self.findings.add((self.rel(path), check, severity, message))
 
     def error(self, check, path, message):
         self.add("ERROR", check, path, message)
@@ -300,9 +300,10 @@ class Lint:
                     problems.append(f"line {number}: not KEY=VALUE with an UPPER_SNAKE_CASE key")
                 elif key in pairs:
                     problems.append(f"line {number}: {key} is defined twice")
-                else:  # like compose: strip matching quotes, or a " #" comment after an unquoted value
-                    quoted = len(value) > 1 and value[0] in "\"'" and value.endswith(value[0])
-                    pairs[key] = value[1:-1] if quoted else value.split(" #", 1)[0].strip()
+                elif value[:1] in ("'", '"') and value[:1] in value[1:]:  # like compose: "value" # comment
+                    pairs[key] = value[1:value.index(value[0], 1)]
+                else:  # and an unquoted value ends before " #"
+                    pairs[key] = value.split(" #", 1)[0].strip()
             self.env_files[path] = (pairs, problems)
         return self.env_files[path]
 
@@ -310,6 +311,10 @@ class Lint:
         """The pairs of an instance's compose.env; None when compose does not run its env or it is missing."""
         path = inst.path / "compose.env"
         return self.env_file(path)[0] if self.applies("compose", inst.env) and path.is_file() else None
+
+    def failure(self, result):
+        """last_error() of a failed command, with the repository root cut from the paths it names."""
+        return last_error(result).replace(f"{self.root}/", "")
 
     def tool_missing(self, check, message):
         """A missing tool is an ERROR in CI (CI=true) and a WARN on a laptop."""
@@ -385,7 +390,7 @@ class Lint:
             if path.is_file() and path.suffix in (".yml", ".yaml"):
                 data, error = self.reader.load(path)
                 if error or not isinstance(data, (dict, type(None))):
-                    self.add("ERROR", 3, path, f"does not parse: {error}" if error else "must be a mapping", True)
+                    self.add("ERROR", 3, path, f"does not parse: {error}" if error else "must be a mapping")
 
     # --- checks ---------------------------------------------------------------------------------------------
     def check_naming(self):
@@ -619,7 +624,7 @@ class Lint:
             result = run([docker, "compose", "-p", f"lint-{inst.env}-{inst.flow}-{inst.app}-{inst.name}", "--env-file",
                           str(env_path), "-f", str(compose_file), "config", "--quiet"], cwd=self.root, env=env)
             if result is None or result.returncode != 0:
-                self.error(6, env_path, f"docker compose config failed: {last_error(result)}")
+                self.error(6, env_path, f"docker compose config failed: {self.failure(result)}")
 
     def check_secrets(self):
         """Check 9: secret values in every file of the tree, secret-named keys in every YAML file."""
@@ -809,16 +814,16 @@ class Lint:
                 result = run(["bash", str(script), inst.env, inst.flow, inst.app, inst.name, "--mode", mode, *extra],
                              cwd=self.root, env=env)
                 if result is not None and result.returncode == 5:
-                    return self.tool_missing(12, f"the Helm adapter cannot run: {last_error(result)}")
+                    return self.tool_missing(12, f"the Helm adapter cannot run: {self.failure(result)}")
                 if result is None or result.returncode != 0:
-                    self.error(12, inst.path, f"helm {mode} failed: {last_error(result)}")
+                    self.error(12, inst.path, f"helm {mode} failed: {self.failure(result)}")
                     break
             else:
                 rendered[str(out)] = inst
-        if rendered:
-            self.kubeconform(rendered, out_dir)
+        if rendered:  # findings that belong to no instance point at the kept renderings, else at the tree
+            self.kubeconform(rendered, out_dir if self.report else self.tree)
 
-    def kubeconform(self, rendered, out_dir):
+    def kubeconform(self, rendered, where):
         """kubeconform -strict -summary on the rendered releases; each finding on the instance that rendered it."""
         binary = os.environ.get("KUBECONFORM_BIN", "kubeconform")
         if not shutil.which(binary):
@@ -831,15 +836,15 @@ class Lint:
         except json.JSONDecodeError:
             report = None
         if not isinstance(report, dict):
-            return self.error(12, out_dir, f"kubeconform failed: {last_error(result)}")
+            return self.error(12, where, f"kubeconform failed: {self.failure(result)}")
         for res in report.get("resources") or []:
             if res.get("status") in ("statusInvalid", "statusError"):
                 errors = "; ".join(f"{e.get('path')}: {e.get('msg')}" for e in res.get("validationErrors") or [])
                 inst = rendered.get(res.get("filename"))
-                self.error(12, inst.path if inst else out_dir,
+                self.error(12, inst.path if inst else where,
                            f"kubeconform: {res.get('kind')} {res.get('name')}: {errors or res.get('msg')}")
         count = report.get("summary") or {}
-        self.add("INFO", 12, out_dir, "kubeconform: " + ", ".join(f"{count.get(k, 0)} {k}" for k in
+        self.add("INFO", 12, where, "kubeconform: " + ", ".join(f"{count.get(k, 0)} {k}" for k in
                                                                    ("valid", "invalid", "errors", "skipped")))
 
     # --- the run --------------------------------------------------------------------------------------------
@@ -873,7 +878,7 @@ class Lint:
         for number in range(1, 14):
             reason = self.not_run(number)
             if reason:
-                self.add(reason[0], number, self.tree, reason[1], always=True)
+                self.add(reason[0], number, self.tree, reason[1])
             else:
                 checks[number]()
         if self.tmp:

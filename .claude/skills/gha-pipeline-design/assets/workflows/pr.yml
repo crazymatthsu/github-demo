@@ -15,8 +15,8 @@
 #   integration-test  skill gha-ephemeral-test-envs (_integration-test.yml)
 #   deploy-test       skill gha-ephemeral-test-envs (_kind-deploy.yml), for repos with Helm charts; raised by
 #                     the detector's deploy-test flag (chart and values paths)
-#   config-lint       skill gha-config-deploy: add a job that runs your config linter on every non-docs change
-#                     (`if: needs.detect-affected.outputs.docs-only != 'true'`) and add it to the gate's needs
+#   config-lint       skill gha-config-deploy (_config-lint.yml): add a job `config-lint` that calls it with
+#                     `if: needs.detect-affected.outputs.docs-only != 'true'`, and add it to the gate's needs
 name: pr
 
 on:

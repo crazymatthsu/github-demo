@@ -1,0 +1,103 @@
+# .github/config-lint.yml — the repository's settings for scripts/ci/config_lint.py (skill gha-config-deploy):
+# which envs and flows exist, how instances run (Helm, compose or both), where charts and compose files live, and
+# which checks are deliberately off. Every key is optional and a missing key takes the default in [brackets];
+# without this file the linter runs on the defaults and warns that the env and flow allow-lists are off. Paths are
+# relative to the repository root. The checks and their numbers, and which keys fit which deployment shape:
+# references/config-lint-checks.md of the skill ("Which checks apply: trimming the catalogue").
+
+# The config tree. [config]
+config_dir: config
+
+# Allow-lists of the <env> and <flow> directory names (check 1): a typo would otherwise create a new env, or a
+# new namespace and owner. [] allows any lower-case kebab name. [] (edit these two)
+envs: [local, dev, qa, prod]
+flows: [payments]
+
+# The deployable apps (check 2): every <app> directory must be one of them. [] = an app is deployable when its
+# chart (helm) and compose file (compose) exist; list them when one chart serves every app (no {app} in
+# chart_dir) or when the directories must match your build's projects exactly. []
+apps: []
+
+# Envs that deploy-dev deploys and writes back: each of their flows needs an inventory (checks 3 and 11). Keep it
+# equal to the Guard of _deploy-dev.yml and WRITE_BACK_ENV_PATTERN. [^([a-z][a-z0-9]*-)?dev$]
+dev_env_pattern: '^([a-z][a-z0-9]*-)?dev$'
+# Envs that must be reproducible (check 10): image.tag X.Y.Z plus image.digest sha256:<64 hex>, and IMAGE_TAG
+# X.Y.Z[@sha256:<64 hex>] in compose.env; "" (never deployed there) warns. Other envs take any valid tag.
+# [^([a-z][a-z0-9]*-)?(qa|staging|prod)$]
+pinned_env_pattern: '^([a-z][a-z0-9]*-)?(qa|staging|prod)$'
+
+# How the instances run. It decides the files check 3 requires and whether checks 5, 6 and 12 apply:
+#   [helm]            clusters only: values.yaml per instance and app-common, compose.env nowhere
+#   [compose]         hosts only: compose.env per instance, values.yaml nowhere, no Helm renders
+#   [helm, compose]   every instance has both renderings in every env, as in the reference [default]
+#   {helm: <env regex>, compose: <env regex>}: per env, e.g. Helm everywhere and compose on laptops and dev
+#                     hosts only: {helm: '.*', compose: '^(local|([a-z][a-z0-9]*-)?dev)$'}
+# A runtime's file in an env that runtime does not run is an error: nothing would read it.
+runtimes: [helm, compose]
+
+# true: the apps read the application.yml layers (config-tree.md section 2): every instance and app-common holds
+# one, and values.yaml env: and compose.env hold only the deploy-time variables of config-tree.md section 3.
+# false: the apps read no config file, their environment is their configuration: application.yml is optional,
+# env: and compose.env may hold any UPPER_SNAKE_CASE variable that is not a secret (compose knobs stay out of
+# env:), env.APP_* are checked only where present (the identity map stays required), check 7 does not apply.
+# [true]
+app_config: true
+
+# The chart of an app, {app} = the <app> directory (checks 2 and 12). The linter hands it to the Helm adapter as
+# HELM_CHART_DIR: keep it equal to what the deploy jobs use. [deploy/helm/{app}]
+chart_dir: deploy/helm/{app}
+# The compose file of an app (checks 2 and 6), e.g. services/{app}/docker/docker-compose.yml. '' leaves check 6
+# a TODO. ['']
+compose_file: ''
+# What the compose wrapper (run-compose.sh) sets, for check 6, which runs per instance
+#   docker compose -p lint-<env>-<flow>-<app>-<instance> --env-file <instance>/compose.env -f <compose_file>
+#     config --quiet
+# with only PATH, HOME, DOCKER_*, XDG_* and LC_* of the shell, these variables, and a placeholder for every
+# variable of the compose file that looks like a secret (the host passes those). Fields: {config} (the absolute
+# path of config_dir), {env}, {flow}, {app}, {instance}. These names may never appear in compose.env (check 5).
+# [the three below]
+wrapper_vars:
+  CONFIG_DIR: '{config}/{env}/{flow}/{app}/{instance}'
+  COMMON_DIR: '{config}/{env}/{flow}/{app}/app-common'
+  PROJECT: '{env}-{flow}-{app}-{instance}'
+
+# Envs in which every deployable app must have a directory (check 2), e.g. [local] when laptops run everything.
+# []
+complete_envs: []
+
+# More variables allowed in compose.env (check 5) and in values.yaml env: (check 4) than config-tree.md section 3
+# lists: APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE, JAVA_OPTS, NODE_OPTIONS, GOMEMLIMIT, TZ and LOG_LEVEL_ROOT in
+# both; IMAGE_REPO, the tag variable, *_HOST_PORT, LOGS_DIR, DATA_DIR and MEM_LIMIT in compose.env only. Names or
+# fnmatch patterns ('FEATURE_*'). An entry also admits a name that looks like a secret: review such entries. []
+compose_env_allow: []
+values_env_allow: []
+# YAML keys that look like secrets but hold none (check 9), as key names or dotted paths, e.g. [app.cache.token].
+# []
+secret_keys_allow: []
+
+# The tag variable of compose.env: keep it equal to WRITE_BACK_TAG_VAR and SET_IMAGE_TAG_VAR. [IMAGE_TAG]
+tag_var: IMAGE_TAG
+
+# The per-flow deploy inventory of a dev env, <config_dir>/<env>/<flow>/<inventory> (checks 3 and 11). '' = no
+# dev inventory, e.g. when a GitOps controller deploys dev too: check 11 does not apply. [workflows-config.yml]
+inventory: workflows-config.yml
+
+# Check 12 runs, per instance whose env runs Helm, from the repository root:
+#   bash <helm_deploy_script> <env> <flow> <app> <instance> --mode lint
+#   bash <helm_deploy_script> <env> <flow> <app> <instance> --mode template --render-out <rendered file>
+# with HELM_CHART_DIR=<chart_dir> and HELM_CONFIG_DIR=<config_dir>. Use the skill's helm-deploy-instance.sh, the
+# script the deploys run, so that lint renders exactly what they install; its exit 5 (helm missing) warns on a
+# laptop and fails with CI=true. [scripts/ci/helm-deploy-instance.sh]
+helm_deploy_script: scripts/ci/helm-deploy-instance.sh
+# kubeconform -kubernetes-version: the version of your clusters, e.g. '1.33.0'. '' = kubeconform's default. ['']
+kubernetes_version: ''
+# More kubeconform arguments. CRDs (ServiceMonitor, ExternalSecret) have no schema in the default location: add
+# a -schema-location for them (e.g. the datreeio CRDs-catalog) or -ignore-missing-schemas. kubeconform downloads
+# the schemas; offline, point -schema-location at a local copy. []
+kubeconform_args: []
+
+# Checks that deliberately do not run, 1 to 13; each prints one INFO line so the skip stays visible. For example
+# 13 while no GitOps controller is adopted, or 7 and 8 until you write them. YAML that does not parse is reported
+# even with 3 in this list: no other check can read the file. []
+checks:
+  skip: []

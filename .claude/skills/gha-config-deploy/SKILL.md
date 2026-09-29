@@ -10,8 +10,8 @@ description: 'Configuration as code and deployment for GitHub Actions: a config 
 A proven way to keep every environment's configuration and deployed version in git, lint it on every pull
 request, deploy dev automatically after `main` passes and record what was deployed, and promote to qa and prod
 only through reviewed pull requests. You get the dev deploy workflow and the qa / prod promotion workflows, tested
-scripts (write-back, bump, one Helm release per instance), an example config tree, a CODEOWNERS file, and
-references for the tree, the lint checks, the deploy inventory and promotion.
+scripts (config lint, write-back, bump, one Helm release per instance), an example config tree, a CODEOWNERS
+file, and references for the tree, the lint checks, the deploy inventory and promotion.
 
 ## How the pieces fit
 
@@ -112,9 +112,12 @@ afterwards. Either way the tree in git is what runs, and config lint has checked
    annotation and mount an existing `Secret`. Give laptops, CI and hosts one wrapper,
    `run-compose.sh <env> <flow> <app> <instance> <command>`, that validates the tuple and refuses qa and prod
    (`references/config-tree.md` sections 2 and 7).
-5. **Config lint.** Implement the catalogue of `references/config-lint-checks.md` in the repository's language,
-   runnable locally, and call it from the PR and main pipelines as a job that feeds the single gate check (see
-   gha-pipeline-design); never a path-filtered required check.
+5. **Config lint.** Copy `assets/scripts/config_lint.py` to `scripts/ci/`, `config-lint-test.sh` to
+   `scripts/test/`, `assets/config-lint.example.yml` to `.github/config-lint.yml` and
+   `assets/workflows/_config-lint.yml` to `.github/workflows/`; set the keys for the repository's deployment
+   shape (Helm only, compose only, both; apps with or without `application.yml`: `references/config-lint-checks.md`
+   section 4) instead of editing the script, and call `_config-lint.yml` from the PR and main pipelines as a job
+   that feeds the single gate check (see gha-pipeline-design), never a path-filtered required check.
 6. **Deployers.** The Helm deployer ships: `assets/scripts/helm-deploy-instance.sh` builds one release per
    instance from the tree (values layers, tag, optional `appConfig` / `appFiles` layers) on top of
    `helm-release.sh` (skill gha-ephemeral-test-envs); replace its `__HELM_CHART_DIR__` default. Write the
@@ -166,6 +169,10 @@ if grep -rnE '__[A-Z][A-Z0-9_]*__' config; then echo "placeholders left" >&2; fi
 | `assets/scripts/helm-deploy-instance-test.sh` | 21 cases with a stub `helm-release.sh` (flag list, layers, env guard, exit codes), one with the real one in `--dry-run` when found | nothing: install as `scripts/test/helm-deploy-instance-test.sh` |
 | `assets/scripts/set-image-tag.sh` | The edit of a bump PR: `image.tag` (and `image.digest`, or removes a stale one) in `values.yaml` and `IMAGE_TAG` in `compose.env` of every instance of the given apps in one env, or `--from` another env; prints the changed files; idempotent. The `__BUMP_COMMAND__` of release.yml (gha-versioning-release) and the next-env bump of `_deploy-env.yml` | nothing: `SET_IMAGE_TAG_*` variables; `IMAGE_DIGESTS` carries the digests |
 | `assets/scripts/set-image-tag-test.sh` | 19 cases on a throwaway tree | nothing: install as `scripts/test/set-image-tag-test.sh` |
+| `assets/scripts/config_lint.py` | Config lint as a required check: checks 1 to 6 and 9 to 12 of `references/config-lint-checks.md` for the deployment shape `.github/config-lint.yml` declares (Helm, compose or both, per env; apps with or without `application.yml`; with or without a dev inventory); one TODO line each for 7, 8, 13 and one INFO line per skipped check; renders every instance through `helm-deploy-instance.sh`, then kubeconform; `CI=true` makes a missing tool an error. Python 3.8+, PyYAML or yq. Exit 0/1/2, `--help` | nothing: the settings live in `.github/config-lint.yml` |
+| `assets/config-lint.example.yml` | The linter's settings, every key documented: env and flow allow-lists, dev and pinned env patterns, `runtimes`, `app_config`, chart and compose paths, wrapper variables, variable and secret-key allow-lists, inventory name, Helm adapter, kubeconform, `checks.skip` | `envs`, `flows`, `runtimes`, `app_config`, paths; section 4 of the reference maps each deployment shape to its keys |
+| `assets/scripts/config-lint-test.sh` | 61 fixture cases (a good tree, broken variants per rule, every deployment shape, stubbed adapter, kubeconform and docker), run once with PyYAML and once with yq | nothing: install as `scripts/test/config-lint-test.sh` |
+| `assets/workflows/_config-lint.yml` | Reusable config-lint job: pinned helm and kubeconform via setup-kube-tools, the linter with `CI=true`, findings in the job summary and as annotations, report and rendered releases as an artifact; feeds the gate | input `kube-tools: ''` when no env runs Helm |
 | `assets/config-example/` | Two layers of `_common`, one flow inventory with a pool, one app with `app-common` and two instances (one compose, one helm), in yq layout | tokens `__DEV_ENV__`, `__FLOW__`, `__APP__`, `__INSTANCE_A__`, `__INSTANCE_B__`, `__IMAGE_REPO__`, `__IMAGE_TAG__`, `__HOST_1__`, `__HOST_2__`, `__KUBE_CONTEXT__`; keys under `app:` are illustrative |
 | `assets/CODEOWNERS.example` | Code, CI, config, per-flow and qa / prod ownership, last match wins | `__ORG__` and the team tokens; one line per flow |
 
@@ -269,7 +276,7 @@ for t in scripts/test/*-test.sh; do          # write-back, set-image-tag, helm-d
   bash "$t" || echo "FAILED: $t"            # need git, jq and mikefarah yq v4; every case must pass
 done
 scripts/ci/helm-deploy-instance.sh <dev env> <flow> <app> <instance> --mode template   # renders one release
-./gradlew configLint                        # or your linter: zero ERROR findings
+python3 scripts/ci/config_lint.py           # zero ERROR findings (bash scripts/test/config-lint-test.sh tests it)
 WRITE_BACK_PUSH=false scripts/ci/write-back-tag.sh <dev env> 0.0.0-check   # what a write-back would commit
 t=$(mktemp); for f in $(find config -name '*.yml' -o -name '*.yaml'); do   # every YAML file in yq's layout
   cp "$f" "$t"; yq -i . "$t"; cmp -s "$f" "$t" || echo "not in yq layout: $f"; done
@@ -305,7 +312,8 @@ helm targets into a kind cluster created in the job, compose targets through the
 (no real boxes existed), and the bot write-back of tag and placement with the loop guard. Not proven there: SSH
 to real boxes, the GitHub App identity, a qa bump PR against an existing qa tree, lint checks 7 and 8, and a
 GitOps controller. The templates are generalised rewrites and depend on nothing in that repository.
-`deploy.yml`, `_deploy-env.yml`, `set-image-tag.sh --from` and the shipped `helm-deploy-instance.sh` came later,
-from an end-to-end trial of these skills on another repository (which had to write them itself): their scripts
-are covered by the tests above and the workflows by actionlint and local runs of their steps, but no promoted
-env has been deployed with them on GitHub yet.
+`deploy.yml`, `_deploy-env.yml`, `set-image-tag.sh --from`, the shipped `helm-deploy-instance.sh` and
+`config_lint.py` came later, from an end-to-end trial of these skills on another repository (which had to write
+them itself): their scripts are covered by the tests above (the linter also end to end with real Helm 4,
+kubeconform and docker compose on the example tree) and the workflows by actionlint and local runs of their
+steps, but no promoted env has been deployed with them on GitHub yet.
