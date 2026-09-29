@@ -102,6 +102,7 @@ expect "tag at HEAD, main: image tags" "1.4.2,sha-$s" "$(field IMAGE_TAGS "$out"
 expect "tag at HEAD, laptop: kind" release "$(gv -- -C "$R" --field kind)"
 expect "tag at HEAD, tag ref (release workflow): version" "1.4.2" \
   "$(gv GITHUB_ACTIONS=true GITHUB_REF=refs/tags/v1.4.2 -- -C "$R" --field version)"
+expect "tag at HEAD wins over a PR context" release "$(gv GITHUB_ACTIONS=true GITHUB_REF=refs/pull/5/merge -- -C "$R" --field kind)"
 echo change >>"$R/a.txt"
 out=$(gv -- -C "$R")
 expect "tag at HEAD, dirty tree, laptop: version" "1.4.3-local.0.$s.dirty" "$(field VERSION "$out")"
@@ -236,20 +237,33 @@ out=$(gv "${main_ci[@]}" -- -C "$R" --ignore-head-tags)
 expect "--ignore-head-tags: the pre-release main built before the tag" "1.5.0-rc.2:1.5.0-rc.2,sha-$s,main:v1.4.2" \
   "$(field VERSION "$out"):$(field IMAGE_TAGS "$out"):$(field VERSION_BASE_TAG "$out")"
 
-echo "# the highest release tag wins after an older hotfix line is merged back"
+echo "# the highest release tag wins, not the nearest one"
 new_repo merged
 commit "feat: a"
 atag v1.4.2
 commit "feat: b"
 atag v1.5.0
 git -C "$R" checkout -q -b hotfix/1.4.x v1.4.2
-commit "fix: h" h.txt
+commit "fix: h1" h.txt
+commit "fix: h2" h.txt
+commit "fix: h3" h.txt
 atag v1.4.3
 git -C "$R" checkout -q main
 git -C "$R" merge -q --no-ff -m "Merge branch 'hotfix/1.4.x'" hotfix/1.4.x
 out=$(gv "${main_ci[@]}" -- -C "$R")
-expect "merged older hotfix: base and version" "v1.5.0:1.5.1-rc.2" \
+# git describe picks v1.4.3 here (fewer commits away) and would give 1.5.0-rc.2, a pre-release of a release.
+expect "older hotfix line merged back: base and version" "v1.5.0:1.5.1-rc.4" \
   "$(field VERSION_BASE_TAG "$out"):$(field VERSION "$out")"
+new_repo majors
+commit "feat: a"
+atag v1.9.0
+commit "feat!: b"
+atag v2.0.0
+commit "fix: c"
+atag v0.9.0
+commit "fix: d"
+expect "highest across majors, even when a lower tag is nearer" "v2.0.0:2.0.1-rc.2" \
+  "$(gv "${main_ci[@]}" -- -C "$R" --field base-tag):$(gv "${main_ci[@]}" -- -C "$R" --field version)"
 
 echo "# shallow clones, not a repository"
 git clone -q --depth 1 "file://$tmp/tagged" "$tmp/shallow"

@@ -46,28 +46,29 @@ for the bot:
 ```yaml
 concurrency:
   # One queue per branch, never cancelled; runs started by the bot get a group of their own.
-  group: ${{ github.actor == '__BOT_ACTOR__' && format('main-bot-{0}', github.run_id) || format('main-{0}', github.ref_name) }}
+  group: ${{ github.actor == '__BOT_LOGIN__' && format('main-bot-{0}', github.run_id) || format('main-{0}', github.ref_name) }}
   cancel-in-progress: false
 
 jobs:
   # build, tests, publish ... (gha-pipeline-design)
   deploy-dev:
     needs: [build, publish]
-    if: github.ref == 'refs/heads/main' && github.actor != '__BOT_ACTOR__'
+    if: github.ref == 'refs/heads/main' && github.actor != '__BOT_LOGIN__'
     uses: ./.github/workflows/_deploy-dev.yml
     permissions:
       contents: write     # the write-back commit
       deployments: write  # the GitHub Deployment record
       packages: read
     with:
-      env: __DEV_ENV__
       tag: ${{ needs.build.outputs.version }}
       images: ${{ needs.build.outputs.images }}
+      # env: defaults to the dev env set in _deploy-dev.yml; pass it to deploy another dev env
     secrets: inherit
 ```
 
-`__BOT_ACTOR__` is the login of the identity that pushes the write-back: `github-actions[bot]` with
-`GITHUB_TOKEN`, `<app-slug>[bot]` with a GitHub App.
+This is the `deploy-dev` job of gha-pipeline-design's `main.yml` template. `__BOT_LOGIN__` is the login of the
+identity that pushes the write-back: `github-actions[bot]` with `GITHUB_TOKEN`, `<app-slug>[bot]` with a GitHub
+App.
 
 - Deploy only what passed: `deploy-dev` needs the job that published the tested digest. A config-only merge still
   runs the pipeline and deploys (the affected-builds map may skip the build and deploy the last published tag).
