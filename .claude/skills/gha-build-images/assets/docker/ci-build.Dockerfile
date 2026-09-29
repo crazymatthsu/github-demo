@@ -18,8 +18,8 @@
 # key would fail hadolint DL3048).
 #
 # Build context = the directory holding the CA bundle; nothing else is copied:
-#   docker buildx build -f docker/base/ci-build.Dockerfile -t <prefix>/ci-build:dev --load docker/ca
-#   podman build --format docker -f docker/base/ci-build.Dockerfile -t <prefix>/ci-build:dev docker/ca
+#   docker buildx build -f docker/base/ci-build.Dockerfile -t <namespace>/base/ci-build:dev --load docker/ca
+#   podman build --format docker -f docker/base/ci-build.Dockerfile -t <namespace>/base/ci-build:dev docker/ca
 # Other toolchains (Debian or Ubuntu images only: the RUN steps use apt), for example
 #   --build-arg TOOLCHAIN_IMAGE=docker.io/library/maven:3-eclipse-temurin-21   (or node:22, python:3.13,
 #   golang:1.25 under docker.io/library/). Registries are fully qualified because Podman requires it.

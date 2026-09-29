@@ -1,8 +1,11 @@
-# .github/actions/setup-kube-tools: pinned kind, kubectl, helm and kubeconform, checksum-verified.
-# (Template of the skill gha-ephemeral-test-envs; no placeholders: the defaults are the skill's layout.)
-# The same action ships with gha-build-images (identical inputs and behaviour): keep a single copy per
-# repository. The pins live in test-infra/kind/versions.env (or ci/versions.env when the CI build image
-# carries the same tools); downloads are checked against the SHA-256 file each project publishes.
+# .github/actions/setup-kube-tools: pinned kind, kubectl, helm and kubeconform for host jobs (gha-build-images).
+#
+# No placeholders. Host jobs (kind clusters, helm lint) get exactly the tool versions the CI build image
+# carries: the pins live in a versions file (versions.env.example of this skill), the image has the same
+# values as ARGs, and scripts/ci/check-pins.sh fails a change that bumps only one side. Downloads use the
+# method of ci-build.Dockerfile: the official URL, checked against the SHA-256 file the project publishes.
+# The same action ships with gha-ephemeral-test-envs (same inputs; it defaults to
+# test-infra/kind/versions.env): keep a single copy per repository.
 name: setup-kube-tools
 description: >-
   Installs kind, kubectl, helm and kubeconform at the versions pinned in a versions file (KIND_VERSION=v...

@@ -50,7 +50,7 @@ on:
         type: boolean
         default: true
       app-compose-file:
-        description: Compose file of the app under test; {project} is replaced by the project id.
+        description: Compose file of the app under test ({project} = the project id); '' runs the stack without the app.
         type: string
         default: '__APP_COMPOSE_FILE__'
       app-service:
@@ -121,10 +121,13 @@ jobs:
               echo "::error::the image of $PROJECT is not pinned by digest: '$APP_IMAGE'"
               exit 2
             fi
-            app_file=${APP_FILE_PATTERN//'{project}'/$PROJECT}
-            [[ -f $app_file ]] || { echo "::error::$app_file (the compose file of the app under test) does not exist"; exit 2; }
+            # An explicitly empty app-compose-file runs the stack without the app container.
+            if [[ -n $APP_FILE_PATTERN ]]; then
+              app_file=${APP_FILE_PATTERN//'{project}'/$PROJECT}
+              [[ -f $app_file ]] || { echo "::error::$app_file (the compose file of the app under test) does not exist"; exit 2; }
+            fi
           elif [[ $IMAGE_REQUIRED == true ]]; then
-            echo "::error::no image for $PROJECT in the images input"
+            echo "::error::no image for $PROJECT in the images input (a project without an image: pass image-required: false)"
             exit 2
           else
             echo "::notice::no image for $PROJECT: the stack runs without an app under test"

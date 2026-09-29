@@ -1,0 +1,317 @@
+# .github/actions/setup-build-env: the build environment of a job that runs either inside the CI build image
+# (`container:`) or on the runner host (first-run bootstrap). Template of the gha-build-images skill.
+#
+# Placeholders (grep -n '__[A-Z0-9_]*__'):
+#   __IMAGE_NAMESPACE__  registry namespace, lowercase; base images are <namespace>/base/<name>   ghcr.io/acme
+#
+# Steps, in order:
+#   1. git trusts the workspace (a container running as another UID than the checkout's owner).
+#   2. The toolchain with actions/setup-<toolchain>, only when install-toolchain is 'true', that is when
+#      the job runs on the runner host because the CI build image is not published yet.
+#   3. The build-tool cache: gradle/actions/setup-gradle for Gradle (it also validates the wrapper);
+#      actions/cache for maven, npm, pnpm, pip and go, keyed on the tracked lock files. Written on the
+#      default branch only, unless cache-read-only says otherwise.
+#   4. The base images the job needs (ensure-base): a reference passed in (the probe job's digest), else
+#      <namespace>/base/<name>:latest resolved to a digest. Missing (a new repository) or rebuild-base
+#      'true' (the change touches the base images): built locally from <base-dockerfile-dir>/<name>.Dockerfile
+#      with <base-context> as build context, loaded into the engine under a bootstrap tag. Exports
+#      BASE_IMAGE (runtime-base) and CI_BUILD_IMAGE (ci-build) for later steps.
+#
+# Build app images afterwards with the engine's default builder (`docker buildx build` without
+# setup-buildx-action): a docker-container builder cannot see locally loaded base images.
+# Action majors proven in the reference: setup-java@v6, setup-gradle@v6, setup-buildx-action@v4,
+# build-push-action@v7. Written here but not exercised there: setup-node@v6, setup-python@v6,
+# setup-go@v6, cache@v5. Update every action to its current major when adopting.
+name: setup-build-env
+description: >-
+  Build environment for a job in the CI build image or on the runner host: the toolchain only on the
+  host, the build-tool cache, and the company base images, taken from the registry by digest when
+  published and otherwise built locally from the repository's Dockerfiles (bootstrap, or a change that
+  touches them). Exports BASE_IMAGE and CI_BUILD_IMAGE.
+inputs:
+  install-toolchain:
+    description: "'true' installs the toolchain with actions/setup-<toolchain> (the job runs on the runner host); 'false' inside the CI build image."
+    required: false
+    default: 'false'
+  toolchain:
+    description: java, node, python, go or none.
+    required: false
+    default: java
+  toolchain-version:
+    description: Version for the setup action (java 21, node 22, python 3.13, go 1.25).
+    required: false
+    default: '21'
+  build-tool:
+    description: Whose cache to restore; gradle, maven, npm, pnpm, pip, go or none.
+    required: false
+    default: gradle
+  cache-read-only:
+    description: "'true' or 'false'; empty writes the cache on the default branch only (other runs read it)."
+    required: false
+    default: ''
+  ensure-base:
+    description: "Comma-separated base images the job needs: runtime-base (exports BASE_IMAGE), ci-build (exports CI_BUILD_IMAGE)."
+    required: false
+    default: ''
+  runtime-base-image:
+    description: Already-resolved runtime-base reference (skips the registry lookup), for example the probe job's output.
+    required: false
+    default: ''
+  ci-build-image:
+    description: Already-resolved ci-build reference (skips the registry lookup).
+    required: false
+    default: ''
+  rebuild-base:
+    description: "'true' builds the requested base images locally even when they are published (the change touches them)."
+    required: false
+    default: 'false'
+  image-namespace:
+    description: Registry namespace; the base images are <namespace>/base/<name>.
+    required: false
+    default: __IMAGE_NAMESPACE__
+  base-dockerfile-dir:
+    description: Directory of the base image Dockerfiles, named <name>.Dockerfile.
+    required: false
+    default: docker/base
+  base-context:
+    description: Build context of the base images, the directory holding the CA bundle.
+    required: false
+    default: docker/ca
+outputs:
+  base-image:
+    description: The runtime-base reference exported as BASE_IMAGE (empty when not requested).
+    value: ${{ steps.export.outputs.base-image }}
+  ci-build-image:
+    description: The ci-build reference exported as CI_BUILD_IMAGE (empty when not requested).
+    value: ${{ steps.export.outputs.ci-build-image }}
+  built-locally:
+    description: Space-separated names of the base images built locally in this job (empty when all came from the registry).
+    value: ${{ steps.resolve.outputs.local }}
+runs:
+  using: composite
+  steps:
+    - name: Trust the workspace for git
+      shell: bash
+      run: |
+        # A container running as another UID than the checkout's owner makes git refuse the repository
+        # ("detected dubious ownership"), and every tool that shells out to git (versioning) fails with it.
+        if command -v git >/dev/null 2>&1; then
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        fi
+
+    - name: Java (runner host only)
+      if: inputs.install-toolchain == 'true' && inputs.toolchain == 'java'
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.toolchain-version }}
+
+    - name: Node.js (runner host only)
+      if: inputs.install-toolchain == 'true' && inputs.toolchain == 'node'
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.toolchain-version }}
+
+    - name: Python (runner host only)
+      if: inputs.install-toolchain == 'true' && inputs.toolchain == 'python'
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.toolchain-version }}
+
+    - name: Go (runner host only)
+      if: inputs.install-toolchain == 'true' && inputs.toolchain == 'go'
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ inputs.toolchain-version }}
+        cache: false # the cache step below covers GOMODCACHE and GOCACHE in both modes
+
+    - name: Build-tool cache plan
+      id: cache
+      if: inputs.build-tool != 'none'
+      shell: bash
+      env:
+        BUILD_TOOL: ${{ inputs.build-tool }}
+        READ_ONLY: ${{ inputs.cache-read-only }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        if [[ -z $READ_ONLY ]]; then
+          # Write on the default branch only: other runs read its cache and cannot evict it.
+          READ_ONLY=true
+          if [[ -z $DEFAULT_BRANCH || $GITHUB_REF_NAME == "$DEFAULT_BRANCH" ]]; then READ_ONLY=false; fi
+        fi
+        echo "read-only=$READ_ONLY" >> "$GITHUB_OUTPUT"
+        # Literal ~ on purpose: actions/cache expands it, and the same text on the host and in the
+        # container keeps the cache version equal in both modes.
+        # shellcheck disable=SC2088
+        case $BUILD_TOOL in
+          gradle) exit 0 ;; # setup-gradle below plans its own cache
+          maven) paths='~/.m2/repository'; patterns=(':(glob)**/pom.xml') ;;
+          npm) paths='~/.npm'; patterns=(':(glob)**/package-lock.json' ':(glob)**/npm-shrinkwrap.json') ;;
+          pnpm) paths=$(pnpm store path --silent 2>/dev/null || echo '~/.local/share/pnpm/store'); patterns=(':(glob)**/pnpm-lock.yaml') ;;
+          pip) paths='~/.cache/pip'; patterns=(':(glob)**/requirements*.txt' ':(glob)**/pyproject.toml' ':(glob)**/poetry.lock' ':(glob)**/uv.lock') ;;
+          go)
+            paths="$(go env GOMODCACHE 2>/dev/null || echo '~/go/pkg/mod')"$'\n'"$(go env GOCACHE 2>/dev/null || echo '~/.cache/go-build')"
+            patterns=(':(glob)**/go.sum') ;;
+          *) echo "::error title=setup-build-env::unknown build-tool '$BUILD_TOOL' (gradle, maven, npm, pnpm, pip, go, none)"; exit 2 ;;
+        esac
+        hash=$(git ls-files -z -- "${patterns[@]}" | xargs -0 -r sha256sum | sha256sum | cut -c 1-16)
+        {
+          echo "key=$BUILD_TOOL-$RUNNER_OS-$hash"
+          echo "restore-key=$BUILD_TOOL-$RUNNER_OS-"
+          echo "paths<<PATHS_EOF"
+          echo "$paths"
+          echo "PATHS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Gradle (wrapper validation, user-home cache)
+      if: inputs.build-tool == 'gradle'
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # The open-source cache provider on top of actions/cache.
+        cache-provider: basic
+        cache-read-only: ${{ steps.cache.outputs.read-only }}
+
+    - name: Build-tool cache (restore, save at job end)
+      if: steps.cache.outputs.key != '' && steps.cache.outputs.read-only != 'true'
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.cache.outputs.paths }}
+        key: ${{ steps.cache.outputs.key }}
+        restore-keys: ${{ steps.cache.outputs.restore-key }}
+
+    - name: Build-tool cache (restore only)
+      if: steps.cache.outputs.key != '' && steps.cache.outputs.read-only == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.cache.outputs.paths }}
+        key: ${{ steps.cache.outputs.key }}
+        restore-keys: ${{ steps.cache.outputs.restore-key }}
+
+    - name: Resolve base images (registry first, local build as bootstrap)
+      id: resolve
+      if: inputs.ensure-base != ''
+      shell: bash
+      env:
+        ENSURE: ${{ inputs.ensure-base }}
+        PRE_RUNTIME_BASE: ${{ inputs.runtime-base-image }}
+        PRE_CI_BUILD: ${{ inputs.ci-build-image }}
+        REBUILD: ${{ inputs.rebuild-base }}
+        NAMESPACE: ${{ inputs.image-namespace }}
+        DOCKERFILE_DIR: ${{ inputs.base-dockerfile-dir }}
+      run: |
+        set -euo pipefail
+        err() { echo "::error title=setup-build-env::$*"; exit 1; }
+        command -v docker >/dev/null 2>&1 || err "ensure-base needs the docker CLI (and the engine socket)"
+        resolve() { # resolve <ref>: prints <repository>@sha256:<digest>; fails when the registry has no such image
+          local ref=$1 repo query digest
+          repo=${ref%@*}
+          if [[ ${repo##*/} == *:* ]]; then repo=${repo%:*}; fi
+          query=$ref
+          if [[ $ref == *@sha256:* ]]; then query="$repo@${ref##*@}"; fi
+          digest=$(docker buildx imagetools inspect "$query" --format '{{.Manifest.Digest}}' 2>/dev/null) || return 1
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+          echo "$repo@$digest"
+        }
+        local_builds=()
+        for name in ${ENSURE//,/ }; do
+          case $name in
+            runtime-base) pre=$PRE_RUNTIME_BASE ;;
+            ci-build) pre=$PRE_CI_BUILD ;;
+            *) echo "::error title=setup-build-env::ensure-base: unknown base image '$name' (runtime-base, ci-build)"; exit 2 ;;
+          esac
+          ref=""
+          if [[ $REBUILD != true ]]; then
+            if [[ -n $pre ]]; then
+              ref=$pre
+            else
+              ref=$(resolve "$NAMESPACE/base/$name:latest") || ref=""
+            fi
+          fi
+          if [[ -z $ref ]]; then
+            [[ -f $DOCKERFILE_DIR/$name.Dockerfile ]] ||
+              err "$NAMESPACE/base/$name:latest is not published and $DOCKERFILE_DIR/$name.Dockerfile is missing"
+            ref="$NAMESPACE/base/$name:bootstrap-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            local_builds+=("$name")
+            if [[ $REBUILD == true ]]; then
+              echo "::notice title=base image::building $name locally: this change touches the base images"
+            else
+              echo "::notice title=base image::$NAMESPACE/base/$name:latest is not published yet; building it locally (bootstrap). Run base-image.yml once to publish it."
+            fi
+          fi
+          key=${name//-/_}
+          echo "ref_$key=$ref" >> "$GITHUB_OUTPUT"
+          if [[ " ${local_builds[*]} " == *" $name "* ]]; then
+            echo "build_$key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_$key=false" >> "$GITHUB_OUTPUT"
+          fi
+        done
+        echo "local=${local_builds[*]}" >> "$GITHUB_OUTPUT"
+
+    - name: Buildx builder for the local base builds
+      id: buildx
+      if: steps.resolve.outputs.local != ''
+      uses: docker/setup-buildx-action@v4
+      with:
+        # Not made the default builder: later `docker buildx build` calls keep the engine's own `docker`
+        # driver, which sees the base images loaded below (a docker-container builder would pull them).
+        use: false
+
+    - name: Build runtime-base locally
+      if: steps.resolve.outputs.build_runtime_base == 'true'
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: ${{ inputs.base-context }}
+        file: ${{ inputs.base-dockerfile-dir }}/runtime-base.Dockerfile
+        load: true
+        push: false
+        provenance: false
+        tags: ${{ steps.resolve.outputs.ref_runtime_base }}
+        cache-from: type=gha,scope=base-runtime-base
+        cache-to: type=gha,scope=base-runtime-base,mode=max
+
+    - name: Build ci-build locally
+      if: steps.resolve.outputs.build_ci_build == 'true'
+      uses: docker/build-push-action@v7
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        context: ${{ inputs.base-context }}
+        file: ${{ inputs.base-dockerfile-dir }}/ci-build.Dockerfile
+        load: true
+        push: false
+        provenance: false
+        tags: ${{ steps.resolve.outputs.ref_ci_build }}
+        cache-from: type=gha,scope=base-ci-build
+        cache-to: type=gha,scope=base-ci-build,mode=max
+
+    - name: Export BASE_IMAGE and CI_BUILD_IMAGE
+      id: export
+      shell: bash
+      env:
+        RUNTIME_BASE: ${{ steps.resolve.outputs.ref_runtime_base }}
+        CI_BUILD: ${{ steps.resolve.outputs.ref_ci_build }}
+        LOCAL: ${{ steps.resolve.outputs.local }}
+      run: |
+        set -euo pipefail
+        echo "base-image=$RUNTIME_BASE" >> "$GITHUB_OUTPUT"
+        echo "ci-build-image=$CI_BUILD" >> "$GITHUB_OUTPUT"
+        if [[ -n $RUNTIME_BASE ]]; then echo "BASE_IMAGE=$RUNTIME_BASE" >> "$GITHUB_ENV"; fi
+        if [[ -n $CI_BUILD ]]; then echo "CI_BUILD_IMAGE=$CI_BUILD" >> "$GITHUB_ENV"; fi
+        if [[ -n $RUNTIME_BASE || -n $CI_BUILD ]]; then
+          {
+            echo "### Base images"
+            echo ""
+            echo "| image | reference | source |"
+            echo "|---|---|---|"
+            for pair in "runtime-base|$RUNTIME_BASE" "ci-build|$CI_BUILD"; do
+              name=${pair%%|*}
+              ref=${pair#*|}
+              [[ -n $ref ]] || continue
+              source=registry
+              if [[ " $LOCAL " == *" $name "* ]]; then source="built locally"; fi
+              echo "| $name | \`$ref\` | $source |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi

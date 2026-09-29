@@ -1,0 +1,396 @@
+# release.yml — release a tag by promoting what main already built and tested (skill gha-versioning-release).
+#
+# Trigger: a release tag <prefix>X.Y.Z of a version line in RELEASE_LINES. A tag pushed by hand (the manual
+# route) starts this workflow directly. Tags created with GITHUB_TOKEN start no workflow, so
+# release-please.yml dispatches it on its tags (`gh workflow run release.yml --ref <tag>`). Re-run it the
+# same way; every job is idempotent. Nothing is rebuilt: the released image is byte for byte the digest main
+# tested, so its labels keep the pre-release version (-rc.N) it was built with.
+#
+#   resolve         parse the tag; assert that the version the build computes equals the tag; wait for the
+#                   passing run of the main workflow for the tagged commit; find its images by sha-<sha7>
+#   promote         _promote.yml: add the release tags to those digests: X.Y.Z and sha-<sha7>, plus X.Y, X
+#                   and latest only when this is the newest release of that series
+#   sbom            one CycloneDX SBOM per image (anchore/sbom-action)
+#   github-release  create the GitHub Release unless release-please already did; attach the SBOMs
+#   bump            optional: the pull request that deploys the release to the next environment
+#
+# Placeholders (replace every one; `grep -n '__[A-Z0-9_]*__' release.yml` lists what is left):
+#   __MAIN_WORKFLOW__    file name of the workflow that builds, tests and publishes main and hotfix/** commits
+#                        with sha-<sha7> tags, e.g. main.yml
+#   __REGISTRY__         registry host to log in to, e.g. ghcr.io
+#   __IMAGE_NAMESPACE__  registry namespace of the images, e.g. ghcr.io/acme
+#   __RELEASE_LINES__    JSON object: tag prefix -> images (repository paths under the namespace) that a tag of
+#                        that line releases, e.g. {"v": ["api", "worker"], "server/v": ["server"]}
+#   __VERSION_COMMAND__  prints the version the build computes for the checked-out tag (LINE_PREFIX holds the
+#                        line's tag prefix), e.g. bash scripts/ci/git-version.sh --prefix "$LINE_PREFIX" --field version
+#                        or ./gradlew -q printVersion (then add the toolchain setup step it needs)
+#   __BUMP_ENV__         the environment the bump pull request deploys to, e.g. qa
+#   __BUMP_DIR__         the directory holding that environment's image tags, e.g. config/qa; the bump job is
+#                        skipped with a notice while it does not exist
+#   __BUMP_COMMAND__     sets the release tag for the released images under BUMP_DIR and prints the changed
+#                        files, one per line (env: VERSION, TAG, IMAGES = JSON image -> digest-pinned ref), e.g.
+#                        bash scripts/ci/set-image-tag.sh "$VERSION" "$BUMP_DIR"/*/*/values.yaml (gha-config-deploy)
+# Delete the bump job when there is no next environment. Actions are pinned to a major version: update to the
+# current major when adopting.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'      # the default line: v1.2.3
+      - '**/v[0-9]*.[0-9]*.[0-9]*'   # other lines: <name>/v1.2.3 (drop it when RELEASE_LINES has one line)
+      - '!v*.*.*-*'                  # never a pre-release tag such as v1.2.3-rc.1
+      - '!**/v*.*.*-*'
+  workflow_dispatch:
+    inputs:
+      wait-minutes:
+        description: How long to wait for the main run of the tagged commit to finish.
+        type: number
+        default: 60
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: __REGISTRY__
+  IMAGE_NAMESPACE: __IMAGE_NAMESPACE__
+  RELEASE_LINES: '__RELEASE_LINES__'
+  MAIN_WORKFLOW: __MAIN_WORKFLOW__
+  # X.Y, X and latest follow the newest release of their series; 'false' keeps only X.Y.Z and sha-<sha7>.
+  CONVENIENCE_TAGS: 'true'
+
+jobs:
+  resolve:
+    name: resolve the tested digests
+    runs-on: ubuntu-latest
+    # Mostly waiting: a release tag often appears minutes after the merge, while main still tests the commit.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      line-prefix: ${{ steps.tag.outputs.line-prefix }}
+      version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.tag.outputs.sha }}
+      image-names: ${{ steps.tag.outputs.image-names }}
+      main-run: ${{ steps.wait.outputs.url }}
+      images: ${{ steps.images.outputs.images }}
+      tags: ${{ steps.images.outputs.tags }}
+      newest: ${{ steps.images.outputs.newest }}
+      previous: ${{ steps.images.outputs.previous }}
+    steps:
+      - name: Parse the tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF_TYPE != tag ]]; then
+            echo "::error::release.yml runs on a release tag; start it with: gh workflow run release.yml --ref v1.2.3"
+            exit 1
+          fi
+          jq -e 'type == "object" and length > 0 and all(.[]; type == "array" and length > 0 and all(.[]; type == "string"))' \
+            <<<"$RELEASE_LINES" >/dev/null ||
+            { echo "::error::RELEASE_LINES must map tag prefixes to non-empty lists of image names"; exit 1; }
+          tag=$GITHUB_REF_NAME prefix="" found=false
+          while IFS= read -r p; do # the longest prefix of RELEASE_LINES that starts the tag
+            if [[ $tag == "$p"* ]] && { ! $found || [[ ${#p} -gt ${#prefix} ]]; }; then prefix=$p found=true; fi
+          done < <(jq -r 'keys[]' <<<"$RELEASE_LINES")
+          version=${tag#"$prefix"}
+          if ! $found || [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::'$tag' is not <prefix>X.Y.Z for a prefix of RELEASE_LINES ($(jq -r 'keys | join(", ")' <<<"$RELEASE_LINES"))"
+            exit 1
+          fi
+          {
+            echo "tag=$tag"
+            echo "line-prefix=$prefix"
+            echo "version=$version"
+            echo "sha=$GITHUB_SHA"
+            echo "image-names=$(jq -c --arg p "$prefix" '.[$p]' <<<"$RELEASE_LINES")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # every tag and the history: the version and the "newest release" checks need them
+
+      # Add here the toolchain setup that __VERSION_COMMAND__ needs (actions/setup-java, setup-node, ...).
+
+      - name: Assert that the version the build computes equals the tag
+        env:
+          LINE_PREFIX: ${{ steps.tag.outputs.line-prefix }}
+          EXPECTED: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual=$(__VERSION_COMMAND__ | tr -d '\r' | sed '/^[[:space:]]*$/d' | tail -n 1)
+          if [[ $actual != "$EXPECTED" ]]; then
+            echo "::error::the build computes '$actual' for this commit, the tag says '$EXPECTED': is the tag on the right commit and line, and the work tree clean?"
+            exit 1
+          fi
+          echo "- the build computes \`$actual\`, as the tag says" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for the passing main run of this commit
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.tag.outputs.sha }}
+          WAIT_MINUTES: ${{ inputs.wait-minutes || 60 }}
+        run: |
+          set -euo pipefail
+          # Promote, never rebuild: only a commit whose main run passed (build, tests, publish) is released.
+          deadline=$((SECONDS + WAIT_MINUTES * 60))
+          grace=$((SECONDS + 300)) # a run registered seconds after a hand-pushed tag is not missing yet
+          while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$MAIN_WORKFLOW/runs?head_sha=$SHA&per_page=50" \
+              --jq '[.workflow_runs[] | {status, conclusion, html_url, head_branch}]')
+            url=$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")][0].html_url // empty' <<<"$runs")
+            if [[ -n $url ]]; then
+              echo "url=$url" >> "$GITHUB_OUTPUT"
+              echo "- tested by $url" >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            total=$(jq length <<<"$runs")
+            running=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+            if [[ $total -eq 0 ]] && ((SECONDS >= grace || SECONDS >= deadline)); then
+              echo "::error::$MAIN_WORKFLOW has no run for ${SHA::7}. Tag a commit that $MAIN_WORKFLOW built and tested: the merge commit, not a bot's [skip ci] commit (it has no run)."
+              exit 1
+            fi
+            if [[ $total -gt 0 && $running -eq 0 ]]; then
+              echo "::error::no successful $MAIN_WORKFLOW run for ${SHA::7} ($(jq -c 'map({conclusion, head_branch})' <<<"$runs")): re-run its failed jobs, then this workflow."
+              exit 1
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::$MAIN_WORKFLOW for ${SHA::7} is still running after $WAIT_MINUTES min; re-run this workflow when it has passed"
+              exit 1
+            fi
+            echo "$MAIN_WORKFLOW for ${SHA::7} has not finished yet; waiting"
+            sleep 30
+          done
+
+      - name: Registry login
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve the tested images and the release tag set
+        id: images
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          LINE_PREFIX: ${{ steps.tag.outputs.line-prefix }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          SHA: ${{ steps.tag.outputs.sha }}
+          IMAGE_NAMES: ${{ steps.tag.outputs.image-names }}
+        run: |
+          set -euo pipefail
+          release_re="^${LINE_PREFIX//./\\.}(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\$"
+          line_tags() { git tag --list "$1" --sort=-v:refname | grep -E "$release_re" || true; } # newest first
+          newest() { line_tags "$1" | head -n 1; }
+          IFS=. read -r major minor _ <<<"$VERSION"
+          is_newest=false
+          if [[ $(newest "$LINE_PREFIX*") == "$TAG" ]]; then is_newest=true; fi
+          release_tags=("$VERSION" "sha-${SHA::7}")
+          if [[ $CONVENIENCE_TAGS == true ]]; then
+            # Moving tags go to the newest release of their series only: a hotfix of an older line must not
+            # drag X, X.Y or latest backwards.
+            if [[ $(newest "$LINE_PREFIX$major.$minor.*") == "$TAG" ]]; then release_tags+=("$major.$minor"); fi
+            if [[ $(newest "$LINE_PREFIX$major.*") == "$TAG" ]]; then release_tags+=("$major"); fi
+            if $is_newest; then release_tags+=(latest); fi
+          fi
+          # The release before this one in the same line: the start of the generated release notes.
+          previous=$(line_tags "$LINE_PREFIX*" | awk -v t="$TAG" 'found { print; exit } $0 == t { found = 1 }')
+          tags_json=$(printf '%s\n' "${release_tags[@]}" | jq -R . | jq -cs .)
+          images='{}' tags='{}'
+          {
+            echo "### Release $TAG"
+            echo ""
+            echo "| image | tested digest | release tags |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for name in $(jq -r '.[]' <<<"$IMAGE_NAMES"); do
+            source="$IMAGE_NAMESPACE/$name:sha-${SHA::7}"
+            pinned=$(scripts/ci/resolve-image.sh "$source") ||
+              { echo "::error::$source not found: $MAIN_WORKFLOW published no $name image for this commit"; exit 1; }
+            images=$(jq -c --arg n "$name" --arg r "$source@${pinned#*@}" '. + {($n): $r}' <<<"$images")
+            tags=$(jq -c --arg n "$name" --argjson t "$tags_json" '. + {($n): $t}' <<<"$tags")
+            echo "| \`$name\` | \`${pinned#*@}\` | $(jq -r 'map("`" + . + "`") | join(", ")' <<<"$tags_json") |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo "images=$images"
+            echo "tags=$tags"
+            echo "newest=$is_newest"
+            echo "previous=$previous"
+          } >> "$GITHUB_OUTPUT"
+
+  promote:
+    needs: resolve
+    uses: ./.github/workflows/_promote.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      images: ${{ needs.resolve.outputs.images }}
+      tags: ${{ needs.resolve.outputs.tags }}
+
+  sbom:
+    name: sbom (${{ matrix.image }})
+    needs: [resolve, promote]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.resolve.outputs.image-names) }}
+    steps:
+      - name: Image and file name
+        id: target
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+        run: |
+          set -euo pipefail
+          ref=$(jq -r --arg i "$IMAGE" '.[$i]' <<<"$IMAGES") # repository:sha-<sha7>@sha256:<digest>
+          repo=${ref%@*}
+          [[ ${repo##*/} != *:* ]] || repo=${repo%:*}
+          mkdir -p "$RUNNER_TEMP/sbom"
+          echo "image=$repo@${ref#*@}" >> "$GITHUB_OUTPUT"
+          echo "slug=${IMAGE//\//-}" >> "$GITHUB_OUTPUT"
+
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.target.outputs.image }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ github.token }}
+          format: cyclonedx-json
+          output-file: ${{ runner.temp }}/sbom/${{ steps.target.outputs.slug }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ steps.target.outputs.slug }}
+          path: ${{ runner.temp }}/sbom/${{ steps.target.outputs.slug }}.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sbom-*
+          path: sboms
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          NEWEST: ${{ needs.resolve.outputs.newest }}
+          PREVIOUS: ${{ needs.resolve.outputs.previous }}
+          MAIN_RUN: ${{ needs.resolve.outputs.main-run }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          TAGS: ${{ needs.resolve.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # release-please already created the release with its changelog; a hand-pushed tag has none yet.
+          # --verify-tag: a typo never creates a new tag; --latest: an older line's hotfix never becomes Latest.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            args=(--verify-tag --title "$TAG" --generate-notes "--latest=$NEWEST")
+            if [[ -n $PREVIOUS ]]; then args+=(--notes-start-tag "$PREVIOUS"); fi
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${args[@]}"
+          fi
+          gh release upload "$TAG" sboms/*.cdx.json --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### GitHub Release $TAG"
+            echo ""
+            echo "- tested by $MAIN_RUN"
+            echo "- SBOMs: $(find sboms -name '*.cdx.json' -printf '%f ')"
+            echo ""
+            echo "| image | digest | tags |"
+            echo "|---|---|---|"
+            jq -r --argjson tags "$TAGS" 'to_entries[] | "| `\(.key)` | `\(.value | sub("^[^@]*@"; ""))` | \($tags[.key] | join(", ")) |"' <<<"$IMAGES"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  bump:
+    name: bump pull request
+    needs: [resolve, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BUMP_ENV: __BUMP_ENV__
+      BUMP_DIR: __BUMP_DIR__
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Open or update the bump pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          MAIN_RUN: ${{ needs.resolve.outputs.main-run }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          notice() { echo "::notice title=bump $BUMP_ENV::$1"; echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+          if [[ ! -d $BUMP_DIR ]]; then
+            notice "$BUMP_DIR does not exist, so there is nothing to bump for $TAG"
+            exit 0
+          fi
+          changed=$(__BUMP_COMMAND__)
+          if [[ -z $changed ]]; then
+            notice "$BUMP_DIR already runs $VERSION, or runs none of these images: no bump pull request"
+            exit 0
+          fi
+          branch="release-bump/$BUMP_ENV/$TAG"
+          title="chore(release): deploy $TAG to $BUMP_ENV"
+          git switch --quiet -c "$branch"
+          git add -A -- "$BUMP_DIR"
+          if git diff --cached --quiet; then
+            notice "the bump command changed nothing under $BUMP_DIR: no bump pull request"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "$title"
+          git push --quiet --force origin "HEAD:refs/heads/$branch"
+          body=$(mktemp)
+          {
+            echo "Release **$TAG** for \`$BUMP_DIR\`. Approving and merging this pull request is the deploy intent for $BUMP_ENV."
+            echo ""
+            echo "| image | digest (tested by the main run, promoted, never rebuilt) |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| `\(.key)` | `\(.value)` |"' <<<"$IMAGES"
+            echo ""
+            echo "Changed files:"
+            while read -r f; do echo "- \`$f\`"; done <<<"$changed"
+            echo ""
+            echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo "- Tested by: $MAIN_RUN"
+            echo ""
+            echo "> Opened with GITHUB_TOKEN, which starts no workflow: close and reopen this pull request to run its checks (a GitHub App token removes this step)."
+          } > "$body"
+          if [[ $(gh pr view "$branch" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || true) == OPEN ]]; then
+            gh pr edit "$branch" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+            notice "updated the open bump pull request for $TAG"
+          else
+            url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$BASE" --head "$branch" --title "$title" --body-file "$body")
+            notice "opened $url"
+          fi

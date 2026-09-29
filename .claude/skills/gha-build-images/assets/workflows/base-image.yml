@@ -1,0 +1,167 @@
+# base-image.yml: build, verify and publish the company base images (gha-build-images skill).
+#
+#   <namespace>/base/runtime-base:<yyyymmdd>-<run_number>   FROM of every app image
+#   <namespace>/base/ci-build:<yyyymmdd>-<run_number>       the build job's container, test runners, laptops
+# Each image is built and loaded (not pushed), verified from the outside (scripts/ci/verify-image.sh),
+# and only then pushed: first the dated tag, which is never overwritten, then `latest`, which must end up
+# on the same digest. A broken build never moves `latest`. Consumers resolve `latest` to a digest once per
+# run (setup-build-env, the probe job) or pin a dated tag.
+#
+# Triggers: a push to the default branch that changes the base images or the CA; a pull request that
+# changes them (build and verify only, nothing is pushed); weekly, without layer cache, so OS and upstream
+# patches land even when no file changed; manually, optionally with a new CA bundle version (rotation).
+#
+# Placeholders (grep -n '__[A-Z0-9_]*__'):
+#   __IMAGE_NAMESPACE__  registry namespace, lowercase; images go to <namespace>/base/<name>   ghcr.io/acme
+#
+# Layout it expects (adapt the paths below and in setup-build-env together):
+#   docker/base/<name>.Dockerfile  one per matrix entry (assets/docker/*.Dockerfile of the skill)
+#   docker/ca/ca-bundle.pem        the CA bundle; this directory is the whole build context
+#   scripts/ci/verify-image.sh     scripts/verify-image.sh of the skill
+#
+# Update every action to its current major when adopting.
+name: base-image
+
+on:
+  schedule:
+    - cron: '23 4 * * 1' # Mondays 04:23 UTC: OS and upstream patches (off the hour on purpose)
+  workflow_dispatch:
+    inputs:
+      ca-bundle-version:
+        description: CA bundle version label (rotation); empty keeps the Dockerfile default.
+        type: string
+        default: ''
+      no-cache:
+        description: Build without the layer cache.
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'docker/base/**'
+      - 'docker/ca/**'
+      - 'scripts/ci/verify-image.sh'
+      - '.github/workflows/base-image.yml'
+  pull_request:
+    paths:
+      - 'docker/base/**'
+      - 'docker/ca/**'
+      - 'scripts/ci/verify-image.sh'
+      - '.github/workflows/base-image.yml'
+
+concurrency:
+  # One publishing run at a time and never cancelled (a half-published pair of tags helps nobody);
+  # pull-request runs cancel their superseded predecessors.
+  group: base-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAMESPACE: __IMAGE_NAMESPACE__
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # verify: the arguments of scripts/ci/verify-image.sh for this image.
+          - name: runtime-base
+            dockerfile: docker/base/runtime-base.Dockerfile
+            context: docker/ca
+            verify: --kind runtime --tls-url https://github.com
+          - name: ci-build
+            dockerfile: docker/base/ci-build.Dockerfile
+            context: docker/ca
+            verify: --kind ci-build --expect-uid 1001
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Repository and tag
+        id: tag
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          {
+            echo "repo=${IMAGE_NAMESPACE}/base/${NAME}"
+            echo "tag=$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/registry-login
+
+      - name: The dated tag must not exist yet
+        if: github.event_name != 'pull_request'
+        env:
+          REPO: ${{ steps.tag.outputs.repo }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if docker buildx imagetools inspect "$REPO:$TAG" >/dev/null 2>&1; then
+            echo "::error::$REPO:$TAG already exists and dated tags are immutable: start a new run (workflow_dispatch) instead of re-running this one"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build (load, do not push)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          pull: true
+          # The weekly run rebuilds every layer: a cached `apt-get install` layer would republish old packages.
+          no-cache: ${{ github.event_name == 'schedule' || inputs.no-cache == true }}
+          tags: |
+            ${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.tag.outputs.repo }}:latest
+          build-args: |
+            IMAGE_VERSION=${{ steps.tag.outputs.tag }}
+            GIT_SHA=${{ github.sha }}
+            CREATED=${{ steps.tag.outputs.created }}
+            SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+            ${{ inputs.ca-bundle-version != '' && format('CA_BUNDLE_VERSION={0}', inputs.ca-bundle-version) || '' }}
+          cache-from: type=gha,scope=base-${{ matrix.name }}
+          cache-to: type=gha,scope=base-${{ matrix.name }},mode=max
+
+      - name: Verify from the outside
+        env:
+          IMAGE: ${{ steps.tag.outputs.repo }}:${{ steps.tag.outputs.tag }}
+          VERIFY_ARGS: ${{ matrix.verify }}
+        run: |
+          set -euo pipefail
+          read -r -a args <<<"$VERIFY_ARGS"
+          scripts/ci/verify-image.sh "${args[@]}" "$IMAGE"
+
+      - name: Push the dated tag and latest; latest must be the dated digest
+        if: github.event_name != 'pull_request'
+        env:
+          REPO: ${{ steps.tag.outputs.repo }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker push --quiet "$REPO:$TAG"
+          docker push --quiet "$REPO:latest"
+          digest() { docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}'; }
+          dated=$(digest "$REPO:$TAG")
+          latest=$(digest "$REPO:latest")
+          if [[ ! $dated =~ ^sha256:[0-9a-f]{64}$ || $dated != "$latest" ]]; then
+            echo "::error::$REPO:latest is ${latest:-missing}, not the digest of $TAG (${dated:-missing})"
+            exit 1
+          fi
+          {
+            echo ""
+            echo "Published \`$REPO:$TAG\` and \`latest\` → \`$dated\`"
+            echo ""
+            echo "Pin it as \`$REPO:$TAG@$dated\`."
+          } >> "$GITHUB_STEP_SUMMARY"

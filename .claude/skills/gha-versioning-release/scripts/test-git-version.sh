@@ -264,6 +264,14 @@ atag v0.9.0
 commit "fix: d"
 expect "highest across majors, even when a lower tag is nearer" "v2.0.0:2.0.1-rc.2" \
   "$(gv "${main_ci[@]}" -- -C "$R" --field base-tag):$(gv "${main_ci[@]}" -- -C "$R" --field version)"
+new_repo numeric
+commit "feat: a"
+atag v1.10.0
+commit "fix: b"
+atag v1.9.0
+commit "fix: c"
+expect "versions compare numerically (1.10.0 > 1.9.0)" "v1.10.0:1.10.1-rc.2" \
+  "$(gv "${main_ci[@]}" -- -C "$R" --field base-tag):$(gv "${main_ci[@]}" -- -C "$R" --field version)"
 
 echo "# shallow clones, not a repository"
 git clone -q --depth 1 "file://$tmp/tagged" "$tmp/shallow"

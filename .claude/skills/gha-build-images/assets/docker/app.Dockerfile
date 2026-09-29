@@ -5,16 +5,16 @@
 # Spring Boot jar built by the build tool outside Docker (the proven form); other stacks at the end.
 #
 # Placeholders (grep -n '__[A-Z0-9_]*__'):
-#   __BASE_IMAGE_PREFIX__  registry path of the company base images, lowercase   ghcr.io/acme/base
-#   __APP_NAME__           application (and image) name                         orders-api
+#   __IMAGE_NAMESPACE__    registry namespace; base images live under <namespace>/base/   ghcr.io/acme
+#   __APP_NAME__           application (and image) name                                    orders-api
 # Adapt the port (8080) and the health endpoint of HEALTHCHECK to the app.
 #
-# CI passes --build-arg BASE_IMAGE=<prefix>/runtime-base@sha256:<digest> (resolved once per run, or the
-# local bootstrap build); the default below serves hand builds. Build context = the project directory
-# after the build tool produced the jar:
+# CI passes --build-arg BASE_IMAGE=<namespace>/base/runtime-base@sha256:<digest> (resolved once per run,
+# or the local bootstrap build); the default below serves hand builds. Build context = the project
+# directory after the build tool produced the jar:
 #   docker buildx build -f Dockerfile --build-arg BASE_IMAGE="$BASE_IMAGE" -t __APP_NAME__:dev .
 #   podman build --format docker -f Dockerfile -t __APP_NAME__:dev .    (Docker format keeps HEALTHCHECK)
-ARG BASE_IMAGE=__BASE_IMAGE_PREFIX__/runtime-base:latest
+ARG BASE_IMAGE=__IMAGE_NAMESPACE__/base/runtime-base:latest
 
 # Stage 1: explode the layered jar, so dependencies and application code become separate, cache-friendly
 # layers. It runs as the base's user 10001 and writes under /tmp only, so no stage needs root.

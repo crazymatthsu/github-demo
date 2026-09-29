@@ -1,0 +1,69 @@
+# .github/actions/registry-login: log the container engine in to the image registry (gha-build-images).
+#
+# No placeholders. Default: GHCR with the workflow's GITHUB_TOKEN; the calling job grants
+# `packages: read` to pull and `packages: write` to push. One action for every job that touches the
+# registry, so switching registries (or to OIDC) is one change. A job container is pulled before any
+# step runs, so this action cannot log in for it: use `container.credentials` for that (SKILL.md).
+# Other registries (notes, not implemented here):
+#   JFrog Artifactory  OIDC: the job grants `id-token: write`; exchange the GitHub OIDC token at the JFrog
+#                      token endpoint (or jfrog/setup-jfrog-cli with an OIDC provider), then
+#                      `docker login <host> --password-stdin` with the short-lived token.
+#   Amazon ECR         aws-actions/configure-aws-credentials (role-to-assume, OIDC) + aws-actions/amazon-ecr-login.
+#   Azure / Google     azure/login + `az acr login`; google-github-actions/auth + `gcloud auth configure-docker`.
+#   Podman             `podman login` reads the same credentials; docker/login-action writes Docker's config.
+name: registry-login
+description: >-
+  Logs the container engine in to the image registry. Token mode (default): docker/login-action with a
+  user name and token, GHCR with GITHUB_TOKEN unless told otherwise. OIDC mode: a stub that fails with
+  the steps to implement for registries that exchange the GitHub OIDC token for a short-lived credential.
+inputs:
+  registry:
+    description: Registry host (ghcr.io, or your registry such as artifactory.example.com).
+    required: false
+    default: ghcr.io
+  mode:
+    description: "'token' (user name + token) or 'oidc' (GitHub OIDC token exchanged for a registry token; stub)."
+    required: false
+    default: token
+  username:
+    description: User name for token mode.
+    required: false
+    default: ${{ github.actor }}
+  password:
+    description: Password or token for token mode.
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: OIDC login (stub)
+      if: inputs.mode == 'oidc'
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        # To implement: the calling job grants `id-token: write`; request the job's OIDC token
+        # (ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN, with the audience your registry
+        # expects), exchange it at the registry's token endpoint for a short-lived token scoped by the
+        # claims (repository, ref, environment), then:
+        #   docker login "$REGISTRY" --username <identity> --password-stdin <<<"$ACCESS_TOKEN"
+        # Registry-specific actions exist for ECR, ACR and Google Artifact Registry (see the file header).
+        echo "::error title=registry-login::mode 'oidc' is a stub; implement it for $REGISTRY or use mode 'token'"
+        exit 1
+
+    - name: Unknown mode
+      if: inputs.mode != 'oidc' && inputs.mode != 'token'
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        echo "::error title=registry-login::unknown mode '$MODE' (expected token or oidc)"
+        exit 1
+
+    - name: Token login
+      if: inputs.mode == 'token'
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}

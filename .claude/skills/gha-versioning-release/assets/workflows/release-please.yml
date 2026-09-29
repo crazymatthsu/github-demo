@@ -1,0 +1,68 @@
+# release-please.yml — optional front end: release pull requests from Conventional Commits
+# (skill gha-versioning-release).
+#
+# On every push to main, release-please opens or updates the release pull request: the next version per
+# package and the changelog. With more than one package it opens ONE combined pull request for all of them
+# unless release-please-config.json sets "separate-pull-requests": true. Merging it creates the tags and the
+# GitHub Releases. Those are created with GITHUB_TOKEN, which starts no workflow, so this workflow dispatches
+# release.yml on each new tag itself (workflow_dispatch is exempt from that rule).
+#
+# The build never reads .release-please-manifest.json: it is release-please's bookkeeping. Versions come from
+# git tags alone (scripts/ci/git-version.sh), and release.yml asserts that the build computes the tag's version.
+#
+# Needs:
+#   - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests"
+#   - release-please-config.json, made from the skill's assets/release-please-config.example.json (one
+#     package per version line: "." for tags vX.Y.Z, "<dir>" for tags <dir>/vX.Y.Z; fill its placeholders)
+#   - .release-please-manifest.json: {".": "0.0.0"} plus one "<dir>": "0.0.0" per extra package
+#     (0.0.0 = never released; the first release is "initial-version")
+# The release pull request is opened with GITHUB_TOKEN too, so its checks do not start: close and reopen it,
+# or give release-please a GitHub App token (`token:` input), after which its tags start release.yml directly
+# and the dispatch step below must go.
+# Disable: delete this file, the config and the manifest; release by pushing an annotated tag on a tested
+# main commit. Actions are pinned to a major version: update to the current major when adopting.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # tags, releases, the release branch
+      pull-requests: write # the release pull request
+      issues: write # the autorelease labels
+      actions: write # dispatch release.yml
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Start release.yml for each new tag
+        if: steps.rp.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTPUTS: ${{ toJSON(steps.rp.outputs) }}
+        run: |
+          set -euo pipefail
+          # Outputs of the root package are unprefixed (tag_name); the others are <path>--tag_name.
+          while read -r path; do
+            key=tag_name
+            [[ $path == . ]] || key="${path}--tag_name"
+            tag=$(jq -r --arg k "$key" '.[$k] // empty' <<<"$OUTPUTS")
+            [[ -n $tag ]] || { echo "::error::no tag output for released path '$path'"; exit 1; }
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+            echo "- released \`$path\` as \`$tag\`; release.yml dispatched" >> "$GITHUB_STEP_SUMMARY"
+          done < <(jq -r '.paths_released | fromjson | .[]' <<<"$OUTPUTS")

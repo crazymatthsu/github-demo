@@ -28,7 +28,8 @@ Options
   --tag-key <key>          values key of the image tag (default image.tag)
   -n, --namespace <ns>     namespace (default: default)
   -f, --values <file>      values file, repeatable, applied in order
-  --set-string <key=value> repeatable. Prefer it to --set, which turns a tag such as 1 or 1.10 into a number.
+  --set-string <key=value> repeatable. Prefer it to --set, which turns an integer-looking tag (1, 20260929)
+                           into a number that a string schema rejects.
   --set-file <key=path>    repeatable
   --kubeconfig <file>      deploy: kubeconfig for helm and kubectl (default: $KUBECONFIG)
   --timeout <duration>     deploy: helm and rollout timeout (default 5m)

@@ -13,8 +13,8 @@
 # Also replace the label namespace `com.example` with your reverse-DNS prefix (same as ci-build).
 #
 # Build context = the directory holding the CA bundle; nothing else is copied:
-#   docker buildx build -f docker/base/runtime-base.Dockerfile -t <prefix>/runtime-base:dev --load docker/ca
-#   podman build --format docker -f docker/base/runtime-base.Dockerfile -t <prefix>/runtime-base:dev docker/ca
+#   docker buildx build -f docker/base/runtime-base.Dockerfile -t <namespace>/base/runtime-base:dev --load docker/ca
+#   podman build --format docker -f docker/base/runtime-base.Dockerfile -t <namespace>/base/runtime-base:dev docker/ca
 # Other runtimes (Debian or Ubuntu images: the RUN steps use apt), for example
 #   --build-arg RUNTIME_IMAGE=docker.io/library/node:22-slim   (or python:3.13-slim, a company OS image).
 # Distroless and UBI images need another recipe (references/enterprise-ca.md). UID 10001, not the runner's

@@ -1,0 +1,144 @@
+# container-build-job.yml: probe job + build job in the CI build image (gha-build-images skill).
+#
+# A workflow FRAGMENT: merge the two jobs into the `jobs:` of your build workflow (for example _build.yml
+# of gha-pipeline-design: add `probe`, and give its `build` job the needs/container/defaults/steps below).
+# The enclosing reusable workflow declares the inputs this fragment reads:
+#   on:
+#     workflow_call:
+#       inputs:
+#         rebuild-base: { type: boolean, default: false } # the change touches docker/base/** or docker/ca/**
+#         push-images:  { type: boolean, default: false } # false for fork PRs (read-only token)
+#
+# Placeholders (grep -n '__[A-Z0-9_]*__'):
+#   __IMAGE_NAMESPACE__      registry namespace, lowercase; base images are <namespace>/base/<name>    ghcr.io/acme
+#   __BUILD_COMMAND__        build and unit tests, from the repository root         ./gradlew build --continue
+#   __IMAGE_BUILD_COMMAND__  builds the app images FROM "$BASE_IMAGE" with the engine's default builder:
+#                            docker buildx build --build-arg BASE_IMAGE="$BASE_IMAGE" -t <repo>:<tag> --load <dir>
+#   __IMAGE_PUSH_COMMAND__   pushes them (tags: skill gha-versioning-release)       docker push <repo>:<tag>
+#
+# How it works:
+#   probe  (runner host) resolves <namespace>/base/ci-build:latest and .../runtime-base:latest to digests,
+#          empty when not published yet or when this change rebuilds them, and reads the group of the
+#          host's docker socket.
+#   build  runs in the CI build image when the probe found it. An empty image runs the job on the host
+#          instead (the first-run bootstrap): setup-build-env then installs the toolchain and builds the
+#          runtime base locally. In the container the job runs as the image's user 1001 (the hosted runner
+#          UID, so the workspace keeps its owner), joins the socket's group, and runs `run:` steps with bash.
+# Do not add docker/setup-buildx-action to the build job: a docker-container builder cannot see a
+# runtime base that setup-build-env built locally. Update every action to its current major when adopting.
+jobs:
+  probe:
+    name: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      ci-image: ${{ steps.images.outputs.ci-build }}
+      base-image: ${{ steps.images.outputs.runtime-base }}
+      docker-gid: ${{ steps.socket.outputs.gid }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Resolve the published base images to digests
+        id: images
+        env:
+          NAMESPACE: __IMAGE_NAMESPACE__
+          REBUILD: ${{ inputs.rebuild-base }}
+        run: |
+          set -euo pipefail
+          # Resolved once per run: every job of this run then uses the same image, even if base-image.yml
+          # publishes a new one meanwhile. Empty = bootstrap on the runner host.
+          for name in ci-build runtime-base; do
+            ref=""
+            if [[ $REBUILD != true ]]; then
+              digest=$(docker buildx imagetools inspect "$NAMESPACE/base/$name:latest" --format '{{.Manifest.Digest}}' 2>/dev/null) || digest=""
+              if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then ref="$NAMESPACE/base/$name@$digest"; fi
+            fi
+            echo "$name=$ref" >> "$GITHUB_OUTPUT"
+            echo "- base/$name: ${ref:-not published yet, or rebuilt by this change: the build runs on the runner host}" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Group of the docker socket on this runner image
+        id: socket
+        run: |
+          set -euo pipefail
+          # The runner mounts /var/run/docker.sock into job containers; its group ID differs between
+          # runner images, so the build job's container joins it by number (--group-add).
+          gid=$(stat -c %g /var/run/docker.sock)
+          [[ $gid =~ ^[0-9]+$ ]] || { echo "::error::cannot read the group of /var/run/docker.sock"; exit 1; }
+          echo "gid=$gid" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    # The CI build image, by digest; '' runs the job on the runner host (bootstrap). The runner pulls it
+    # before the first step, so a login step cannot help: the credentials go here (packages: read).
+    # Socket access is root-equivalent on the host: fine on ephemeral GitHub-hosted runners, never on a
+    # persistent self-hosted runner. On a runner whose user is not 1001, rebuild the image with
+    # --build-arg RUNNER_UID=<uid> (or add `--user <uid>` to options).
+    container:
+      image: ${{ needs.probe.outputs.ci-image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --group-add ${{ needs.probe.outputs.docker-gid }}
+    # A job container gets `sh` as its default shell; the steps use bash syntax. Both the CI build image
+    # and the runner host have bash.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # versions derived from git need tags and history
+
+      - uses: ./.github/actions/registry-login
+
+      - name: Build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          install-toolchain: ${{ needs.probe.outputs.ci-image == '' }}
+          ensure-base: runtime-base
+          runtime-base-image: ${{ needs.probe.outputs.base-image }}
+          rebuild-base: ${{ inputs.rebuild-base }}
+
+      - name: Where this job runs
+        env:
+          CI_IMAGE: ${{ needs.probe.outputs.ci-image }}
+        run: |
+          {
+            if [[ -n $CI_IMAGE ]]; then
+              echo "Job container \`$CI_IMAGE\` as $(id -u):$(id -g) (groups $(id -G))."
+            else
+              echo "Runner host: the CI build image is not published yet, or this change rebuilds it. Run base-image.yml."
+            fi
+            docker version --format '- docker client {{.Client.Version}}, engine {{.Server.Version}}' 2>/dev/null ||
+              echo "- docker: engine not reachable"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and unit tests
+        run: |
+          set -euo pipefail
+          __BUILD_COMMAND__
+
+      - name: Build images (FROM $BASE_IMAGE)
+        run: |
+          set -euo pipefail
+          __IMAGE_BUILD_COMMAND__
+
+      - name: Push images
+        if: inputs.push-images
+        run: |
+          set -euo pipefail
+          __IMAGE_PUSH_COMMAND__
