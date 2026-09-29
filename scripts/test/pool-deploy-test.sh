@@ -110,10 +110,21 @@ in_dir() { # <dir> <command...>: the command, run from <dir>
     shift
     (cd "$dir" && "$@")
 }
+# copy_config <dest>: a copy of config/ without the placements deploy-dev records (the `host` of every target
+# of a pooled flow), so each case starts from an unplaced inventory whatever main's write-back last recorded.
+# Flows without a pool keep their hosts: there a compose target needs one.
+copy_config() {
+    local f
+    cp -R "$REPO/config" "$1"
+    for f in "$1"/*/*/workflows-config.yml; do
+        [ -f "$f" ] || continue
+        yq -i 'with(select(.pool != null); del(.targets[].host))' "$f"
+    done
+}
 # fixture <name> [yq expression for us-dev/cash/workflows-config.yml]: a copy of config/, printed as a CONFIG_ROOT.
 fixture() {
     mkdir -p "$WORK/$1"
-    cp -R "$REPO/config" "$WORK/$1/config"
+    copy_config "$WORK/$1/config"
     [ -z "${2:-}" ] || yq -i "$2" "$WORK/$1/config/us-dev/cash/workflows-config.yml"
     printf '%s' "$WORK/$1/config"
 }
@@ -478,7 +489,7 @@ case_write_back() { # the box is recorded as host in the flow's workflows-config
     git init -q --bare "$g/remote.git"
     git -C "$g/remote.git" symbolic-ref HEAD refs/heads/main
     git init -q "$g/work"
-    cp -R "$REPO/config" "$g/work/config"
+    copy_config "$g/work/config"
     git -C "$g/work" checkout -q -b main
     git -C "$g/work" add -A
     git -C "$g/work" -c user.name=test -c user.email=test@example.com commit -q -m fixture
