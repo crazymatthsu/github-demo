@@ -34,12 +34,16 @@ command -v jq >/dev/null 2>&1 || { echo "selftest: jq is required" >&2; exit 2; 
 
 SKILL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 ASSETS=$SKILL_DIR/assets
-abs() { (cd "$(dirname "$1")" && printf '%s/%s' "$(pwd -P)" "$(basename "$1")"); }
-STACK_SH=$(abs "${STACK_SH:-$ASSETS/scripts/stack.sh}")
-KIND_SH=$(abs "${KIND_SH:-$ASSETS/scripts/kind.sh}")
-HELM_RELEASE_SH=$(abs "${HELM_RELEASE_SH:-$ASSETS/scripts/helm-release.sh}")
-SMOKE_DIFF_SH=$(abs "${SMOKE_DIFF_SH:-$ASSETS/scripts/smoke-diff.sh}")
-JUNIT_SUMMARY_SH=$(abs "${JUNIT_SUMMARY_SH:-$ASSETS/scripts/junit-summary.sh}")
+abs() { if [[ -d $(dirname "$1") ]]; then (cd "$(dirname "$1")" && printf '%s/%s' "$(pwd -P)" "$(basename "$1")"); else printf '%s' "$1"; fi; }
+# SUT_*: the scripts under test (STACK_SH and KIND_SH would fall to the environment scrub below).
+SUT_STACK=$(abs "${STACK_SH:-$ASSETS/scripts/stack.sh}")
+SUT_KIND=$(abs "${KIND_SH:-$ASSETS/scripts/kind.sh}")
+SUT_HELM_RELEASE=$(abs "${HELM_RELEASE_SH:-$ASSETS/scripts/helm-release.sh}")
+SUT_SMOKE_DIFF=$(abs "${SMOKE_DIFF_SH:-$ASSETS/scripts/smoke-diff.sh}")
+SUT_JUNIT=$(abs "${JUNIT_SUMMARY_SH:-$ASSETS/scripts/junit-summary.sh}")
+for sut in "$SUT_STACK" "$SUT_KIND" "$SUT_HELM_RELEASE" "$SUT_SMOKE_DIFF" "$SUT_JUNIT"; do
+  [[ -f $sut ]] || { echo "selftest: $sut not found" >&2; exit 2; }
+done
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ete-selftest.XXXXXX")
 # shellcheck disable=SC2329 # invoked by the EXIT trap
@@ -49,7 +53,7 @@ trap cleanup EXIT
 # Never inherit a real CI context, engine or cluster.
 while IFS= read -r var; do unset "$var"; done < <(env | sed -n 's/^\(GITHUB_[A-Z_]*\|RUNNER_[A-Z_]*\|CI_[A-Z_]*\|COMPOSE_[A-Z_]*\|STACK_[A-Z_]*\|KIND_[A-Z_]*\|TEST_[A-Z_]*\|APP_[A-Z_]*\|KUBECONFIG\)=.*/\1/p')
 # The example compose files carry com.example.ci labels; an adapted script may default to another prefix.
-export HOME=$WORK/home CI= CI_LABEL_PREFIX=com.example.ci
+export HOME=$WORK/home CI='' CI_LABEL_PREFIX=com.example.ci
 mkdir -p "$HOME" "$WORK/bin" "$WORK/state"
 export STUB_LOG=$WORK/calls.log STUB_STATE=$WORK/state
 
@@ -273,7 +277,7 @@ load_github_env() { set -a; # shellcheck source=/dev/null
 # --- stack.sh -----------------------------------------------------------------------------------------------
 REPO=$WORK/repo
 mkdir -p "$REPO/test-infra/compose" "$REPO/services/api"
-cp "$STACK_SH" "$REPO/test-infra/compose/stack.sh"
+cp "$SUT_STACK" "$REPO/test-infra/compose/stack.sh"
 cp "$ASSETS"/compose/{base.yml,test-runner.yml,postgres.yml,postgres.local.yml} "$REPO/test-infra/compose/"
 cp "$ASSETS/compose/app.compose.yml" "$REPO/services/api/compose.test.yml"
 sed -e 's#__PROJECT_ID__#services/api#' "$ASSETS/compose/stacks.yml" >"$REPO/test-infra/compose/stacks.yml"
@@ -328,6 +332,7 @@ for f in compose-ps.txt postgres.log app.log state-postgres.json state-app.json 
   if [[ -s $WORK/diag/$f ]]; then ok "diagnostics wrote $f"; else ls -la "$WORK/diag" >"$OUT" 2>&1; not_ok "diagnostics wrote $f"; fi
 done
 check "stack.sh leak-check before down finds the stack" 1 bash "$STACK" leak-check
+# shellcheck disable=SC2016 # Markdown backticks in the pattern, not a command substitution
 expect "the leak summary lists the resources" '^\| volume \| `ci-4242-2_postgres-data` \|$' "$GITHUB_STEP_SUMMARY"
 check "stack.sh leak-check --warn-only reports without failing" 0 bash "$STACK" leak-check --warn-only
 expect "--warn-only raises a warning annotation" '^::warning title=leak-check::' "$OUT"
@@ -362,7 +367,7 @@ check "stack.sh down with nothing recorded" 0 bash "$STACK" down
 # --- kind.sh ------------------------------------------------------------------------------------------------
 echo "# kind.sh"
 mkdir -p "$REPO/test-infra/kind"
-cp "$KIND_SH" "$REPO/test-infra/kind/kind.sh"
+cp "$SUT_KIND" "$REPO/test-infra/kind/kind.sh"
 cp "$ASSETS/kind/cluster.yaml" "$ASSETS/kind/versions.env" "$REPO/test-infra/kind/"
 KIND=$REPO/test-infra/kind/kind.sh
 reset_state
@@ -402,7 +407,7 @@ laptop_env
 
 # --- helm-release.sh ----------------------------------------------------------------------------------------
 echo "# helm-release.sh"
-HR=$HELM_RELEASE_SH
+HR=$SUT_HELM_RELEASE
 CHART=$WORK/chart
 mkdir -p "$CHART" "$WORK/values"
 printf 'apiVersion: v2\nname: api\nversion: 0.1.0\n' >"$CHART/Chart.yaml"
@@ -447,7 +452,7 @@ expect "template mode writes the manifests" 'image: "ghcr.io/o/api:1.4.0-rc.3"' 
 
 # --- smoke-diff.sh ------------------------------------------------------------------------------------------
 echo "# smoke-diff.sh"
-SD=$SMOKE_DIFF_SH
+SD=$SUT_SMOKE_DIFF
 reset_state
 echo '{"instance":"eu-1","config":{"table":"a"},"uptime":12}' >"$STUB_STATE/exec-api-eu-1"
 echo '{"instance":"us-1","config":{"table":"b"},"uptime":40}' >"$STUB_STATE/exec-api-us-1"
@@ -461,7 +466,7 @@ check "smoke-diff.sh: a release that does not answer" 1 bash "$SD" -n apps api-e
 
 # --- junit-summary.sh ---------------------------------------------------------------------------------------
 echo "# junit-summary.sh"
-JS=$JUNIT_SUMMARY_SH
+JS=$SUT_JUNIT
 mkdir -p "$WORK/junit/svc-a/build/test-results/it" "$WORK/junit/svc-b/build/test-results/it"
 echo '<?xml version="1.0"?><testsuite name="a.DbIT" tests="3" skipped="1" failures="0" errors="0"></testsuite>' >"$WORK/junit/svc-a/build/test-results/it/TEST-a.DbIT.xml"
 echo '<?xml version="1.0"?><testsuite name="b.ApiIT" tests="2" skipped="0" failures="1" errors="0"></testsuite>' >"$WORK/junit/svc-b/build/test-results/it/TEST-b.ApiIT.xml"

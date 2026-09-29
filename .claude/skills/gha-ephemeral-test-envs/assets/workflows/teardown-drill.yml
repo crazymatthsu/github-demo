@@ -30,7 +30,7 @@ on:
         options: [all, cancel-target]
         default: all
       parent-run:
-        description: Internal - the run that dispatched the drill.
+        description: Internal - <run id>-<attempt> of the run that dispatched the drill.
         type: string
         default: ''
 
@@ -135,9 +135,11 @@ jobs:
           # This workflow's own file name, whatever it is called (owner/repo/.github/workflows/<file>@<ref>).
           workflow=${GITHUB_WORKFLOW_REF%@*}
           workflow=${workflow##*/}
-          title="teardown drill (self-cancel) for run $GITHUB_RUN_ID"
+          # The attempt keeps the title unique when this drill is re-run: the first attempt's target has finished.
+          parent="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          title="teardown drill (self-cancel) for run $parent"
           # workflow_dispatch is one of the events a GITHUB_TOKEN may trigger.
-          gh workflow run "$workflow" --ref "$GITHUB_REF_NAME" -f drill=cancel-target -f parent-run="$GITHUB_RUN_ID"
+          gh workflow run "$workflow" --ref "$GITHUB_REF_NAME" -f drill=cancel-target -f parent-run="$parent"
           # The dispatch does not return the new run's id: find it by its run-name.
           id=''
           for _ in $(seq 1 30); do
