@@ -23,7 +23,7 @@ rebuild. A bootstrap path keeps a brand-new repository green before any of these
    lines are written once, there is one image to patch, scan and rotate, and app Dockerfiles stay reviewable.
 3. **Bake the enterprise CA into both trust stores at build time.** Every certificate of the bundle goes into
    the OS store (curl, git, apt, OpenSSL clients) and into the JVM's default cacerts (Java reads only that);
-   Node.js and Python get variables pointing at the OS bundle; the build verifies every certificate. Why: the
+   Node.js and Python get environment variables pointing at the bundles; the build verifies every certificate. Why: the
    image is self-contained (no runtime mount to forget on a laptop or in CI), and a missing import fails the
    build instead of a TLS handshake in production.
 4. **Pin every version as a build arg and verify every download.** One `ARG` per tool under a `# renovate:`
@@ -126,15 +126,16 @@ The image name is the Dockerfile's base name: `docker/base/<name>.Dockerfile` be
    build args in `base-image.yml` and change its `--expect-uid`.
 5. Enterprise registry: pull upstream images through its remote (`TOOLCHAIN_IMAGE`, `RUNTIME_IMAGE` and the
    tool stage images), set `registry-login` inputs, and list the remote in hadolint's `trustedRegistries`.
-6. No private CA at all: delete the `COPY ${CA_BUNDLE_FILE}` line and the CA part of the following `RUN` in
-   both base Dockerfiles (keep ci-build's user and self-check), and pass `--no-ca` to `verify-image.sh`.
+6. No private CA at all: delete the `COPY ${CA_BUNDLE_FILE}` line, the CA part of the following `RUN` (keep
+   ci-build's user and self-check) and the `NODE_EXTRA_CA_CERTS` line in both base Dockerfiles, and add
+   `--no-ca` to the `verify` arguments in `base-image.yml`.
 
 | Stack | `TOOLCHAIN_IMAGE` (ci-build) | `RUNTIME_IMAGE` | setup-build-env `toolchain` / `toolchain-version` / `build-tool` | Build command in the container |
 |---|---|---|---|---|
 | Java + Gradle (proven) | `eclipse-temurin:21-jdk` | `eclipse-temurin:21-jre` | `java` / `21` / `gradle` | `./gradlew build --continue` |
 | Java + Maven | `maven:3-eclipse-temurin-21` | `eclipse-temurin:21-jre` | `java` / `21` / `maven` | `./mvnw -B verify` |
 | Node.js | `node:22` | `node:22-slim` | `node` / `22` / `npm` or `pnpm` | `npm ci && npm test` (pnpm: add `corepack enable` to the image) |
-| Python | `python:3.13` | `python:3.13-slim` | `python` / `3.13` / `pip` | `pip install -r requirements.txt && pytest` |
+| Python | `python:3.13` | `python:3.13-slim` | `python` / `3.13` / `pip` | `python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pytest` (user 1001 cannot write site-packages) |
 | Go | `golang:1.25` | `debian:stable-slim` | `go` / `1.25` / `go` | `go build ./... && go test ./...` |
 
 (Image names under `docker.io/library/`; fully qualified, because Podman requires it.)
@@ -232,7 +233,8 @@ Symptom → cause → fix.
 - **`PKIX path building failed` (Java), `self signed certificate in certificate chain` (Node.js, npm),
   `unable to get local issuer certificate` (curl, git, Python)** → the CA is missing from the store that
   client reads: Java only reads cacerts, Node.js its own roots, requests and pip certifi → both stores in the
-  base images, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` pointing at the OS bundle.
+  base images, `NODE_EXTRA_CA_CERTS` (the company bundle), `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` (the full
+  OS bundle).
 - **Only the first certificate of the bundle is trusted** → `update-ca-certificates` and `keytool` take one
   certificate per file → split the bundle, import and verify each certificate.
 - **A certificate in the middle of the bundle fails to import, yet the build passes** → bash ignores `-e` in a

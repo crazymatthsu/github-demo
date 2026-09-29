@@ -10,6 +10,7 @@ Contents: 1 The chain · 2 What main must publish · 3 release.yml job by job ·
 ## 1. The chain
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
 flowchart TD
   M(["merge to main"]) --> B["main: build once, push<br/>X.Y.Z-rc.N and sha-abc1234"]
   B --> T["tests against that digest"]
@@ -17,7 +18,7 @@ flowchart TD
   RP(["release PR merged<br/>(release-please)"]) -.->|"tag + dispatch"| R
   H(["annotated tag<br/>pushed by hand"]) --> R["release.yml"]
   P -.->|"release.yml waits<br/>for this run"| R
-  R --> PR2["promote: X.Y.Z, plus X.Y, X, latest<br/>when newest, on the same digest"]
+  R --> PR2["promote: X.Y.Z, and X.Y, X, latest<br/>when newest, on the same digest"]
   PR2 --> S["SBOM per image"]
   S --> G["GitHub Release"]
   G --> BP[/"bump PR to the<br/>next environment"/]
