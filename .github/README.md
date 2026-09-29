@@ -6,6 +6,9 @@ as the stand-in for JFrog. Every job runs on GitHub-hosted `ubuntu-latest`.
 
 ## Workflows
 
+Flow diagrams, one per trigger, with the jobs, the reusable workflows and the composite actions each
+pipeline uses: [`workflows/README.md`](workflows/README.md).
+
 | File | Trigger | What it does |
 |---|---|---|
 | `workflows/pr.yml` | push to any branch except `main` / `hotfix/**`; `pull_request`; `merge_group` | `detect affected` → `lint` (hadolint, ShellCheck, script tests `scripts/test/*-test.sh`, actionlint) + `build` + `config-lint`; on PRs and the merge queue also images `pr-<n>-<sha7>`, the component IT matrix and, when `deploy-test` is set and the `source-database` image was pushed, `kind-deploy`; `pr-gate` fans in |
