@@ -2,7 +2,9 @@
 
 Read this when you add the scheduled cleanup of the image registry, or when someone asks why an image
 vanished or why the registry keeps growing. The rules come from the reference repository's nightly
-retention job (a GHCR sweep in bash with `gh api`); the algorithm below is enough to rebuild it.
+retention job (a GHCR sweep in bash with `gh api`). The skill ships it, generalised: `scripts/retention.sh`
+(tests: `scripts/test-retention.sh`, against a stubbed `gh`) and the workflow `assets/workflows/retention.yml`;
+sections 5 and 6 say how they work and how to install them.
 
 Contents: 1 Rules · 2 The unit of deletion · 3 In-use protection · 4 GHCR API · 5 Algorithm ·
 6 The nightly job · 7 Other registries · 8 Gotchas
@@ -19,8 +21,9 @@ Contents: 1 Rules · 2 The unit of deletion · 3 In-use protection · 4 GHCR API
 | untagged versions | never (on GHCR) | GHCR lists the per-platform manifests of a multi-platform image as untagged versions; deleting them breaks the tagged index |
 | anything else (`local`, unknown patterns) | keep, report "no retention rule" | an unknown tag is a question for a human, not for a sweep |
 
-Dry run by default: the scheduled job only reports until a repository variable says otherwise, and a
-manual run has a `DRY_RUN` input. The first real deletion should follow a reviewed dry-run report.
+Dry run by default: the scheduled job only reports until the repository variable `RETENTION_DELETE` is
+`true`, and a manual run deletes only with its `dry-run` input unticked. The first real deletion should
+follow a reviewed dry-run report.
 
 ## 2. The unit of deletion
 
@@ -47,6 +50,11 @@ Adapt the patterns to where your environments pin their images (skill gha-config
 too? Then protect the digests the configuration names as well. The same query answers "which versions are
 deployed where" for other tools, so keep it in a script both can call.
 
+`scripts/retention.sh` reads this layout in its `config_refs()`: `IMAGE_TAG=` of `compose.env` (another
+variable: `RETENTION_TAG_VAR`) and `tag:` lines of `values*.yaml`, quoted or not, comments ignored, plus every
+`sha256:<digest>` in those files (`image.digest`, `IMAGE_TAG=<tag>@sha256:…`). For another layout, adapt
+that function; `CONFIG_DIR` moves the tree.
+
 ## 4. GHCR API
 
 | Need | Call |
@@ -64,54 +72,68 @@ deployed where" for other tools, so keep it in a script both can call.
 
 ## 5. Algorithm
 
+`scripts/retention.sh` implements it (flags and environment: `retention.sh --help`); `scripts/test-retention.sh`
+holds its cases against a stubbed `gh`.
+
 ```text
-protected := tags referenced by the configuration (section 3)
+protected := tags and digests referenced by the configuration (section 3)
 for each package (image) of the repository:
-  versions := list with id, created_at, tags
+  versions := list with id, digest, created_at, tags
   rc := []
   for each version:
     if no tags:                              keep  "untagged (may belong to a tagged index)"
-    elif any tag in protected:               keep  "in use"
+    elif digest or any tag in protected:     keep  "in use"
     elif any tag is X.Y.Z / main / latest / X / X.Y:   keep  "release or moving tag"
+    elif any tag is not pr-*, *-rc.* or sha-*:         keep  "no retention rule"
     elif a tag is pr-<n>-<sha7>:
       if PR <n> closed more than PR_GRACE_DAYS ago:     delete
       else:                                  keep  "PR open or closed recently"
     elif a tag ends in -rc.<n>:              rc += version
-    else:                                    keep  "no retention rule"
+    else:                                    keep  "no retention rule"   (sha-<sha7> alone)
   sort rc by created_at, newest first
   for rank, version in rc:
     if rank <= RC_KEEP:                      keep
     elif age < RC_MIN_AGE_DAYS:              keep
     else:                                    delete
+  if every tagged version would go:          keep the newest of them (GHCR refuses to delete the last one)
 report every decision (package, version id, tags, age, decision, reason) to stdout and the job summary
 exit 1 if any API call failed (after trying everything else)
 ```
 
 Count API errors instead of stopping at the first one, so one unreadable package does not block the
-cleanup of the others; skip (and report) a package that does not exist yet.
+cleanup of the others; skip (and report) a package that does not exist yet. Details the pseudo-code leaves
+open:
+
+- Ages are whole days since `created_at` / `closed_at`: a pull request closed 7 days and 1 hour ago is past a
+  7-day grace, a pre-release exactly 30 days old is no longer younger than 30 days.
+- An unknown tag keeps even a version that also carries a `pr-*` or `-rc.` tag: deleting the version would
+  delete the tag a human put there. Released and in-use pre-releases are not ranked, so they take none of the
+  `RC_KEEP` places.
+- The digest of a container package version is its `.name` in the API; the script calls `gh api` without
+  `--jq` and filters the raw JSON with jq, which also parses the dates (no GNU `date`).
+- Each pull request is looked up once per run. A failed lookup keeps its versions and counts as an API error;
+  a package that answers 404 (not pushed yet, or invisible to the token) is skipped with a warning.
 
 ## 6. The nightly job
 
-```yaml
-  retention:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read       # the configuration for the in-use query
-      packages: write      # delete package versions
-      pull-requests: read  # closed_at of PRs
-    steps:
-      - uses: actions/checkout@v7
-      - name: Sweep the registry
-        env:
-          GH_TOKEN: ${{ secrets.RETENTION_TOKEN || github.token }}
-          # Scheduled runs only report unless the repository variable RETENTION_DRY_RUN is 'false'.
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.DRY_RUN) || vars.RETENTION_DRY_RUN || 'true' }}
-        run: scripts/ci/retention.sh     # your implementation of section 5
-```
+`assets/workflows/retention.yml` runs the script every night (`41 3 * * *`) and on demand:
 
-Trigger it from the nightly schedule (`cron`) with a `workflow_dispatch` input `DRY_RUN` (boolean, default
-true). Put the decision table into `$GITHUB_STEP_SUMMARY`: it is the audit trail of what was deleted.
+1. Copy `scripts/retention.sh` to `scripts/ci/` (executable), `scripts/test-retention.sh` to
+   `scripts/test/retention-test.sh` and the workflow to `.github/workflows/`.
+2. Packages: by default every `image: true` project of `.github/affected-map.yml` (skill gha-affected-builds),
+   named as `_build.yml` names its image (the last segment of the project key). Set `IMAGE_PATH_PREFIX` in
+   the workflow's `env` block when the images live below the owner (`ghcr.io/<owner>/team` → `team/`), or list
+   the packages in `RETENTION_PACKAGES`. The rule parameters and `CONFIG_DIR` sit in the same block.
+3. Token: `GH_TOKEN: ${{ secrets.RETENTION_TOKEN || github.token }}`; section 4 says when each one can delete.
+4. Let it report first. Every run writes the decision table to `$GITHUB_STEP_SUMMARY`, the audit trail of what
+   was deleted. After reviewing a few dry runs, set the repository variable `RETENTION_DELETE` to `true`:
+   scheduled runs delete from then on. A manual run deletes only with the boolean input `dry-run` unticked
+   (`gh workflow run retention.yml -f dry-run=false`).
+
+The job checks out the default branch whatever ref started it, holds `contents: read`, `packages: write` and
+`pull-requests: read`, runs one at a time (`concurrency: retention`) within 30 minutes, and turns red when an
+API call failed (each one named in the log and the summary). A first run over a registry that grew for months
+can delete thousands of versions and stop at the timeout or a rate limit; the next run continues.
 
 ## 7. Other registries
 

@@ -9,8 +9,8 @@ description: 'Versioning and releases for GitHub Actions without a version file:
 
 A version for every build computed from git alone, an image tag scheme that maps every tag to one commit,
 and a release path that ships exactly the bytes main tested: a release adds tags to the tested digest,
-never rebuilds. Scripts (`git-version.sh`, `retag-image.sh`, `resolve-image.sh`) with tests, and workflow
-templates (`release.yml`, `_promote.yml`, optional `release-please.yml`).
+never rebuilds. Scripts (`git-version.sh`, `retag-image.sh`, `resolve-image.sh`, `retention.sh`) with tests,
+and workflow templates (`release.yml`, `_promote.yml`, `retention.yml`, optional `release-please.yml`).
 
 ## Principles
 
@@ -160,7 +160,10 @@ Release and open the bump pull request. Details: references/version-scheme.md an
 - Packages grant this repository Actions access (write for pushes and retags, admin for deletes).
 - A ruleset restricts who may create `v*` tags; `main` and `hotfix/**` are protected.
 - Environments with reviewers guard promotion jobs that move images into qa/prod registry paths.
-- Add the nightly retention job per references/retention.md.
+- Retention: copy `scripts/retention.sh` to `scripts/ci/`, `scripts/test-retention.sh` to
+  `scripts/test/retention-test.sh` and `assets/workflows/retention.yml` to `.github/workflows/`; review the
+  dry-run summaries of the first nights, then set the repository variable `RETENTION_DELETE` to `true`
+  (references/retention.md §6).
 
 ### 8. Validate, then prove it
 
@@ -182,6 +185,9 @@ re-asserted by publish), then cut the first release (references/release-flow.md 
 | `assets/release-please-config.example.json` | `simple` type, `initial-version` 0.1.0, one package per line, root `exclude-paths` | `__ROOT_COMPONENT__`, `__SUB_PACKAGE_PATH__`, `__SUB_COMPONENT__` |
 | `references/version-scheme.md` | forms, bump rules, tag scheme, lines, feeding Gradle/Maven/npm/Go/Python | — |
 | `references/release-flow.md` | the chain, release.yml job by job, manual route, hotfix, release-please, promotion targets | — |
+| `scripts/retention.sh` | GHCR retention sweep, dry run by default: `pr-*` once the PR has been closed 7 days, `-rc.` beyond the 20 newest and 30 days old; never releases, moving tags, untagged versions, unknown tags or a tag or digest the config tree references; decision table in the job summary | packages: `--package` / `RETENTION_PACKAGES`, else the `image: true` projects of `.github/affected-map.yml` (`IMAGE_PATH_PREFIX` for a namespace below the owner); `PR_GRACE_DAYS`, `RC_KEEP`, `RC_MIN_AGE_DAYS`, `CONFIG_DIR`, `RETENTION_TAG_VAR` |
+| `scripts/test-retention.sh` | 95 cases against a stubbed `gh` (every rule and boundary, in use by tag and digest, org/user scope, paging, API failures, summary, usage) | install as `scripts/test/retention-test.sh`; the 6 affected-map cases need yq |
+| `assets/workflows/retention.yml` | nightly and manual sweep on the default branch; dry run unless the variable `RETENTION_DELETE` is `true` (schedule) or the `dry-run` input is unticked | the `env` block; a `RETENTION_TOKEN` secret when the packages cannot grant this repository Admin |
 | `references/retention.md` | what to keep and delete, GHCR API, algorithm, nightly job, other registries | — |
 
 Third-party actions are pinned to a major version as in the reference (`actions/checkout@v7`,
@@ -220,8 +226,11 @@ Run in the target repository before handing the pipeline over:
 ```bash
 bash scripts/test/git-version-test.sh          # 83 cases, temp repositories
 bash scripts/test/retag-image-test.sh          # 31 cases, stubbed docker
-shellcheck --severity=style scripts/ci/git-version.sh scripts/ci/retag-image.sh scripts/ci/resolve-image.sh scripts/test/*-test.sh
-actionlint .github/workflows/release.yml .github/workflows/_promote.yml .github/workflows/release-please.yml
+bash scripts/test/retention-test.sh            # 95 cases, stubbed gh
+shellcheck --severity=style scripts/ci/git-version.sh scripts/ci/retag-image.sh scripts/ci/resolve-image.sh \
+  scripts/ci/retention.sh scripts/test/*-test.sh
+actionlint .github/workflows/release.yml .github/workflows/_promote.yml .github/workflows/release-please.yml \
+  .github/workflows/retention.yml
 python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' .github/workflows/*.yml
 python3 -m json.tool release-please-config.json >/dev/null && python3 -m json.tool .release-please-manifest.json >/dev/null
 grep -rn '__[A-Z0-9_]*__' .github/ scripts/ release-please-config.json || echo "no placeholders left"
@@ -257,3 +266,6 @@ ADRs DL-03, DL-04, DL-05, DL-09 and DL-20. Its main path ran green there on GHCR
 publish by digest, dev deploy with write-back) and release-please opened its combined release pull
 request; the release workflow's logic was re-tested here with stubs, and the image scripts against a real
 registry. The portable scripts reimplement the algorithm in bash; nothing depends on that repository.
+`retention.sh` and `retention.yml` generalise the reference's nightly sweep (the in-use protection now also
+covers digests); they are tested against a stubbed `gh` only, so review the first dry-run reports before
+enabling deletion.
