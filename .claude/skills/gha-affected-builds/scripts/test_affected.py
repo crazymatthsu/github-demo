@@ -179,9 +179,12 @@ class GitMode(unittest.TestCase):
     def setUpClass(cls):
         cls.repo = repo = TMP / "repo"
         repo.mkdir()
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.email", "test@example.com")
-        git(repo, "config", "user.name", "test")
+        (TMP / "no-hooks").mkdir()
+        git(repo, "init", "-q")
+        git(repo, "symbolic-ref", "HEAD", "refs/heads/main")  # `init -b` needs git 2.28
+        for key, value in (("user.email", "test@example.com"), ("user.name", "test"),
+                           ("commit.gpgsign", "false"), ("core.hooksPath", str(TMP / "no-hooks"))):
+            git(repo, "config", key, value)
 
         def commit(files: dict, message: str, remove=()):
             for name in remove:
@@ -248,8 +251,10 @@ class GitMode(unittest.TestCase):
         lines = ACTION.read_text(encoding="utf-8").splitlines()
         start = lines.index("      run: |") + 1
         body = "\n".join(line[8:] for line in lines[start:] if line.startswith("        ") or not line.strip())
-        git(self.repo, "update-ref", "refs/remotes/origin/trunk", "main")
-        cases = [("", "", ["services/api"]), ("trunk", "", ["services/api"]), ("", "main", ["services/api"])]
+        git(self.repo, "update-ref", "refs/remotes/origin/trunk", "feat")  # "trunk" already holds the change
+        cases = [("", "", ["services/api"]),        # no default branch in the event: origin/main
+                 ("trunk", "", []),                 # the event's default branch: origin/trunk
+                 ("trunk", "main", ["services/api"])]  # an explicit input wins
         for repo_default, default_branch, projects in cases:
             out, summary = TMP / "action-out.txt", TMP / "action-summary.md"
             out.write_text("")
@@ -261,6 +266,7 @@ class GitMode(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             values = dict(line.split("=", 1) for line in out.read_text().splitlines())
             self.assertEqual(json.loads(values["projects"]), projects, (repo_default, default_branch))
+            self.assertIn("### Affected projects", summary.read_text(encoding="utf-8"))
         env["SCRIPT"] = "scripts/ci/missing.py"
         proc = subprocess.run(["bash", "-c", body], cwd=self.repo, env=env, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 2)
@@ -322,6 +328,8 @@ class YamlMaps(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        print(__doc__)  # then unittest adds its own options (-k PATTERN, -f, ...)
     try:
         result = unittest.main(exit=False, verbosity=2).result
     finally:

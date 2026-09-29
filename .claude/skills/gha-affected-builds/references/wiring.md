@@ -5,6 +5,8 @@ pull-request workflow. Job ids match the `pr.yml` template of skill `gha-pipelin
 (`detect-affected`, `build`, `integration-test`, `gate`). YAML blocks whose first line names a
 workflow file are excerpts of that file; the build workflow is the reusable `_build.yml` of the same
 skill (inputs `projects`, `build-images`, `push-images`; outputs `images`, `it-projects`, `version`).
+Third-party actions are pinned to a major version as in the reference (`actions/checkout@v7`): update
+to the current major when adopting.
 
 1. [The output contract](#1-the-output-contract)
 2. [The detect job](#2-the-detect-job)
@@ -289,7 +291,7 @@ jobs:
       contents: read
       packages: read
     with:
-      app: services/api
+      project: services/api # the key of `images` whose image the chart runs
       images: ${{ needs.build.outputs.images }}
 
   e2e:
@@ -422,10 +424,10 @@ jobs:
       contents: read
 ```
 
-  The reference ran config lint on every non-docs change (it is cheap, and it also renders charts that
-  live outside the config tree); gate it on `config-changed == 'true' || full == 'true'` only when it
-  is expensive and nothing outside `config` feeds it. On main a config-only merge still runs the whole
-  pipeline and the deployment.
+The reference ran config lint on every non-docs change (it is cheap, and it also renders charts that
+live outside the config tree); gate it on `config-changed == 'true' || full == 'true'` only when it is
+expensive and nothing outside `config` feeds it. On main a config-only merge still runs the whole
+pipeline and the deployment.
 
 ## 9. Merge queue and the label that forces a full run
 

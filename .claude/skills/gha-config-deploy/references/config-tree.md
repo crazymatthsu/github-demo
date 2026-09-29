@@ -173,9 +173,10 @@ both on every PR, so neither rots.
 
 Compose invocation, from one wrapper script that laptops, CI and the hosts share:
 `docker compose -p <env>-<flow>-<app>-<instance> --env-file <instance>/compose.env -f <compose file> up -d --wait`.
-The wrapper validates the tuple against the tree, refuses every env but `local` and dev (qa and prod are
-Kubernetes-only), accepts `IMAGE_TAG` / `IMAGE_REPO` from its environment as the only overrides of
-`compose.env` (how a deploy injects the new tag before the write-back records it), and writes an audit line.
+The wrapper validates the tuple against the tree, refuses every env but `local` and dev while qa and prod run
+on Kubernetes (the reference's case: compose never reaches production), accepts `IMAGE_TAG` / `IMAGE_REPO` from
+its environment as the only overrides of `compose.env` (how a deploy injects the new tag before the write-back
+records it), and writes an audit line.
 
 Keep list-valued keys out of layered values (`env:` as a map, not a list): Helm replaces lists instead of merging
 them, so the instance layer would silently drop the app-common entries.

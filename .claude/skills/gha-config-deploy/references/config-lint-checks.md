@@ -24,7 +24,7 @@ Report every finding in one run rather than stopping at the first, so one push f
 
 | # | Check | Prevents | Fails when (example) |
 |---|---|---|---|
-| 1 | Naming | tokens that break DNS labels, release names and dashboards | `config/us-dev/Payments/` (upper case); instance `2`; `sync-app-ledger-db-to-the-central-warehouse-eu` over 53 characters with the app; `config/us-dev/paymnts/` (flow not allow-listed); an unexpected file at the top of `config/` |
+| 1 | Naming | tokens that break DNS labels, release names and dashboards | `config/us-dev/Payments/` (upper case); instance `2`; instance `ledger-db-to-the-central-data-warehouse` (39 characters, over 32); `<app>-<instance>` over 53; `config/us-dev/paymnts/` (flow not allow-listed); an unexpected file at the top of `config/` |
 | 2 | Apps match deployables | a config directory nobody deploys, or an app nobody configured | `config/us-dev/payments/old-app/` with no project `old-app`; in an env that must be complete (`local`), a project `sync-app` without a directory |
 | 3 | Required and forbidden files | an instance that cannot start, a stray env file | `ledger-db/` without `application.yml`, `compose.env` or `values.yaml`; `app-common/` without `application.yml` or `values.yaml`; a dev flow without `workflows-config.yml`; `compose.env` in `app-common/`; any `.env` file; YAML that does not parse; a nested directory in a layer |
 | 4 | Identity restated | metrics and logs under the wrong name after a copy-paste | `compose.env` of `ledger-db` says `APP_INSTANCE=refunds-db`; `values.yaml` lacks `identity` or `env.APP_FLOW`; `image.tag: "0.2.0"` while `IMAGE_TAG=0.1.9`; `image.tag` or `identity` in `app-common/values.yaml`; `env:` holds a variable outside the app-facing subset; warn when `JAVA_OPTS` / `TZ` / `LOG_LEVEL_ROOT` differ between `compose.env` and the values `env:` |
@@ -57,9 +57,9 @@ Check 11 in detail (one inventory per flow of a dev env, `config/<env>/<flow>/wo
 ## 3. Running it: required through the gate, and locally
 
 Locally, with no CI-only dependency: `./gradlew configLint` in the reference; `python3 scripts/config_lint.py`
-or `make config-lint` elsewhere. Helm, kubeconform and a compose CLI are optional locally (their checks warn when
-the tool is missing) and mandatory in CI (`CI=true` turns the warning into an error), so a laptop without Helm can
-still lint the rest.
+or `make config-lint` elsewhere. Helm and a compose CLI are optional locally (their checks warn when the tool is
+missing) and required in CI (`CI=true` turns the warning into an error), so a laptop without Helm can still lint
+the rest; the reference kept a missing kubeconform a warning everywhere and installed it in CI.
 
 In CI, make config lint a job of the pull-request pipeline whose result feeds the single required gate check
 (see gha-pipeline-design), and run it on `main` before anything is published or deployed. Do not make a

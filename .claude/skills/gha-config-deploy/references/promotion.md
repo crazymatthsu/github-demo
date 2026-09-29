@@ -24,7 +24,7 @@ flowchart LR
   dd --> wb["write-back: IMAGE_TAG / image.tag / host, [skip ci], by the bot"]
   wb -. "loop guard: no second run" .-> main
   tag["release tag vX.Y.Z"] --> rel["release workflow: promote the tested digest"]
-  rel --> pr["bump PR on config/<qa env>/**"]
+  rel --> pr["bump PR on config/QA-ENV/**"]
   pr --> ok{"CODEOWNERS approve"}
   ok -- merge --> qa["qa deployer (controller or promote job)"]
   qa --> prodpr["prod bump PR, change ticket"] --> prod["prod deployer inside its window"]
@@ -89,11 +89,11 @@ App.
 Config lives in the repository that deploys it, so the write-back is a push to `main`, and a push to `main`
 starts `main.yml`. Three guards, each covering what the others miss:
 
-| Guard | Covers | Misses on its own |
+| Guard | Stops | Why the others do not cover it |
 |---|---|---|
-| `[skip ci]` in the write-back message | GitHub starts no `push` / `pull_request` run at all (no minutes, no lint of a bot edit) | a human replaying the commit without the marker; the marker copied into a human commit by accident (warn in PR lint) |
-| `if: github.actor != '<bot>'` on the jobs | a bot push without the marker, a renamed commit | needs a stable bot identity (an App's `<slug>[bot]`) |
-| a concurrency group of its own for bot runs | a bot run queued behind a human merge | nothing: GitHub keeps one pending run per group, and a newer pending run cancels the older pending one, so a bot run in the shared group could cancel a human's queued deploy |
+| `[skip ci]` in the write-back message | any `push` / `pull_request` run for the write-back (no minutes, no lint of a bot edit) | it depends on the message: a replay without the marker runs, and a human who copies the marker skips CI by accident (warn in PR lint) |
+| `if: github.actor != '<bot>'` on the jobs | the jobs of a run the bot's push started anyway | it needs a stable bot identity (an App's `<slug>[bot]`), and the run still enters the concurrency queue |
+| a concurrency group of its own for bot runs | a bot run displacing a human's queued run | GitHub keeps one pending run per group and a newer pending run cancels the older pending one: a bot run in the shared group would cancel a human's queued deploy before the actor check skipped its jobs |
 
 Do not use `paths-ignore: config/**` on `main.yml` as a guard: a human config-only merge must still deploy. With
 `GITHUB_TOKEN` the write-back push starts no workflow in the first place (events created by `GITHUB_TOKEN` never
@@ -104,10 +104,11 @@ do, except `workflow_dispatch` and `repository_dispatch`); the guards matter fro
 - `GITHUB_TOKEN` (the default of the template) pushes as `github-actions[bot]`, starts no run, and needs
   `contents: write`. It is enough while `main` accepts direct pushes from workflows.
 - A ruleset (or classic branch protection) that requires pull requests on `main` rejects the push
-  (`GH013: Repository rule violations`). Grant a bypass to the pushing identity: a GitHub App installed on the
-  repository with `contents: write`, added to the ruleset's bypass list. The template switches to it when the
-  repository variable `WRITE_BACK_APP_ID` and the secret `WRITE_BACK_APP_PRIVATE_KEY` exist
-  (`actions/create-github-app-token`), commits as `<slug>[bot]`, and `main.yml`'s guard must then name that login.
+  (`GH013: Repository rule violations found`; `GH006: Protected branch update failed` with classic protection).
+  Grant a bypass to the pushing identity: a GitHub App installed on the repository with `contents: write`, added
+  to the ruleset's bypass list. The template switches to it when the repository variable `WRITE_BACK_APP_ID` and
+  the secret `WRITE_BACK_APP_PRIVATE_KEY` exist (`actions/create-github-app-token`), commits as `<slug>[bot]`,
+  and `main.yml`'s guard must then name that login.
 - The alternative, a write-back pull request with auto-merge, keeps the ruleset without a bypass but needs the
   App token too (a PR opened with `GITHUB_TOKEN` runs no checks, so it never becomes mergeable) and adds a merge
   delay per deploy.
@@ -180,8 +181,8 @@ registry and then opens one bump PR per target env, changing only `config/<qa en
   make the approval of the owning team the deploy intent. One owner line needs one approval from any listed
   owner; for two distinct approvals on prod add required reviewers on the promotion job's Environment
   (`<region>-prod`) or raise the ruleset's required approvals.
-- The PR body lists the images by digest, the release, and the main run that tested them; the prod PR also
-  carries a `Change-Ticket:` trailer that a PR lint checks.
+- Extend the PR body with the images by digest, the release link and the main run that tested them (the
+  snippet keeps it short); the prod PR also carries a `Change-Ticket:` trailer that a PR lint checks.
 - qa and prod values should pin the digest next to the tag (`image.digest: sha256:...`, or
   `IMAGE_TAG=1.5.0@sha256:...`); config lint's tag policy (check 10) rejects floating tags there.
 - `gh pr create` with `GITHUB_TOKEN` needs the repository setting "Allow GitHub Actions to create and approve pull

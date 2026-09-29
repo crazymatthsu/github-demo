@@ -28,20 +28,20 @@ reviewed bump PRs by their controller or promotion job, never by `deploy-dev`. T
 ## 2. Schema and resolution
 
 ```yaml
-env: us-dev                       # must equal the path
-flow: payments                    # must equal the path
-pool:                             # optional: the flow's compose boxes (section 4)
-  hosts: [box-1.example.com, box-2.example.com]   # non-empty, unique, lower-case DNS names or IPv4
-  user: deploy                    # SSH user on every box (default deploy)
-  root: /opt/platform             # install root of the flow's bundle on every box (default /opt/platform)
-defaults:                         # any target field
+env: us-dev # must equal the path
+flow: payments # must equal the path
+pool: # optional: the flow's compose boxes (section 4)
+  hosts: [box-1.example.com, box-2.example.com] # non-empty, unique, lower-case DNS names or IPv4
+  user: deploy # SSH user on every box (default deploy)
+  root: /opt/platform # install root of the flow's bundle on every box (default /opt/platform)
+defaults: # any target field
   kind: helm
-  cluster: dev-cluster            # helm: a kube context in the Environment's kubeconfig
-  namespace: payments             # helm: default the flow
-targets:                          # one per instance directory of the flow
-  - instance: sync-app/ledger-db  # <app>/<instance>, relative to the flow
-    kind: compose                 # compose | helm
-    host: box-2.example.com       # compose: the host; with a pool, the recorded placement (optional)
+  cluster: dev-cluster # helm: a kube context in the Environment's kubeconfig
+  namespace: payments # helm: default the flow
+targets: # one per instance directory of the flow
+  - instance: sync-app/ledger-db # <app>/<instance>, relative to the flow
+    kind: compose # compose | helm
+    host: box-2.example.com # compose: the host; with a pool, the recorded placement (optional)
   - instance: sync-app/refunds-db # inherits kind helm, cluster, namespace
 ```
 
@@ -61,19 +61,21 @@ diff.
 
 ## 3. Compose targets on a fixed host
 
-The deployer runs, on the target's host, the same compose wrapper laptops and CI use:
+The deployer runs, on the target's host, the same compose wrapper laptops and CI use (`<root>` is where the
+wrapper and the config live on the host, `/opt/platform` by default):
 
 ```
-IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <instance> pull     # a registry failure changes nothing
-IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <instance> start    # up -d --wait: returns when healthy
-IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <instance> health   # readiness endpoint, exit code
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> pull    # a registry failure changes nothing
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> start   # up -d --wait: returns when healthy
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> health  # readiness endpoint, exit code
 ```
 
 The new tag travels as an environment override: the host's `compose.env` still holds the last recorded tag until
 the write-back commits the new one. A failed `start` or `health` is therefore rolled back by running `start`
 again without the override (the previous image is still in the local cache), and the instance counts as failed,
 so it gets no write-back. `restart` is `stop` + `start` (compose's own `restart` ignores env and image changes);
-`down` never removes volumes unless asked twice. Two instances on one host need distinct `*_HOST_PORT` values.
+`down` never removes volumes unless asked explicitly (`--volumes`, plus `--force` on a dev host). Two instances
+on one host need distinct `*_HOST_PORT` values.
 
 The deployer assumes the host already holds the wrapper and the flow's config under a root directory. The simplest
 way to get them there is to declare the flow's hosts as a `pool` (section 4), even when every instance stays pinned
