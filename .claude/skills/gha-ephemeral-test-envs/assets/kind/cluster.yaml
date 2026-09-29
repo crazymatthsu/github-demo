@@ -1,0 +1,14 @@
+# cluster.yaml: the throwaway kind cluster of the Helm deployment test. `kind.sh up` creates it and supplies
+# the name (--name), so none is set here. (Template of the skill gha-ephemeral-test-envs; no placeholders.)
+#
+# - One control-plane node that also runs the workloads: kind removes the control-plane taint when a cluster
+#   has a single node. One replica per release fits a standard runner comfortably.
+# - No extraPortMappings: nothing is published on the runner. The smoke test runs inside the cluster
+#   (`helm test`), and smoke-diff.sh uses `kubectl exec`.
+# - Pod Security admission is built in: helm-release.sh labels each namespace it deploys to
+#   pod-security.kubernetes.io/enforce=restricted, which proves the chart's pod spec without extra config.
+# - No node image: kind's default for the kind release pinned in versions.env (KIND_NODE_IMAGE overrides).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane

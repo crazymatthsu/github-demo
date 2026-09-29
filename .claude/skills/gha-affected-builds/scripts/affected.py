@@ -45,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import NoReturn
 
 DEFAULT_MAP = ".github/affected-map.yml"
 DEFAULT_BRANCH = "origin/main"
@@ -62,7 +63,7 @@ class GitError(Exception):
     pass
 
 
-def fail(message: str, code: int) -> None:
+def fail(message: str, code: int) -> NoReturn:
     print(f"affected.py: {message}", file=sys.stderr)
     sys.exit(code)
 
@@ -87,7 +88,7 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
         else:
             out.append(re.escape(glob[i]))
             i += 1
-    return re.compile("^" + "".join(out) + "$", re.DOTALL)
+    return re.compile("".join(out) + r"\Z", re.DOTALL)  # used with .match(): anchored at both ends
 
 
 def load_map(path: str):
@@ -96,6 +97,8 @@ def load_map(path: str):
             text = handle.read()
     except OSError as error:
         fail(f"cannot read the map {path}: {error.strerror} (run from the repository root or pass --map)", 2)
+    except UnicodeDecodeError as error:
+        fail(f"{path} is not UTF-8: {error}", 2)
     if path.endswith(".json"):
         try:
             return json.loads(text)
@@ -210,6 +213,10 @@ def git(*args: str) -> str:
     return result.stdout.decode("utf-8", "surrogateescape")
 
 
+def short(ref: str) -> str:
+    return ref[:12] if re.fullmatch(r"[0-9a-f]{40,64}", ref) else ref
+
+
 def changed_files(base: str | None, head: str, default_branch: str) -> tuple[list[str] | None, str]:
     """Returns (files, note); files is None when no usable diff base exists (the caller goes full)."""
     if base and set(base) == {"0"}:
@@ -226,7 +233,7 @@ def changed_files(base: str | None, head: str, default_branch: str) -> tuple[lis
             shallow = False
         hint = "; the clone is shallow: check out with fetch-depth: 0" if shallow else ""
         return None, f"no usable diff base ({error}{hint})"
-    note = f"merge-base({against[:40]}, {head[:40]})"
+    note = f"merge-base({short(against)}, {short(head)})"
     if merge_base == head_sha and base is None:
         return [], f"{note}: HEAD is already on {default_branch}"
     try:
@@ -235,7 +242,7 @@ def changed_files(base: str | None, head: str, default_branch: str) -> tuple[lis
         out = git("diff", "--name-only", "--no-renames", "-z", merge_base, head_sha)
     except GitError as error:
         fail(str(error), 3)
-    return [p for p in out.split("\0") if p], f"{note}..{head[:40]}"
+    return [p for p in out.split("\0") if p], f"{note}..{short(head)}"
 
 
 def classify(files: list[str], cfg: dict) -> dict:
@@ -376,7 +383,6 @@ def parse_bool(text: str) -> bool:
     if word in ("false", "0", "no", "off", ""):
         return False
     fail(f"--full expects true or false, got {text!r}", 2)
-    return False
 
 
 def read_file_list(source: str) -> list[str]:
@@ -389,7 +395,8 @@ def read_file_list(source: str) -> list[str]:
     except OSError as error:
         fail(f"cannot read {source}: {error.strerror}", 2)
     text = data.decode("utf-8", "surrogateescape")
-    return [p for p in (text.split("\0") if "\0" in text else text.splitlines()) if p.strip()]
+    parts = text.split("\0") if "\0" in text else [line.rstrip("\r") for line in text.split("\n")]
+    return [p for p in parts if p.strip()]
 
 
 def main() -> None:

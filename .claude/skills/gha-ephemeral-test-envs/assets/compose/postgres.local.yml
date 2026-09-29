@@ -1,0 +1,6 @@
+# postgres.local.yml: published port for developers only; `stack.sh up --local` adds it, CI never does.
+# (Template of the skill gha-ephemeral-test-envs.) Bound to 127.0.0.1 and above 1024 (rootless Podman).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"

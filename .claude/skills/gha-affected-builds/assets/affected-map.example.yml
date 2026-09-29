@@ -1,0 +1,138 @@
+# Affected-project map (skill gha-affected-builds). Copy to .github/affected-map.yml and replace the
+# example projects and globs with your repository's.
+#
+# Read by scripts/ci/affected.py (through .github/actions/affected-matrix) to decide what a change
+# builds and tests, and by the build workflow's plan step: `projects` is the project registry.
+#
+#   Preview your branch:  python3 scripts/ci/affected.py --base origin/main --summary /dev/stdout
+#   Audit the map:        git ls-files | python3 scripts/ci/affected.py --files-from - | jq -r '.unmapped[]'
+#                         (every file listed would force a full run: map it, or accept that on purpose)
+#
+# Classification: each changed path takes the FIRST section that matches, in this order
+#   docs -> config -> shared -> paths -> (no match: unmapped, handled like shared = build everything)
+# so a file nobody mapped can never silently skip the tests it affects. The flag sections
+# (base-images, deploy-test, flags) are checked separately: any matching path raises the flag,
+# whatever its class, including docs.
+#
+# Globs: `**` spans directories (`**/` also matches zero of them); `*` and `?` stay inside one path
+# segment, so "*.md" matches root files only and "**/*.md" matches at any depth. No [...], {a,b} or
+# negation. Paths are relative to the repository root, without a leading / or ./. Quote every glob:
+# YAML reads an unquoted leading `*` as an alias.
+#
+# Example layout this map describes:
+#   docs/                   documentation
+#   config/<env>/...        deployment configuration (checked by config lint, not built)
+#   libs/common/            library used by services/api and services/worker
+#   services/api/           service: container image, integration tests, Helm chart in helm/
+#   services/worker/        service: container image, integration tests, DB migrations in migrations/
+#   services/web/           web frontend: container image, no integration tests
+#   docker/base/            company base images the service images build FROM
+#   test-infra/             integration-test stacks shared by every project
+#   scripts/, .github/      CI scripts, workflows, actions and this map
+schema: 1
+
+# Every project CI knows, keyed by its directory. The build job turns the key into the build tool's
+# own id (Gradle :services:api, Maven -pl services/api, pnpm --filter ./services/api, Go
+# ./services/api/...), so no workflow hard-codes a project name.
+#   image: true  the project builds a container image (pushed on pull requests for the IT jobs)
+#   it: true     the project has integration tests, so it joins the integration-test matrix
+# Extra keys inside a project are allowed (other scripts may read them); extra top-level keys must
+# start with x- (anything else is rejected, which catches typos such as `share:`).
+projects:
+  "libs/common": { image: false, it: false }
+  "services/api": { image: true, it: true }
+  "services/worker": { image: true, it: true }
+  "services/web": { image: true, it: false }
+
+# Nothing to build or test. When every changed path is here the run is docs-only: build and test
+# jobs are skipped and the gate still reports success. Docs comes first, so it wins over every other
+# section: narrow "**/*.md" if a Markdown file is a build input (a docs site, a packaged README).
+docs:
+  - "docs/**"
+  - "**/*.md"
+  - "LICENSE"
+  - ".gitignore"
+  - ".gitattributes"
+  - ".editorconfig"
+  - ".github/CODEOWNERS" # listed before shared's ".github/**", so an ownership change builds nothing
+  - ".github/ISSUE_TEMPLATE/**"
+  - ".claude/**" # assistant skills and settings: never a build input
+
+# Configuration as code (per-environment deployment config): config lint only, no build, no image.
+# Leave it empty if the repository has no config tree.
+config:
+  - "config/**"
+
+# Inputs every project depends on: any change here selects every project (full). Keep the lines of
+# your build tool, delete the others (a glob that never matches is harmless but misleading).
+shared:
+  - ".github/**" # workflows, actions and this map: a CI change proves itself on everything
+  - "scripts/**"
+  - "docker/**" # shared Dockerfiles and base images
+  - "test-infra/**"
+  - ".tool-versions" # toolchain pins (asdf / mise)
+  # Gradle
+  - "*.gradle.kts"
+  - "gradle.properties"
+  - "gradle/**"
+  - "gradlew"
+  - "gradlew.bat"
+  - "build-logic/**"
+  # Maven
+  - "pom.xml"
+  - ".mvn/**"
+  - "mvnw"
+  # npm / pnpm
+  - "package.json"
+  - "package-lock.json"
+  - "pnpm-lock.yaml"
+  - "pnpm-workspace.yaml"
+  - ".npmrc"
+  - ".nvmrc"
+  # Go
+  - "go.work"
+  - "go.work.sum"
+  - "go.mod"
+  - "go.sum"
+  # Python / uv
+  - "pyproject.toml"
+  - "uv.lock"
+  - ".python-version"
+
+# Changes confined to projects: the first rule that matches selects its projects. A library lists its
+# dependents as well, so they are rebuilt and retested with it; a library most projects use belongs
+# in `shared` instead. Every project named here must be a key of `projects`.
+paths:
+  - glob: "libs/common/**"
+    projects: ["libs/common", "services/api", "services/worker"]
+  - glob: "services/api/**"
+    projects: ["services/api"]
+  - glob: "services/worker/**"
+    projects: ["services/worker"]
+  - glob: "services/web/**"
+    projects: ["services/web"]
+
+# Flag `base-changed`: the company base images changed, so the build rebuilds them locally instead of
+# pulling the published ones and the change is tested before it is published. Not raised by full runs
+# (rebuilding the base images is only needed when they changed). Remove it if you have none.
+base-images:
+  - "docker/base/**"
+
+# Flag `deploy-test`: the deployment test (charts into a throwaway cluster) runs when the run is full
+# or one of these changed: charts, deployment config, the app the test deploys. Remove it if you
+# have no deployment test.
+deploy-test:
+  - "**/helm/**"
+  - "config/**"
+  - "services/api/**"
+
+# Extra flags (optional). Each entry becomes an output of its own name ("true"/"false") and a key of
+# the `flags` JSON output. on-full (default true): also raised when the run is full.
+flags:
+  # The browser end-to-end suite: when the web app or the API it calls changed, and on full runs.
+  e2e:
+    globs: ["services/web/**", "services/api/**"]
+  # The schema upgrade test from the last release: only when a migration changed.
+  db-migrations:
+    globs: ["services/*/migrations/**"]
+    on-full: false

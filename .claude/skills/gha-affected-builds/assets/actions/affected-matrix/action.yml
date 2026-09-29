@@ -1,0 +1,114 @@
+# Composite action: affected-project detection for a monorepo (skill gha-affected-builds).
+# Copy to .github/actions/affected-matrix/action.yml and call it as `uses: ./.github/actions/affected-matrix`
+# from a job that checked out the repository WITH history (actions/checkout, fetch-depth: 0).
+#
+# It runs the classifier (scripts/affected.py of the skill, copied to scripts/ci/affected.py) over the
+# path map (.github/affected-map.yml), writes the decision table to the job summary and returns the
+# outputs below. Needs python3 on the runner, plus mikefarah yq v4 or PyYAML for a YAML map
+# (GitHub-hosted runners have python3 and yq).
+#
+# Placeholders: none. Adapt through the inputs instead: `script` when the classifier lives elsewhere,
+# `map` when the map does, `default-branch` when branch pushes should diff against another ref.
+# Custom flags of the map (its `flags:` section) arrive in the `flags` JSON output; to expose one as
+# an output of its own, add `<name>: {description: ..., value: '${{ steps.detect.outputs.<name> }}'}`.
+name: affected-matrix
+description: >-
+  Maps the paths changed by a push, pull request or merge-queue group onto the projects of a monorepo
+  (path map + classifier script) and returns the projects to build, the integration-test matrix and
+  the full / docs-only / config / deploy-test flags.
+inputs:
+  base-ref:
+    description: >-
+      Diff base (commit or ref). pull_request passes the PR base SHA, merge_group the queue base SHA.
+      Empty (plain branch pushes): the merge-base with default-branch.
+    required: false
+    default: ''
+  head-ref:
+    description: Head commit or ref of the change.
+    required: false
+    default: HEAD
+  default-branch:
+    description: >-
+      Ref used for the merge-base when base-ref is empty. Empty: origin/<the repository's default
+      branch> (origin/main when the event payload does not name it).
+    required: false
+    default: ''
+  force-full:
+    description: "'true' selects every project (merge queue, label ci:full)."
+    required: false
+    default: 'false'
+  force-full-reason:
+    description: Why force-full was set; shown in the reason and the job summary.
+    required: false
+    default: ''
+  map:
+    description: Path of the affected map, relative to the workspace.
+    required: false
+    default: .github/affected-map.yml
+  script:
+    description: Path of the classifier script, relative to the workspace (or absolute).
+    required: false
+    default: scripts/ci/affected.py
+outputs:
+  projects:
+    description: JSON list of the projects to build (every project when full), e.g. ["services/api"].
+    value: ${{ steps.detect.outputs.projects }}
+  image-projects:
+    description: JSON list of the selected projects that build a container image.
+    value: ${{ steps.detect.outputs.image-projects }}
+  matrix:
+    description: JSON list of the selected projects with integration tests (the IT matrix).
+    value: ${{ steps.detect.outputs.matrix }}
+  full:
+    description: "'true' when shared or unmapped paths changed, no diff base was usable, or force-full was set."
+    value: ${{ steps.detect.outputs.full }}
+  docs-only:
+    description: "'true' when nothing build-relevant changed: skip build and test jobs, the gate still reports."
+    value: ${{ steps.detect.outputs.docs-only }}
+  config-changed:
+    description: "'true' when a path of the map's config section changed (config lint must run)."
+    value: ${{ steps.detect.outputs.config-changed }}
+  base-changed:
+    description: "'true' when a path of the map's base-images section changed (rebuild base images locally)."
+    value: ${{ steps.detect.outputs.base-changed }}
+  deploy-test:
+    description: "'true' when the run is full or a path of the map's deploy-test section changed."
+    value: ${{ steps.detect.outputs.deploy-test }}
+  flags:
+    description: JSON object of the map's custom flags, e.g. {"e2e":true}; {} when the map defines none.
+    value: ${{ steps.detect.outputs.flags }}
+  reason:
+    description: One-line explanation of the decision.
+    value: ${{ steps.detect.outputs.reason }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        REPO_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        FORCE_FULL: ${{ inputs.force-full }}
+        FORCE_FULL_REASON: ${{ inputs.force-full-reason }}
+        MAP: ${{ inputs.map }}
+        SCRIPT: ${{ inputs.script }}
+      run: |
+        set -euo pipefail
+        classifier=$SCRIPT
+        [[ $classifier == /* ]] || classifier="$GITHUB_WORKSPACE/$classifier"
+        if [[ ! -f $classifier ]]; then
+          echo "::error::affected-matrix: classifier not found at $SCRIPT (copy scripts/affected.py of skill gha-affected-builds there, or set the script input)"
+          exit 2
+        fi
+        default_branch=${DEFAULT_BRANCH:-origin/${REPO_DEFAULT_BRANCH:-main}}
+        python3 "$classifier" \
+          --map "$MAP" \
+          --base "$BASE_REF" \
+          --head "$HEAD_REF" \
+          --default-branch "$default_branch" \
+          --full "$FORCE_FULL" \
+          --reason "$FORCE_FULL_REASON" \
+          --github-output "$GITHUB_OUTPUT" \
+          --summary "$GITHUB_STEP_SUMMARY"

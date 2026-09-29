@@ -1,0 +1,100 @@
+# .github/actions/compose-stack: thin wrapper around stack.sh, so workflows and laptops run the same commands.
+# (Template of the skill gha-ephemeral-test-envs; no placeholders: the defaults are the skill's layout.)
+name: compose-stack
+description: >-
+  Runs stack.sh (up | status | diagnostics | down | leak-check) for the calling job. The job sets
+  COMPOSE_PROJECT_NAME (ci-<run_id>-<attempt>), CI_RUN_ID and CI_RUN_ATTEMPT, and for `up` the image
+  variables (APP_IMAGE by digest). `up` exports COMPOSE_FILE, COMPOSE_ENV_FILES and the generated values to
+  GITHUB_ENV for later steps. Use `if: always()` on `down` and `leak-check` so they run on success, failure
+  and cancel.
+inputs:
+  command:
+    description: up | status | diagnostics | down | leak-check
+    required: true
+  project:
+    description: "`up`: project id whose stacks stacks.yml declares (e.g. services/api)."
+    required: false
+    default: ''
+  stacks:
+    description: "`up`: extra stack names (space, comma or newline separated), added to the project's."
+    required: false
+    default: ''
+  files:
+    description: "`up`: extra compose files, e.g. the app under test (space, comma or newline separated; no spaces in paths)."
+    required: false
+    default: ''
+  app-service:
+    description: "`up`: service of `files` that publishes no port in CI (the app under test)."
+    required: false
+    default: ''
+  diagnostics-dir:
+    description: Directory `diagnostics` writes into.
+    required: false
+    default: build/ci-logs
+  local:
+    description: "'true' adds --local (published localhost ports; developer mode, not for CI)."
+    required: false
+    default: 'false'
+  warn-only:
+    description: "'true' makes leak-check report without failing (a first-weeks switch)."
+    required: false
+    default: 'false'
+  script:
+    description: Path of stack.sh, relative to the workspace.
+    required: false
+    default: test-infra/compose/stack.sh
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        STACK_COMMAND: ${{ inputs.command }}
+        STACK_PROJECT_IN: ${{ inputs.project }}
+        STACK_NAMES_IN: ${{ inputs.stacks }}
+        STACK_FILES_IN: ${{ inputs.files }}
+        STACK_APP_SERVICE: ${{ inputs.app-service }}
+        STACK_DIAG_DIR: ${{ inputs.diagnostics-dir }}
+        STACK_LOCAL: ${{ inputs.local }}
+        STACK_WARN_ONLY: ${{ inputs.warn-only }}
+        STACK_SCRIPT: ${{ inputs.script }}
+      run: |
+        set -euo pipefail
+        script="${GITHUB_WORKSPACE}/${STACK_SCRIPT}"
+        [[ -f $script ]] || { echo "::error title=compose-stack::$STACK_SCRIPT is missing"; exit 1; }
+        # Named by the job, not by `up`: down and leak-check must find the stack even when up never ran.
+        : "${COMPOSE_PROJECT_NAME:?the calling job must set COMPOSE_PROJECT_NAME (ci-<run_id>-<attempt>)}"
+        args=()
+        case "$STACK_COMMAND" in
+          up)
+            args=(up)
+            if [[ -n $STACK_PROJECT_IN ]]; then args+=(--project "$STACK_PROJECT_IN"); fi
+            read -r -a names <<<"$(tr ',\n' '  ' <<<"$STACK_NAMES_IN")"
+            for name in "${names[@]}"; do args+=(--stack "$name"); done
+            read -r -a files <<<"$(tr ',\n' '  ' <<<"$STACK_FILES_IN")"
+            for file in "${files[@]}"; do args+=(--file "$file"); done
+            if [[ -n $STACK_APP_SERVICE ]]; then args+=(--app-service "$STACK_APP_SERVICE"); fi
+            if [[ $STACK_LOCAL == true ]]; then args+=(--local); fi
+            ;;
+          status | down)
+            args=("$STACK_COMMAND")
+            ;;
+          diagnostics)
+            args=(diagnostics "$STACK_DIAG_DIR")
+            ;;
+          leak-check)
+            args=(leak-check)
+            if [[ $STACK_WARN_ONLY == true ]]; then args+=(--warn-only); fi
+            ;;
+          *)
+            echo "::error title=compose-stack::unknown command '$STACK_COMMAND' (up | status | diagnostics | down | leak-check)"
+            exit 2
+            ;;
+        esac
+        echo "::group::stack.sh ${args[*]} (project ${COMPOSE_PROJECT_NAME})"
+        status=0
+        bash "$script" "${args[@]}" || status=$?
+        echo "::endgroup::"
+        if [[ $status -ne 0 ]]; then
+          echo "::error title=compose-stack::stack.sh ${args[*]} exited with $status"
+        fi
+        exit "$status"

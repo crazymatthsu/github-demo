@@ -1,0 +1,19 @@
+# base.yml: the first compose file of every test stack (stack.sh up always puts it first).
+# (Template of the skill gha-ephemeral-test-envs; no placeholders.)
+#
+# Being first makes this directory the compose project directory: relative paths in EVERY merged file
+# (stack files, test-runner.yml, the app's compose file) resolve against it, not against their own file.
+#
+# Labels: every service, named volume and network of a stack carries the run labels, so `stack.sh down`
+# can prune by label and `stack.sh leak-check` can prove nothing is left. YAML anchors do not cross
+# files, so each compose file repeats this anchor; keep the copies identical, and keep the key prefix
+# equal to CI_LABEL_PREFIX (stack.sh's default: com.example.ci; use your own reverse domain).
+x-ci-labels: &ci-labels
+  com.example.ci.run: "${CI_RUN_ID:-local}"
+  com.example.ci.attempt: "${CI_RUN_ATTEMPT:-0}"
+
+networks:
+  default:
+    # <project>_default. Nothing publishes a port in CI: the tests (test-runner), the app under test and
+    # the dependencies talk over this network by service name.
+    labels: *ci-labels

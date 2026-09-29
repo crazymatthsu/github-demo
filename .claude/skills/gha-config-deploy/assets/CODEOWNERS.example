@@ -1,0 +1,34 @@
+# CODEOWNERS for a repository with a config tree (gha-config-deploy skill). Copy to .github/CODEOWNERS and
+# turn on "Require review from Code Owners" in the ruleset (or branch protection) of the default branch.
+#
+# Placeholders: __ORG__ the GitHub organisation (e.g. acme) · __DEV_TEAM__ the team that owns the code and the
+# shared config (e.g. platform-devs) · __PLATFORM_TEAM__ owners of CI/CD (e.g. platform-team) · __FLOW__ /
+# __FLOW_TEAM__ one line per business flow and the team that owns it (e.g. payments / payments-team) ·
+# __OPS_TEAM__ approvers of qa and prod deploy intents (e.g. release-ops) · __CHANGE_APPROVERS__ the prod
+# change-approval team (e.g. change-board).
+#
+# Rules: the LAST matching pattern wins, so general rules come first and the qa / prod rules last; a path
+# owned by several owners on one line needs ONE approval from any of them (for two different teams on prod,
+# add Environment reviewers on the promotion job or a second required approval in the ruleset).
+
+# Everything else: the code
+*                           @__ORG__/__DEV_TEAM__
+
+# CI/CD: workflows, composite actions, CI scripts (the write-back script and its identity included)
+/.github/                   @__ORG__/__PLATFORM_TEAM__
+/scripts/ci/                @__ORG__/__PLATFORM_TEAM__
+
+# Config tree: shared layers and dev
+/config/                    @__ORG__/__DEV_TEAM__
+
+# Each flow owns its directory in every env, its deploy inventory config/<env>/<flow>/workflows-config.yml
+# (hosts, pool, clusters) included. One line per flow.
+/config/*/__FLOW__/         @__ORG__/__FLOW_TEAM__
+
+# qa: a merged bump PR is the deploy intent (`qa` for a single region, `*-qa` for us-qa, eu-qa, ...)
+/config/qa/                 @__ORG__/__OPS_TEAM__
+/config/*-qa/               @__ORG__/__OPS_TEAM__
+
+# prod: approval by ops or the change approvers; name the flow team here as well if it must stay involved
+/config/prod/               @__ORG__/__OPS_TEAM__ @__ORG__/__CHANGE_APPROVERS__
+/config/*-prod/             @__ORG__/__OPS_TEAM__ @__ORG__/__CHANGE_APPROVERS__

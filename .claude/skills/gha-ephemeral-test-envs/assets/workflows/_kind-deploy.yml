@@ -1,0 +1,279 @@
+# _kind-deploy.yml: reusable Helm deployment test in a throwaway kind cluster.
+# (Template of the skill gha-ephemeral-test-envs.)
+#
+#   kind up (ci-<run_id>-<attempt>) -> load the image built in this run (pulled by digest, tagged <repo>:<tag>
+#   on the nodes) -> one Helm release per instance directory (namespace with the restricted Pod Security
+#   labels, helm lint, render check, upgrade --install --wait [--rollback-on-failure once a revision exists],
+#   rollout status, helm test) -> smoke diff across the releases -> diagnostics on failure -> kind down and
+#   leak check on success, failure AND cancel (always()).
+# A deployment test of the chart and the per-instance values, not an integration test: the releases must
+# become ready without their real dependencies, so readiness must not depend on them.
+#
+# Interface (the pr.yml / main.yml templates of gha-pipeline-design call it unchanged):
+#   inputs  images          string, required   JSON object project -> image pinned by digest (same shape as
+#                                              for _integration-test.yml)
+#           retention-days  number, default 7  retention of the diagnostics artifact
+#           optional        project, chart, instances-dir, release-prefix, namespace, tag, smoke-probe, timeout
+#   callers grant: permissions: contents: read, packages: read
+#
+# Placeholders (list what is left with: grep -rn '__[A-Z0-9_]*__' .github):
+#   __REGISTRY__        registry of the image under test, e.g. ghcr.io
+#   __APP_PROJECT__     the key of `images` whose image the chart runs, e.g. services/api
+#   __CHART_DIR__       the chart, e.g. services/api/helm/api
+#   __INSTANCES_DIR__   one sub-directory per instance, each with a values.yaml; an optional _common/values.yaml
+#                       is applied first. e.g. deploy/dev/api (with deploy/dev/api/eu-1/values.yaml, ...)
+#   __RELEASE_PREFIX__  release name = <prefix>-<instance directory>, e.g. api
+#   __NAMESPACE__       namespace of the releases, e.g. apps
+#   __SMOKE_PROBE__     command run inside each release's pod to tell the instances apart (smoke-diff.sh), e.g.
+#                       curl -fsS localhost:8080/info ; pass smoke-probe: '' to skip the smoke diff
+# Third-party actions are pinned to the major that ran green in the reference; update to the current major.
+name: _kind-deploy
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: JSON object project -> image pinned by digest (the build job's `images` output).
+        type: string
+        required: true
+      retention-days:
+        description: Retention of the diagnostics artifact (e.g. 7 on PRs, 14 on main).
+        type: number
+        default: 7
+      project:
+        description: The key of `images` whose image the chart runs.
+        type: string
+        default: '__APP_PROJECT__'
+      chart:
+        description: Chart directory.
+        type: string
+        default: '__CHART_DIR__'
+      instances-dir:
+        description: One sub-directory per instance with a values.yaml (_common/values.yaml applied first).
+        type: string
+        default: '__INSTANCES_DIR__'
+      release-prefix:
+        description: Release name = <release-prefix>-<instance directory>.
+        type: string
+        default: '__RELEASE_PREFIX__'
+      namespace:
+        description: Namespace of the releases.
+        type: string
+        default: '__NAMESPACE__'
+      tag:
+        description: Tag the image is loaded and deployed with; empty takes the tag of the image reference.
+        type: string
+        default: ''
+      smoke-probe:
+        description: Command run inside each release's pod by smoke-diff.sh; empty skips the smoke diff.
+        type: string
+        default: '__SMOKE_PROBE__'
+      timeout:
+        description: Helm and rollout timeout per release.
+        type: string
+        default: 5m
+    outputs:
+      releases:
+        description: JSON list of {release, result}.
+        value: ${{ jobs.kind-deploy.outputs.releases }}
+
+permissions:
+  contents: read
+
+jobs:
+  kind-deploy:
+    name: kind deploy (${{ inputs.release-prefix }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read # pull this run's image by digest
+    env:
+      # One cluster per job, named by the job so down and leak-check find it even when up never finished.
+      KIND_CLUSTER_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_RUN_ID: ${{ github.run_id }}
+      CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+      CHART: ${{ inputs.chart }}
+      NAMESPACE: ${{ inputs.namespace }}
+      HELM_TIMEOUT: ${{ inputs.timeout }}
+    outputs:
+      releases: ${{ steps.deploy.outputs.results }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check inputs, list the instances
+        id: check
+        env:
+          IMAGES: ${{ inputs.images }}
+          PROJECT: ${{ inputs.project }}
+          INSTANCES_DIR: ${{ inputs.instances-dir }}
+          RELEASE_PREFIX: ${{ inputs.release-prefix }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          ref=$(jq -r --arg p "$PROJECT" '.[$p] // empty' <<<"$IMAGES") ||
+            { echo "::error::the images input is not a JSON object"; exit 2; }
+          if [[ ! $ref =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no digest-pinned image for $PROJECT in the images input (got '$ref')"
+            exit 2
+          fi
+          name=${ref%%@*}
+          last=${name##*/}
+          repo=$name
+          ref_tag=''
+          if [[ $last == *:* ]]; then
+            ref_tag=${last##*:}
+            repo=${name%:*}
+          fi
+          tag=${TAG_INPUT:-$ref_tag}
+          if [[ ! $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::no valid tag: input '$TAG_INPUT', image reference '$ref_tag'"
+            exit 2
+          fi
+          [[ -f $CHART/Chart.yaml ]] || { echo "::error::$CHART/Chart.yaml not found"; exit 2; }
+          targets='[]'
+          for dir in "$INSTANCES_DIR"/*/; do
+            [[ -f ${dir}values.yaml ]] || continue
+            instance=$(basename "$dir")
+            case $instance in _* | .*) continue ;; esac
+            release="$RELEASE_PREFIX-$instance"
+            if [[ ! $release =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ || ${#release} -gt 53 ]]; then
+              echo "::error::release name '$release' is not a DNS label of at most 53 characters"
+              exit 2
+            fi
+            values=()
+            if [[ -f $INSTANCES_DIR/_common/values.yaml ]]; then values+=("$INSTANCES_DIR/_common/values.yaml"); fi
+            values+=("${dir}values.yaml")
+            targets=$(jq -c --arg r "$release" '. + [{release: $r, values: $ARGS.positional}]' --args "${values[@]}" <<<"$targets")
+          done
+          count=$(jq length <<<"$targets")
+          if [[ $count -eq 0 ]]; then
+            echo "::error::no instance directory with a values.yaml under $INSTANCES_DIR"
+            exit 2
+          fi
+          # Smoke pairs: the first release against every other one.
+          pairs=$(jq -c '[.[0].release as $first | .[1:][] | [$first, .release]]' <<<"$targets")
+          {
+            echo "image=$ref"
+            echo "repo=$repo"
+            echo "tag=$tag"
+            echo "targets=$targets"
+            echo "pairs=$pairs"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### kind deploy"
+            echo ""
+            echo "$count release(s) in cluster \`$KIND_CLUSTER_NAME\`, namespace \`$NAMESPACE\`; image \`$ref\`, loaded and deployed as tag \`$tag\`."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Registry login
+        uses: docker/login-action@v4
+        with:
+          registry: __REGISTRY__
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Kubernetes tools (pinned, checksum-verified)
+        uses: ./.github/actions/setup-kube-tools
+        with:
+          tools: kind,kubectl,helm
+
+      - name: kind cluster up
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: up
+
+      - name: Load the image built in this run (by digest, tagged for the chart)
+        id: load
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: load
+          images: ${{ steps.check.outputs.image }}
+          tag: ${{ steps.check.outputs.tag }}
+
+      # Every instance is attempted; the step fails afterwards if any failed. image.repository / image.tag
+      # are the `helm create` names: adapt the keys (and --tag-key) to your chart.
+      - name: One Helm release per instance (lint, render check, upgrade --install, rollout, helm test)
+        id: deploy
+        env:
+          TARGETS: ${{ steps.check.outputs.targets }}
+          REPO: ${{ steps.check.outputs.repo }}
+          TAG: ${{ steps.check.outputs.tag }}
+          LOADED: ${{ steps.load.outputs.loaded }}
+        run: |
+          set -euo pipefail
+          {
+            echo "| release | namespace | result |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          results='[]'
+          failed=0
+          while IFS= read -r target; do
+            release=$(jq -r .release <<<"$target")
+            args=("$release" --chart "$CHART" --namespace "$NAMESPACE" --tag "$TAG" --timeout "$HELM_TIMEOUT"
+              --set-string "image.repository=$REPO" --loaded-images "$LOADED")
+            while IFS= read -r values; do args+=(-f "$values"); done < <(jq -r '.values[]' <<<"$target")
+            echo "::group::helm-release.sh $release"
+            status=0
+            scripts/ci/helm-release.sh "${args[@]}" </dev/null || status=$?
+            echo "::endgroup::"
+            result=deployed
+            if [[ $status -ne 0 ]]; then
+              result="failed (exit $status)"
+              failed=1
+              echo "::error title=helm-release::$release: $result"
+            fi
+            echo "| \`$release\` | $NAMESPACE | $result |" >> "$GITHUB_STEP_SUMMARY"
+            results=$(jq -c --arg r "$release" --arg res "$result" '. + [{release: $r, result: $res}]' <<<"$results")
+          done < <(jq -c '.[]' <<<"$TARGETS")
+          echo "results=$results" >> "$GITHUB_OUTPUT"
+          exit "$failed"
+
+      - name: Smoke diff (the instances really differ)
+        if: inputs.smoke-probe != ''
+        env:
+          PAIRS: ${{ steps.check.outputs.pairs }}
+          PROBE: ${{ inputs.smoke-probe }}
+        run: |
+          set -euo pipefail
+          if [[ $(jq length <<<"$PAIRS") -eq 0 ]]; then
+            echo "::warning title=smoke diff::fewer than two releases; nothing to compare"
+            exit 0
+          fi
+          read -r -a probe <<<"$PROBE"
+          fail=0
+          while IFS=$'\t' read -r a b; do
+            echo "::group::smoke-diff.sh $a $b"
+            scripts/ci/smoke-diff.sh -n "$NAMESPACE" "$a" "$b" -- "${probe[@]}" </dev/null || fail=1
+            echo "::endgroup::"
+          done < <(jq -r '.[] | @tsv' <<<"$PAIRS")
+          exit "$fail"
+
+      - name: Diagnostics before teardown
+        if: failure()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: diagnostics
+          diagnostics-dir: build/kind-logs
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kind-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.release-prefix }}
+          path: build/kind-logs/**
+          if-no-files-found: warn
+          retention-days: ${{ inputs.retention-days }}
+
+      - name: Teardown (success, failure and cancel)
+        if: always()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: down
+
+      - name: Leak check
+        if: always()
+        uses: ./.github/actions/kind-cluster
+        with:
+          command: leak-check
