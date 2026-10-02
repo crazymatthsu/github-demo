@@ -193,7 +193,9 @@ consumed by `application.yml` placeholders; these are the proposal.
 `<engine>` is `docker` or `podman` (§6.6). Only `compose.env` is passed with `--env-file`; the
 identity variables come from the script's environment, so an instance cannot redefine them. An exported
 `IMAGE_TAG` / `IMAGE_REPO` overrides the values in `compose.env` in every allowed env and is recorded in
-the audit line as `override=…`; this is how `deploy-dev` injects the freshly built tag (D9 §6.4). The
+the audit line as `override=…`; this is how `deploy-dev` injects the freshly built tag (D9 §6.4). Once
+`health` passed, `record-tag` writes that `IMAGE_TAG` into the `compose.env` of the box's host bundle (§6.4),
+so a later `start` or `restart` there runs it until the next sync brings git's tree. The
 template references `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` (§5.5) and mounts §6.7.
 
 ### 6.4 Command table (CLI specification)
@@ -212,6 +214,7 @@ template references `${IMAGE_REPO}/${APP_NAME}:${IMAGE_TAG}` (§5.5) and mounts 
 | `logs [-f] [--since]` | `logs` | 0 / 1 | passes through `-f`, `--since`, `--tail` |
 | `pull` | `pull` | 0 / 1 | pre-pull for deploy windows; the only command that contacts the registry |
 | `validate` | none (offline) | 0 ok; 4 missing files / bad names; 1 compose lint error | required files, `config --quiet` lint, every `${VAR}` in the template defined in `compose.env` or the identity set |
+| `record-tag` | none (rewrites `compose.env`) | 0 recorded or already recorded; 1 write failed; 2 no or invalid `IMAGE_TAG`, or an `IMAGE_REPO` override; 3 not a host bundle | host bundle only (a box synced by `pool-deploy.sh`, DL-39): `IMAGE_TAG` from the environment becomes the file's one `IMAGE_TAG` line, every other line kept (written to a copy with the same mode, renamed over it); `deploy-dev` runs it on every box of the pool after a passing `health`; refused in a checkout, where `compose.env` changes through git |
 | `exec <svc> <cmd…>` / `shell` | `exec` (`shell` = `exec <AppName> sh`; the compose service is named after the AppName) | exit code of the command | audit-logged (§6.5) |
 | `version` | `inspect` of the running image: tag, digest, OCI labels `version`, `revision`, `source`, `created`, `com.<company>.build-url` | 0; 1 not running | labels defined in D3 |
 
@@ -260,7 +263,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 | Check | Where | Rule |
 |---|---|---|
 | ShellCheck | `pr.yml` lint job (D7) | `shellcheck -S warning scripts/run-compose.sh`; `#!/usr/bin/env bash`, `set -euo pipefail` |
-| Script tests | `scripts/test/pool-deploy-test.sh` (plain bash, run in the same lint job) | stub `ssh` / `rsync` on `PATH` record arguments; cases: bundle content and marker; placement pinned / discovered / assigned; an instance on two boxes → exit 6; `--move`; identical trees per box; dry-run command lines; failed health re-runs `start` without the override; the pool guard of §6.5 |
+| Script tests | `scripts/test/pool-deploy-test.sh` (plain bash, run in the same lint job) | stub `ssh` / `rsync` on `PATH` record arguments; cases: bundle content and marker; placement pinned / discovered / assigned; an instance on two boxes → exit 6; `--move`; identical trees per box; dry-run command lines; failed health re-runs `start` without the override; `record-tag` on every box only after a passing health (a failed record only warns), its rewrite of `compose.env` and its refusals; the pool guard of §6.5 |
 | Single copy | `build-logic` copies the canonical script into every app's `scripts/` at build time, or each app's copy is checked identical by the lint job | one implementation, no drift between apps |
 
 ### 6.9 Observability
@@ -416,7 +419,7 @@ flowchart LR
   H -- no --> I["dispatch command"]
   I --> S["start: up -d --wait"]
   I --> T["stop / down / restart"]
-  I --> U["config / app-config / printenv / validate"]
+  I --> U["config / app-config / printenv / validate / record-tag"]
   I --> V["health / status / logs / pull / exec / version"]
   S & T & U & V --> W["audit line to syslog + stderr"]
   W --> Z["exit 0 / 1 / 124"]

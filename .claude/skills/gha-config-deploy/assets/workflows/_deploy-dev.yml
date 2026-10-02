@@ -28,7 +28,8 @@
 # (a compose deployer starts the previous tag again, Helm rolls back), so it gets no write-back.
 #   compose  $COMPOSE_DEPLOY_CMD <env> <flow> <app> <instance> --tag <tag> --host <host> --user <user>
 #            typically: ssh <user>@<host> 'IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <instance> pull',
-#            then `start`, then `health`, through the SSH agent this job loads with DEV_DEPLOY_SSH_KEY
+#            then `start`, then `health`, then `record-tag` (the tag into the host's compose.env), through the
+#            SSH agent this job loads with DEV_DEPLOY_SSH_KEY
 #   pool     $POOL_DEPLOY_CMD <env> <flow> deploy --tag <tag>   (once per flow with a pool)
 #            syncs the flow's bundle to every box, places each instance (pinned > discovered > assigned) and prints
 #            one stdout line per deployed instance:  deployed <flow>/<app>/<instance>@<host>=<tag>

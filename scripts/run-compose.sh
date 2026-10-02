@@ -9,10 +9,11 @@
 set -euo pipefail
 
 readonly EXIT_FAILED=1 EXIT_USAGE=2 EXIT_REFUSED=3 EXIT_CONFIG=4 EXIT_ENGINE=5 EXIT_TIMEOUT=124
-readonly COMMANDS="start stop down restart config app-config printenv health status ps logs pull validate exec shell version"
+readonly COMMANDS="start stop down restart config app-config printenv health status ps logs pull validate record-tag exec shell version"
 readonly FLOWS="cash deriv swap"
 readonly COMPOSE_ENV_ALLOWED="IMAGE_REPO IMAGE_TAG APP_ENV APP_FLOW APP_NAME APP_INSTANCE JAVA_OPTS TZ LOG_LEVEL_ROOT LOGS_DIR DATA_DIR MEM_LIMIT"
 readonly SCRIPT_VARIABLES="CONFIG_DIR COMMON_DIR PLATFORM_DIR ENV_COMMON_DIR PROJECT"
+readonly IMAGE_TAG_PATTERN='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?$'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 
@@ -38,6 +39,8 @@ Commands (D6 §6.4):
   logs [-f] [--since T] [--tail N]
   pull                  pre-pull the image (the only command that contacts the registry)
   validate              offline checks: names, required files, compose.env rules, variables, compose lint
+  record-tag            host bundle only: write IMAGE_TAG (required in this shell) into the instance's compose.env,
+                        so a later start / restart on this box runs that tag (pool-deploy.sh, once health passed)
   exec <svc> <cmd...>   exec in a service (arguments after <svc> belong to the command)
   shell                 exec <AppName> sh (the app's service is named after the AppName)
   version               tag, digest and OCI labels of the running image
@@ -55,9 +58,9 @@ Exit codes: 0 ok · 1 operation failed or check negative · 2 usage · 3 refused
             4 config tree error · 5 engine not found or not running · 124 timeout
 Environment: CONFIG_ROOT (default <repo>/config), START_TIMEOUT, STOP_TIMEOUT, DEPS_NETWORK (join an
 existing network, e.g. the one of ./gradlew devUp), RUN_COMPOSE_ENGINE, IMAGE_TAG and IMAGE_REPO (override
-compose.env in every env, e.g. deploy-dev's pull / start before the write-back, D9 §6.4; every other
-compose.env value always comes from the file), APP_IMAGE (local only: run this image instead of
-IMAGE_REPO/APP_NAME:IMAGE_TAG);
+compose.env in every env, e.g. deploy-dev's pull / start / health, D9 §6.4, after which record-tag writes
+IMAGE_TAG into the box's compose.env; every other compose.env value always comes from the file), APP_IMAGE
+(local only: run this image instead of IMAGE_REPO/APP_NAME:IMAGE_TAG);
 secrets such as SPRING_DATASOURCE_PASSWORD are passed through from this shell, never from compose.env
 (D2 §8.1).
 
@@ -333,21 +336,24 @@ if [ -n "${GITHUB_RUN_ID:-}" ]; then
     [ "$ENV_NAME" = local ] && PROJECT="ci-$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}-$PROJECT"
 fi
 # compose.env is the default for every variable it defines; only IMAGE_REPO and IMAGE_TAG may be overridden
-# from this shell, in every allowed env (deploy-dev injects IMAGE_TAG for pull / start before its write-back
-# persists it, D9 §6.4). Overrides are announced and recorded in the audit line. APP_IMAGE is local only.
+# from this shell, in every allowed env (deploy-dev injects IMAGE_TAG for pull / start / health, then record-tag
+# writes it into the box's compose.env and the write-back into git, D9 §6.4). Overrides are announced and
+# recorded in the audit line. APP_IMAGE is local only.
 OVERRIDES=""
 for key in $ENV_KEYS; do
     case "$key" in IMAGE_REPO | IMAGE_TAG) ;; *) unset "$key" 2>/dev/null || true ;; esac
 done
 [ "$ENV_NAME" = local ] || unset APP_IMAGE
+RECORD_TAG="${IMAGE_TAG:-}" # record-tag's value, also when it equals compose.env (then unset below)
 for key in IMAGE_REPO IMAGE_TAG; do
     value="${!key:-}"
     if [ -n "$value" ] && [ "$value" != "$(env_value "$key")" ]; then
         case "$key" in
-            IMAGE_TAG) pattern='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?$' ;;
+            IMAGE_TAG) pattern="$IMAGE_TAG_PATTERN" ;;
             *) pattern='^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$' ;;
         esac
-        printf '%s' "$value" | grep -Eq "$pattern" || die "$EXIT_USAGE" "$key='$value' is not a valid override"
+        # [[ =~ ]] matches the whole value (grep would accept a value with one valid line among several).
+        [[ $value =~ $pattern ]] || die "$EXIT_USAGE" "$key='$value' is not a valid override"
         info "$key=$value from the environment overrides compose.env ($(env_value "$key"))"
         OVERRIDES="$OVERRIDES,$key"
         export "${key?}"
@@ -356,6 +362,22 @@ for key in IMAGE_REPO IMAGE_TAG; do
     fi
 done
 OVERRIDES="${OVERRIDES#,}"
+# record-tag changes a host bundle's copy of compose.env only: in a checkout, compose.env changes through git
+# (the write-back, a pull request), and a box's copy is replaced by git's at the next bundle sync.
+if [ "$COMMAND" = record-tag ]; then
+    [ -n "$BUNDLE_ROOT" ] || die "$EXIT_REFUSED" "record-tag writes the compose.env of a host bundle (a box synced by" \
+        "scripts/pool-deploy.sh) only; in a checkout compose.env changes through git"
+    # The physical directory: neither `..` in CONFIG_ROOT nor a symlink may lead the write out of the bundle.
+    case "$(cd "$CONFIG_DIR" && pwd -P)/" in
+        "$BUNDLE_ROOT"/*) ;;
+        *) die "$EXIT_REFUSED" "record-tag writes this bundle's own compose.env only, and $(rel "$CONFIG_DIR") lies outside it" ;;
+    esac
+    [ -n "$RECORD_TAG" ] || die "$EXIT_USAGE" "record-tag needs IMAGE_TAG=<tag> in its environment: the tag start and health just ran"
+    [[ $RECORD_TAG =~ $IMAGE_TAG_PATTERN ]] || die "$EXIT_USAGE" "IMAGE_TAG='$RECORD_TAG' is not a valid image tag"
+    case ",$OVERRIDES," in
+        *,IMAGE_REPO,*) die "$EXIT_USAGE" "record-tag records IMAGE_TAG only: run it without the IMAGE_REPO override" ;;
+    esac
+fi
 export APP_ENV="$ENV_NAME" APP_FLOW="$FLOW" APP_NAME="$APP" APP_INSTANCE="$INSTANCE"
 export CONFIG_DIR COMMON_DIR PROJECT
 if [ -n "$PLATFORM_DIR" ]; then export PLATFORM_DIR; else unset PLATFORM_DIR; fi
@@ -526,7 +548,7 @@ detect_engine() {
 case "$COMMAND" in
     printenv) NEEDS_CLI=0 NEEDS_DAEMON=0 ;;
     config) NEEDS_CLI=1 NEEDS_DAEMON=0 ;;
-    validate) NEEDS_CLI=0 NEEDS_DAEMON=0 ;;
+    validate | record-tag) NEEDS_CLI=0 NEEDS_DAEMON=0 ;;
     app-config) NEEDS_CLI="$OFFLINE" NEEDS_DAEMON="$OFFLINE" ;;
     *) NEEDS_CLI=1 NEEDS_DAEMON=1 ;;
 esac
@@ -753,6 +775,39 @@ cmd_validate() {
     return "$rc"
 }
 
+# IMAGE_TAG=<tag> as the one IMAGE_TAG line of compose.env: the first one replaced in place, later ones dropped,
+# appended when there is none, every other line kept. Written to a copy next to it (same mode) that is renamed
+# over it, so the box never holds a half-written compose.env; unchanged when it already says so.
+cmd_record_tag() {
+    local previous tmp
+    previous="$(env_value IMAGE_TAG)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '  %-13s %s\n' "write" "IMAGE_TAG=$RECORD_TAG into $(rel "$ENV_FILE") (now ${previous:-without IMAGE_TAG})"
+        return 0
+    fi
+    tmp="$(mktemp "$CONFIG_DIR/.compose.env.XXXXXX")" || { warn "cannot create a file in $(rel "$CONFIG_DIR")"; return "$EXIT_FAILED"; }
+    if ! cp -p "$ENV_FILE" "$tmp" || ! awk -v tag="$RECORD_TAG" '
+        { line = $0; sub(/^[[:space:]]+/, "", line) }
+        index(line, "IMAGE_TAG=") == 1 { if (!done) print "IMAGE_TAG=" tag; done = 1; next }
+        { print }
+        END { if (!done) print "IMAGE_TAG=" tag }' "$ENV_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        warn "could not write a new $(rel "$ENV_FILE")"
+        return "$EXIT_FAILED"
+    fi
+    if cmp -s "$tmp" "$ENV_FILE"; then
+        rm -f "$tmp"
+        info "$(rel "$ENV_FILE") already records IMAGE_TAG=$RECORD_TAG"
+        return 0
+    fi
+    if ! mv -f "$tmp" "$ENV_FILE"; then
+        rm -f "$tmp"
+        warn "could not replace $(rel "$ENV_FILE")"
+        return "$EXIT_FAILED"
+    fi
+    info "IMAGE_TAG=$RECORD_TAG recorded in $(rel "$ENV_FILE") (was ${previous:-unset}); the next bundle sync replaces this copy with git's"
+}
+
 cmd_app_config() {
     if [ "$OFFLINE" -eq 1 ]; then
         compose run --rm --no-deps -T "$APP" --print-config | mask_stream
@@ -797,6 +852,7 @@ case "$COMMAND" in
         ;;
     pull) compose pull || rc="$EXIT_FAILED" ;;
     validate) cmd_validate || rc=$? ;;
+    record-tag) cmd_record_tag || rc=$? ;;
     exec)
         tty_flag=()
         [ -t 0 ] || tty_flag=(-T)

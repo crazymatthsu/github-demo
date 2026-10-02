@@ -52,6 +52,10 @@ Commands:
   deploy   --tag <tag> [--bundle <dir>] [--move] [--report <file>]
            bundle (unless --bundle) → sync → plan → per placement, on its box:
              IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <inst> pull → start → health
+           then record-tag there and on every other box that holds the bundle: compose.env names the new tag
+           on every box, so a later start or restart (a failover too) runs it, not the bundle's previous tag,
+           until the next sync brings the written-back tree; a box that fails to record it is reported, and
+           the instance still counts as deployed.
            A failed start or health re-runs start without the override: compose.env on the box still holds
            the previous tag (D9 §6.9); the instance counts as failed. An instance pinned to one box but running
            on another stops the deploy (6) unless --move, which stops it there first. stdout carries one line
@@ -68,10 +72,10 @@ Options:
                <env> <flow> <app> <inst> <command>' and rsync -az --delete --exclude .state/ over the same
                ssh (DL-35: the deploy user's forced command on every box)
       local    the runner plays every box: <local-root>/<host><root>/ per box (rsync -a --delete); per
-               placement validate + start --dry-run, and the ssh commands are printed. With
-               POOL_LOCAL_EXECUTE=true, discover / status / pull / start / health run for real; the simulated
-               boxes share this machine's engine, so an instance found on every one of them is placed as if
-               none ran it
+               placement validate, start --dry-run and record-tag --dry-run, and the ssh commands are printed.
+               With POOL_LOCAL_EXECUTE=true, discover / status / pull / start / health / record-tag run for
+               real; the simulated boxes share this machine's engine, so an instance found on every one of
+               them is placed as if none ran it
       dry-run  print the rsync and ssh commands; nothing runs and nothing is reported as deployed
   --local-root <dir>   local transport: the directory of the simulated boxes (default $POOL_LOCAL_ROOT)
   --dry-run            alias of --transport dry-run
@@ -720,11 +724,30 @@ pool_header() { printf 'pool %s/%s: %s (user %s, root %s)\n' "$ENV_NAME" "$FLOW"
 P_RESULT=() P_COMMANDS=()
 FAILED=()
 deployed_line() { printf 'deployed %s@%s=%s\n' "$1" "$2" "$TAG"; }
+# After a healthy start: the tag into compose.env on each given box (record-tag). Until the next sync the boxes'
+# compose.env carries the bundle's previous tag (the write-back commits the new one to git afterwards), so a start
+# or restart there — an operator's, a failover — would run that tag again. A box that fails to record it is
+# reported, never fatal: the instance runs the new tag, and the next sync brings git's compose.env everywhere.
+record_tag() { # <index> <box>...
+    local i="$1" box missed=()
+    shift
+    for box in "$@"; do
+        on_box "$box" "${T_INSTANCE[i]}" record-tag "$TAG" || missed+=("$box")
+    done
+    [ "${#missed[@]}" -gt 0 ] || return 0
+    P_RESULT[i]="deployed; IMAGE_TAG not recorded on ${missed[*]}"
+    warn "${T_INSTANCE[i]}: deployed, but compose.env on ${missed[*]} still names the previous tag: a start there before the next sync runs it"
+}
 deploy_one() { # <index>
-    local i="$1" instance="${T_INSTANCE[$1]}" host="${PLACE_HOST[$1]}" from="${PLACE_FROM[$1]}" cmd step lines=""
+    local i="$1" instance="${T_INSTANCE[$1]}" host="${PLACE_HOST[$1]}" from="${PLACE_FROM[$1]}" cmd step box lines=""
+    local record_on=()
     if [ -n "$host" ]; then
+        # The tag is recorded on the instance's box first, then on every other box that holds the bundle.
+        record_on=("$host")
+        for box in ${AVAILABLE[@]+"${AVAILABLE[@]}"}; do [ "$box" = "$host" ] || record_on+=("$box"); done
         [ -z "$from" ] || lines="$(ssh_display "$from" "$instance" stop "")"$'\n'
         for cmd in pull start health; do lines="$lines$(ssh_display "$host" "$instance" "$cmd" "$TAG")"$'\n'; done
+        for box in "${record_on[@]}"; do lines="$lines$(ssh_display "$box" "$instance" record-tag "$TAG")"$'\n'; done
     fi
     P_COMMANDS[i]="$lines"
     if [ -z "$host" ]; then
@@ -740,12 +763,14 @@ deploy_one() { # <index>
         dry-run)
             [ -z "$from" ] || on_box "$from" "$instance" stop ""
             for cmd in pull start health; do on_box "$host" "$instance" "$cmd" "$TAG"; done
+            for box in "${record_on[@]}"; do on_box "$box" "$instance" record-tag "$TAG"; done
             P_RESULT[i]="dry-run"
             return 0
             ;;
         local)
             if [ "$EXECUTE" = false ]; then
-                # The runner plays the box: validate and start --dry-run there (the pool guard prints the peers).
+                # The runner plays the boxes: validate and start --dry-run on the instance's box (the pool guard
+                # prints the peers), record-tag --dry-run on every box that would record the tag.
                 if ! local_run "$host" "$instance" validate "$TAG" >&2; then
                     P_RESULT[i]="failed: validate on $host"
                     return 1
@@ -754,6 +779,12 @@ deploy_one() { # <index>
                     P_RESULT[i]="failed: start --dry-run on $host"
                     return 1
                 fi
+                for box in "${record_on[@]}"; do
+                    if ! local_run "$box" "$instance" record-tag "$TAG" --dry-run >&2; then
+                        P_RESULT[i]="failed: record-tag --dry-run on $box"
+                        return 1
+                    fi
+                done
                 info "$instance validated on $host ($(rel "$LOCAL_ROOT")/$host$POOL_ROOT); the ssh transport would run:"
                 printf '%s' "$lines" | sed 's/^/    /' >&2
                 P_RESULT[i]="validated"
@@ -778,6 +809,7 @@ deploy_one() { # <index>
         step=health
         if on_box "$host" "$instance" health "$TAG"; then
             P_RESULT[i]="deployed"
+            record_tag "$i" "${record_on[@]}"
             deployed_line "$instance" "$host"
             return 0
         fi

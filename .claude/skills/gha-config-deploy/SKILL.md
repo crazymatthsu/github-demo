@@ -77,9 +77,11 @@ afterwards. Either way the tree in git is what runs, and config lint has checked
 11. **Every instance is in exactly one inventory entry and runs on exactly one box.** Placement is pinned, then
     discovered, then assigned; every box of a pool holds the whole flow; a guard refuses a second copy. Why: a
     forgotten instance never deploys, a deleted one never lingers, and no instance ever runs on two boxes at once.
-12. **A failed deploy leaves the previous version running.** Pull before start; the new tag is only an override
-    until the write-back records it, so a failed start restarts the old tag; Helm upgrades roll back on failure.
-    Why: dev stays usable after a bad merge and the tree still tells the truth.
+12. **A failed deploy leaves the previous version running; a passing one sticks.** Pull before start; the new tag
+    is only an override until health passes, so a failed start restarts the old tag; once health passes, record
+    the tag in the host's own compose.env (on every box of a pool), and the write-back commits it to git. Helm
+    upgrades roll back on failure. Why: dev stays usable after a bad merge, a restart on a host never quietly
+    reverts a good deploy, and the tree still tells the truth.
 
 ## Procedure
 
