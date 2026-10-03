@@ -2,9 +2,12 @@
 
 | | |
 |---|---|
-| Status | Accepted (v1.0, 2026-09-26) |
+| Status | Superseded by DL-40 (v1.5, 2026-10-03); was Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
+
+> **Superseded (v1.5, 2026-10-03):** the company ruleset accepts no workflow push to `main`, so there is
+> no write-back and nothing to guard — see DL-40. Kept for the record; nothing below is in force.
 
 ## Context
 

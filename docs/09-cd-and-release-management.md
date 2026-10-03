@@ -32,7 +32,8 @@ config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
 |---|---|---|
 | Production on Kubernetes on EKS; compose only for local dev, CI stacks and the dev compose hosts of Demo step 1 | DL-02, §5.8 | qa and prod are Kubernetes-only from the first design; the compose path exists for one demo step |
 | Merge to `main` auto-deploys to the dev targets; qa and prod stay PR-gated | §2.2, §4, §5.12 (decided v0.7) | `deploy-dev` job under GitHub Environment `dev` with no reviewers; never touches qa / prod |
-| Config in this monorepo under `config/<env>/...`, `workflows-config.yml` per env | DL-06, §5.7 (decided) | the config tree is the deployment record; write-backs land in the same repository, hence the loop guard (DL-36) |
+| Config in this monorepo under `config/<env>/...`, `workflows-config.yml` per flow | DL-06, §5.7 (decided) | the config tree is the deployment intent for every env and the record for qa / prod; for dev the GitHub Deployment is the record — no workflow writes to `main` (DL-40, v1.5) |
+| `main` accepts changes only through pull requests with at least one human approval; no bypass for workflows or Apps | company ruleset (v1.5) | no write-back and no loop guard; `config/*-dev/**` declares `main`, the deploy pins and records the digest (DL-40); each flow opts in to deploy on merge, nightly or by hand |
 | Helm chart per app; one release `<app>-<instance>` per AppInstance, `replicas: 1` | DL-29, DL-33 (decided) | promotion and rollback are per instance; `helm upgrade --install ... --rollback-on-failure --wait` is the unit of deploy |
 | Same digest promoted across `docker-dev-local → docker-qa-local → docker-prod-local`, never rebuilt | §5.4, §5.12 | the qa and prod bump PRs change a tag (and pin a digest, DL-20) — no build step in promotion |
 | Deployment windows per region and flow (trading hours); region ordering | §2.1, §5.12 | enforced in the cluster by controller sync windows, not only in the pipeline |
@@ -45,7 +46,7 @@ config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
 |---|---|
 | Environment model `<region>-<stage>` × flow × instance; GitHub Environments with protection rules (reviewers for qa / prod, deployment branches limited to release tags) | §6.1, §6.2 |
 | Promotion flow: build once → dev auto on `main` → qa on release tag (bump PR + approval) → prod on approved PR + change ticket; same digest, no rebuild | §6.3, §7.2 |
-| Auto-deploy to dev on merge to `main`: `deploy-dev` job, `workflows-config.yml`, compose adapter (DL-35), Helm adapter (`--rollback-on-failure --wait --timeout 5m`), Argo CD hand-over, tag write-back with loop guard (DL-36), record, failure behaviour | §4.1, §4.2, §6.4–§6.6 |
+| Auto-deploy to dev on merge to `main`: `deploy-dev` job, `workflows-config.yml`, compose adapter (DL-35), Helm adapter (`--rollback-on-failure --wait --timeout 5m`), Argo CD hand-over, deployment record without a write-back (DL-40), deploy policy per flow, failure behaviour | §4.1, §4.2, §6.4–§6.6 |
 | Deploy mechanics on EKS: controller reconciles a merged bump into a rolling update; probes gate; `maxUnavailable` / `maxSurge` per instance; PDB; progressive delivery where replicas exist; post-sync smoke test | §6.7, §7.4 (details in D6, D11) |
 | Deployment windows per region and flow, region ordering, enforced by sync windows | §6.8 |
 | Rollback: revert the bump PR, time-to-rollback target, schema compatibility | §6.9, §7.4 |
@@ -70,7 +71,10 @@ config-tree → Kubernetes mapping (D11); `run-compose.sh` itself (D6).
 self-hosted runner on the host. Either way the host-side command is the same `run-compose.sh`
 invocation, so the adapter changes only its transport.
 
-### 4.2 Loop guard for the tag write-back (DL-36, open)
+### 4.2 Loop guard for the tag write-back (DL-36 — superseded by DL-40)
+
+> **Superseded (v1.5, DL-40):** the company ruleset accepts no workflow push to `main`; there is no write-back
+> and nothing to guard. The table stays for the record.
 
 | Option | Pros | Cons | When to prefer |
 |---|---|---|---|
@@ -89,8 +93,8 @@ the acceptance test "the write-back commit does not trigger another deploy" (§7
 | Deploy-time parameter (job input) | no PR | state outside git; weak audit | never for qa / prod |
 | Argo CD Image Updater / Flux image automation writing back to git | fully automatic | automation choosing prod images contradicts the approval gate; acceptable for dev only, and dev already has `deploy-dev` | not needed |
 
-**Recommendation:** bot PR with approvals for qa and prod (DL-09 leaning); dev keeps the decided
-deploy-then-write-back.
+**Recommendation:** bot PR with approvals for qa and prod (DL-09 leaning); dev deploys from `main` and
+records a GitHub Deployment instead of writing back (DL-40, v1.5).
 
 ### 4.4 GitOps controller on EKS (DL-30, EKS part open — Phase 3)
 
@@ -132,18 +136,18 @@ The approval matrix (§6.1) is written for the baseline; a shared dev/qa cluster
 
 Decided by the brief: merge to `main` deploys to the dev targets automatically through the
 `deploy-dev` job (Demo step 1 via `run-compose.sh`, Demo step 2 via `helm upgrade --install`),
-the deployed tag is written back with a loop guard, qa and prod are PR-gated and never touched by
-that job, the same digest is promoted and never rebuilt, and Phase 3 hands delivery to a GitOps
+the deploy is recorded as a GitHub Deployment and nothing is written to `main` (DL-40, v1.5), qa and
+prod are PR-gated and never touched by that job, the same digest is promoted and never rebuilt, and Phase 3 hands delivery to a GitOps
 controller with deployment windows enforced in the cluster.
 
 Recommendations in this document: SSH from the runner as the first transport to the dev compose
-hosts (DL-35); bot-author check plus `[skip ci]` as the loop guard (DL-36); bot PRs with
+hosts (DL-35); bot PRs with
 CODEOWNERS approvals for qa and prod bumps (DL-09), one PR per env (DL-21); Argo CD as the
 controller with sync windows per `<region>-<stage>` × flow (DL-30); trunk-based development with
 tags and hotfix branches cut from release tags; one cluster per `<region>-<stage>` as the baseline
 topology. Rationale: every deploy intent is a git commit reviewed under the rules of the target
-env, every deploy is recorded twice (git and GitHub Deployments), and rollback is always "the same
-mechanism in reverse".
+env, every promoted deploy is recorded twice (git and GitHub Deployments) and every dev deploy once (the
+Deployment — the dev tree declares `main`), and rollback is always "the same mechanism in reverse".
 
 ## 6. Conventions
 
@@ -153,7 +157,7 @@ mechanism in reverse".
 |---|---|---|---|---|---|---|
 | `local` | laptop compose / kind | — | developer | none | — | — |
 | CI test stacks (env `local`, run-scoped project names, D6 §6.5) | GitHub-hosted runner (compose; kind in Demo step 2) | kind cluster `ci-<run_id>` | workflow | none | — | — |
-| `us-dev`, `jp-dev` | Demo step 1: compose hosts; Demo step 2: kind in the workflow, then a dev cluster; Phase 3: dev EKS | `cash`, `deriv`, `swap` (DL-38) | `deploy-dev` job (GitHub Environment `dev`), Phase 3: Argo CD auto-sync | merge to `main` (PR review + green CI) | PR reviewers only | none |
+| `us-dev`, `jp-dev` | Demo step 1: compose hosts; Demo step 2: kind in the workflow, then a dev cluster; Phase 3: dev EKS | `cash`, `deriv`, `swap` (DL-38) | `deploy-dev` job (GitHub Environment `dev`), Phase 3: Argo CD auto-sync | per flow (`deploy` block, DL-40): merge to `main` (PR review + green CI), a nightly time, or a manual dispatch | PR reviewers only | none |
 | `us-qa`, `jp-qa` | qa EKS per region | same | Phase 3: Argo CD; before that: documented only (no demo target) | bump PR on `config/<region>-qa/**` | 1 CODEOWNER of the app + qa owner | business hours |
 | `us-prod`, `jp-prod` | prod EKS per region | same | Argo CD sync within the window | bump PR on `config/<region>-prod/**` with change-ticket reference | 2 approvals: app owner + ops CODEOWNER; GitHub Environment `<region>-prod` reviewers on the promotion job | trading-hours window per flow; `jp` before `us` |
 
@@ -161,7 +165,7 @@ mechanism in reverse".
 
 | Environment | Required reviewers | Deployment branches / tags | Wait timer | Secrets held | Used by |
 |---|---|---|---|---|---|
-| `dev` | none | `main` only | 0 | dev-host SSH key or nothing (self-hosted runner, DL-35); kind needs none | `deploy-dev` job in `main.yml` |
+| `dev` | none | `main` only | 0 | dev-host SSH key or nothing (self-hosted runner, DL-35); kind needs none | `deploy-dev` job in `main.yml`, the nightly tick and the manual / rollback dispatches |
 | `us-qa`, `jp-qa` | 1 (qa owners team) | tags `v*` (and `<subproject>/v*` if DL-03 chooses independent tags) | 0 | JFrog promotion token via OIDC (DL-18); no cluster credentials | `promote` job in `release.yml`: registry promotion + Deployment record |
 | `us-prod`, `jp-prod` | 2 (ops + platform owners); self-review disallowed | tags `v*` only | optional 30 min for change-ticket verification | JFrog promotion via OIDC; **no cluster credentials** | `promote` job: registry promotion, Deployment record, wait for controller health |
 
@@ -174,93 +178,90 @@ window.
 
 | Stage | Trigger | What changes in git | Registry | Deployer | Record |
 |---|---|---|---|---|---|
-| dev | merge to `main` → `main.yml` publishes pre-release tag `1.5.0-rc.<n>` (format per DL-04 / DL-05) | write-back commit: `image.tag` in `config/us-dev/.../<inst>/values.yaml` and `IMAGE_TAG` in `compose.env` | `docker-dev-local` | `deploy-dev` job | GitHub Deployment `dev`, job summary |
-| release | tag `v1.5.0` → `release.yml` retags the digest as `1.5.0` + `sha-<sha7>` (D4) | bump PR to dev config (release tag) — a human merge that deploys via `deploy-dev` | `docker-dev-local` | `deploy-dev` | as above |
+| dev | merge to `main` → `main.yml` publishes pre-release tag `1.5.0-rc.<n>` (format per DL-04 / DL-05) | nothing: `config/us-dev/**` declares `main`; the Deployment payload records tag and digest per instance (DL-40) | `docker-dev-local` | `deploy-dev` job | GitHub Deployment `dev`, job summary |
+| release | tag `v1.5.0` → `release.yml` retags the digest as `1.5.0` + `sha-<sha7>` (D4) | nothing for dev: the release commit is a tested `main` commit, so `main` already points at the released digest and dev runs it (DL-40) — no dev bump PR | `docker-dev-local` | — | as above |
 | qa | same `release.yml` opens bump PR on `config/us-qa/**` and `config/jp-qa/**` | `image.tag: 1.5.0` (+ `image.digest` per DL-20) per instance | promotion `docker-dev-local → docker-qa-local` by the `promote` job (Environment `<region>-qa`) after PR approval | Argo CD sync (Phase 3) | GitHub Deployment `<region>-qa`; Argo CD history |
 | prod | bump PR opened by the `promote` job or by ops: qa values copied per instance into `config/<region>-prod/**`; PR body carries `Change-Ticket: CHG0012345` | `image.tag` + digest per instance | `docker-qa-local → docker-prod-local` by the `promote` job (Environment `<region>-prod`) | Argo CD sync inside the sync window | GitHub Deployment `<region>-prod`; Argo CD history; ticket link |
 
-Nothing is built after `main.yml`; the digest recorded in the dev write-back is the digest that
-reaches prod.
+Nothing is built after `main.yml`; the digest the dev Deployment records — the one `release.yml` resolves from
+the tagged commit's own run — is the digest that reaches prod.
 
 ### 6.4 The `deploy-dev` job
 
 | Aspect | Convention |
 |---|---|
-| Position | last job of `main.yml`, `needs: [publish]`, `environment: dev`, `concurrency: deploy-dev` (no parallel deploys, `cancel-in-progress: false`) |
-| Loop guard | `if: github.actor != '<bot-app>[bot]' && !contains(github.event.head_commit.message, '[skip ci]')` (DL-36 leaning); a config-only human merge still deploys |
-| Input | `config/us-dev/<flow>/workflows-config.yml` for every flow directory (one inventory per flow, v1.3; `jp-dev/...` when jp targets exist): every `<app>/<instance>` of the flow with `kind: compose` or `kind: helm` (schema in D5 §6.6); the job merges them with the flow prepended |
-| Compose adapter (Demo step 1) | per target: `run-compose.sh us-dev <flow> <app> <inst> pull` → `start` → `health`, executed over SSH as the `deploy` user or on a self-hosted runner (DL-35); `IMAGE_TAG` injected as an environment override for `pull` / `start` / `health`, then persisted by the write-back; on the boxes of a pool, once `health` passed, `record-tag` also writes it into every box's copy of `compose.env` (a restart or a failover before the next sync keeps it). **Demo placeholder (brief v1.1):** no dev host exists, so the step runs `run-compose.sh ... start --dry-run` on the runner (validates the target and prints the compose command) and echoes the SSH command it would run, next to a `TODO(DL-35)` comment describing the transport (§6.6). **Host pools (v1.3, DL-39):** for a flow whose `workflows-config.yml` declares a `pool`, `scripts/pool-deploy.sh <env> <flow> deploy --tag <tag>` replaces the per-target loop: it builds the flow's host bundle (compose runtime + `config/_common`, `config/<env>/_common`, all of `config/<env>/<flow>`, `workflows-config.yml`, a `.platform-bundle` manifest), syncs it to every box of the pool (`rsync --delete` into `root` over the DL-35 SSH channel), resolves each instance's box (pinned → discovered through `run-compose.sh status --json` → assigned to the box with the fewest placements) and runs `pull` → `start` → `health` there, then `record-tag` on every box (a box that fails to record it is reported, the instance still deployed), writing a JSON report (`--report`) for the job summary; a box that fails to sync is dropped (nothing is assigned or discovered there, an instance pinned to it fails) and the deploy exits 1 after the rest; the write-back records the box as `host`. Transport `local` (the runner plays every box: sync per box, `validate`, `start --dry-run` and `record-tag --dry-run`) until the Environment `dev` holds `DEV_DEPLOY_SSH_KEY` and `config/<env>/known_hosts` exists |
+| Position | last job of `main.yml`, `needs: [publish, kind-deploy]`, `environment: dev`, `concurrency: deploy-<env>` shared with the nightly tick and the dispatches (no parallel deploys, `cancel-in-progress: false`) |
+| Triggers | `push` to `main`: the flows whose `deploy.on-merge` lists a project, with the run's version; the hourly tick: the flows whose `deploy.schedule` is due, with the latest tested `main` when it differs from the flow's last successful Deployment; `workflow_dispatch` (project, env, flow): the latest tested `main`, now; a rollback dispatch (project, env, flow): the previous version (DL-40, DL-41). No actor condition: nothing ever pushes to `main` |
+| Input | `config/<env>/<flow>/workflows-config.yml` per flow (schema v2, D5 §6.6): the flow's boxes (`hosts`), its `deploy` policy and every instance with its box or cluster; a deploy covers every instance of the project in the flow — never a subset |
+| Compose adapter (Demo step 1) | per (project, env, flow): `scripts/pool-deploy.sh <env> <flow> deploy --project <project> --tag <tag>` builds the project's bundle from the tree, rsyncs it as a **new** version directory to every box of `hosts.list` (verified by checksum), records the literal tag in it, pulls, runs `start` → `health` for every instance on its declared box, then activates `current` on every box (DL-41); `IMAGE_TAG` is the override for `pull` / `start` / `health` because the tree says `main` (DL-40). Over SSH as `hosts.user` with the DL-35 forced command. **Demo placeholder:** until the Environment `dev` holds `DEV_DEPLOY_SSH_KEY` and `config/<env>/known_hosts` exists, the `local` transport lets the runner play every box (one directory each; `validate`, `start --dry-run`, `activate --dry-run`) |
 | Helm adapter (Demo step 2) | per `kind: helm` target: `scripts/helm-deploy-instance.sh us-dev <flow> <app> <inst> --tag <tag> --namespace <ns>` (D11 §8.3) = `helm upgrade --install <app>-<inst> deephaven-connectors/<app>/helm/<app> -n <ns> --create-namespace -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml [--set-file appConfig.platform=... appConfig.env=...] --rollback-on-failure --wait --timeout 5m`, then `rollout status` and `helm test`. Targets of `cluster: kind-ci` go into a kind cluster `deploy-<run_id>-<attempt>` created in the job and deleted in `always()` until a dev cluster exists (DL-32); any other cluster fails with `TODO(Phase 3)` (kubeconfig from the Environment `dev` secrets) |
 | Health gate | compose: `health` exit code; Helm: `--rollback-on-failure --wait` plus `kubectl rollout status` and `helm test` (the kind deploy test adds the smoke diff: two instances differ in effective config, §7 of the brief) |
-| Write-back | commit `chore(config): us-dev deployed <tag> [skip ci]` by the bot identity (GitHub App token, DL-09 / §5.5) touching only `image.tag` / `IMAGE_TAG` of the deployed instances; pushed to `main` directly (branch protection allows the App) |
-| Record | `GitHub Deployment` (environment `dev`, ref, sha, payload `{instance, tag, digest, target}`) and a job summary table per instance |
-| Failure | job red; compose: `pull` failure changes nothing, a `health` failure re-runs `start` with the previous `IMAGE_TAG` (image still in the local cache); Helm: `--rollback-on-failure` restored the previous revision (a failed `rollout status` or `helm test` afterwards runs `helm rollback`; a failed first install stays in place for diagnostics), previous release keeps running; no write-back for failed instances |
+| Record | one GitHub Deployment per run (Environment `dev`, ref, sha, payload per instance: tag, digest, box, version directory, config git SHA) and a job summary table per instance; nothing is committed (DL-40) |
+| Failure | job red, Deployment `failure`; compose: a `pull` failure changes nothing; any instance failing `health` sends every instance of the project back to `current` — the previous version directory, old image **and** old config — and `current` never moves (DL-41); Helm: `--rollback-on-failure` restored the previous revision (a failed `rollout status` or `helm test` afterwards runs `helm rollback`; a failed first install stays in place for diagnostics) |
 | Never | touches `config/*-qa/**` or `config/*-prod/**`; the adapter refuses any env other than `*-dev` (and `run-compose.sh` enforces the same allow-list, D6) |
-| Phase 3 | the adapters are replaced by Argo CD auto-sync on `config/<region>-dev/**`; the job shrinks to "wait for Application health, smoke test, write-back" |
+| Phase 3 | the adapters are replaced by Argo CD auto-sync on `config/<region>-dev/**`; the job shrinks to "wait for Application health, smoke test, record the Deployment" |
 
 ### 6.5 Illustrative `config/us-dev/cash/workflows-config.yml`
 
 ```yaml
-# config/us-dev/cash/workflows-config.yml — schema owned by D5 (§6.6); one file per flow, one entry per AppInstance of the flow
+# config/us-dev/cash/workflows-config.yml — schema v2 owned by D5 (§6.6); one file per flow (DL-40, DL-41)
 env: us-dev
 flow: cash
-pool:                              # host pool (v1.3, DL-39): the bare-metal boxes of us-dev/cash
-  hosts: [dev-cash-01.us-dev.example.com, dev-cash-02.us-dev.example.com]
-  user: deploy                     # SSH user on every box (DL-35)
-  root: /opt/platform              # install root of the host bundle
-defaults:
-  kind: helm                       # compose | helm
-  cluster: kind-ci                 # Demo step 2: kind inside the workflow; later the dev EKS cluster
-  namespace: cash                  # default: the flow name (DL-38)
-targets:
-  - instance: source-database/trades-db-to-amps            # <AppName>/<AppInstance>
-    kind: compose                  # any box of the pool; `host` appears once the write-back records the placement
-  - instance: source-database/positions-db-to-deephaven    # inherits the helm defaults
+hosts:                             # the boxes dedicated to us-dev/cash; every one receives every version
+  user: deploy                     # SSH login on every box (DL-35); root is relative to its home
+  root: ~/versions                 # <root>/<project>/<YYYYMMDD-HHMMSS>/ + current
+  keep: 5
+  list: [dev-cash-01.us-dev.example.com, dev-cash-02.us-dev.example.com]
+deploy:                            # required: when this flow deploys
+  on-merge: [deephaven-connectors] # on every tested main merge
+  schedule:                        # nightly, only when newer than what runs
+    projects: [deephaven-server]
+    at: "02:00"
+    tz: America/New_York
+    days: mon-fri
+instances:                         # every instance directory of the flow, and where it runs
+  source-database/trades-db-to-amps: dev-cash-01.us-dev.example.com
+  source-database/positions-db-to-deephaven:
+    cluster: kind-ci               # a Helm instance: Demo step 2 kind inside the workflow; later the dev EKS cluster
+    namespace: cash                # default: the flow name (DL-38)
 ```
 
 ### 6.6 Illustrative `deploy-dev` job skeleton
 
 ```yaml
-# illustrative — real job in .github/workflows/main.yml (D7 owns the workflow set)
+# illustrative — real job in .github/workflows/_deploy-dev.yml, called by main.yml (push), the hourly tick and the
+# manual / rollback dispatches (D7 owns the workflow set). No actor condition: no workflow ever pushes to main (DL-40).
 deploy-dev:
-  needs: [publish]
-  if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')   # demo bot identity; a GitHub App in the enterprise
+  needs: [publish, kind-deploy]
   runs-on: ubuntu-latest
-  environment: dev
-  concurrency: { group: deploy-dev, cancel-in-progress: false }
-  permissions: { contents: write, deployments: write, id-token: write }
+  environment: { name: dev, deployment: false }      # the job records its own Deployment, with a payload
+  concurrency: { group: deploy-us-dev, cancel-in-progress: false }
+  permissions: { contents: read, deployments: write, packages: read }
+  env:
+    TAG: ${{ inputs.tag }}                             # push: the run's rc; tick / dispatch: the version `main` points to
+    PROJECT: ${{ inputs.project }}                     # dispatch input; push / tick: every project the flow lists
   steps:
     - uses: actions/checkout@v4
-    - id: targets                            # one inventory per flow (D5 §6.6): merge config/us-dev/*/workflows-config.yml,
-      run: |                                 # prefixing every instance with its flow
-        list=$(for f in config/us-dev/*/workflows-config.yml; do yq -o=json -I=0 '(.flow) as $fl | .targets | map(.instance |= $fl + "/" + .)' "$f"; done | jq -cs 'add')
-        echo "list=$list" >> "$GITHUB_OUTPUT"
-    - name: Deploy compose targets (Demo step 1; host pools since v1.3, DL-39)
-      env: { IMAGE_TAG: ${{ needs.publish.outputs.tag }}, POOL_TRANSPORT: local, POOL_LOCAL_ROOT: ${{ runner.temp }}/boxes }
+    - id: plan                                         # which flows deploy for this trigger (DL-40):
+      run: |                                           # push → deploy.on-merge; tick → deploy.schedule due now; dispatch → the inputs
+        scripts/ci/deploy-plan.sh us-dev "$GITHUB_EVENT_NAME" "$PROJECT" "${{ inputs.flow }}" >> "$GITHUB_OUTPUT"
+    - name: Deploy compose instances (Demo step 1; versioned bundles, DL-41)
+      env: { POOL_TRANSPORT: ssh }                     # `local` until DEV_DEPLOY_SSH_KEY and known_hosts exist (DL-35)
       run: |
-        # A flow with pools.<flow>: one call builds the flow's host bundle, syncs it to every box of the pool,
-        # resolves each instance's box (pinned -> discovered -> assigned) and runs pull, start, health there.
-        # Transport ssh once the Environment `dev` holds DEV_DEPLOY_SSH_KEY and config/us-dev/known_hosts exists
-        # (TODO(DL-35)); until then `local`: the runner plays every box (sync per box, validate, start --dry-run).
-        scripts/pool-deploy.sh us-dev cash deploy --tag "$IMAGE_TAG"      # prints: deployed <flow>/<app>/<inst>@<host>=<tag>
-        # A flow without a pool keeps the per-target loop: run-compose.sh <args> start --dry-run on the runner and
-        # the printed `ssh deploy@<host> 'IMAGE_TAG=... run-compose.sh <args> pull && ... start && ... health'`.
-    # Demo step 2: kind: helm targets of cluster kind-ci go into a kind cluster created here (deploy-<run_id>-<attempt>);
-    # setup-kube-tools, kind-cluster up + load precede this step, kind-cluster down + leak-check follow it in always().
-    - name: Deploy helm targets (Demo step 2)
-      id: helm
-      uses: ./.github/actions/helm-deploy-instance      # runs scripts/helm-deploy-instance.sh per target (D11 §8.3):
-      with:                                              # namespace + PSS labels, Secret, helm lint, upgrade --install
-        env: us-dev                                      # --rollback-on-failure --wait --timeout 5m, rollout status, helm test
-        targets: ${{ steps.targets.outputs.helm }}      # [{instance: "<flow>/<app>/<inst>", namespace: "<ns>"}]
-        tag: ${{ needs.publish.outputs.tag }}
-        loaded-images: ${{ steps.load.outputs.loaded }}
-        fail-on-error: 'false'                           # the successful instances are written back first
-    - name: Write back deployed tag and placement
-      env: { WRITE_BACK_PLACEMENTS: "cash/source-database/trades-db-to-amps=dev-cash-01.us-dev.example.com" }   # from pool-deploy.sh
-      run: scripts/ci/write-back-tag.sh us-dev "${{ needs.publish.outputs.tag }}"   # tag in compose.env + values.yaml, host in workflows-config.yml; "[skip ci]" as the bot
-    - name: Record deployment
-      run: gh api repos/${{ github.repository }}/deployments -f ref="${{ github.sha }}" -f environment=dev
+        # Per (project, env, flow): bundle from the tree → new version directory on every box of hosts.list → record-tag
+        # → pull → start + health for every instance on its declared box → activate current on every box → prune.
+        # Any health failure: every instance back to current, which never moved.
+        for flow in ${{ steps.plan.outputs.compose-flows }}; do
+          scripts/pool-deploy.sh us-dev "$flow" deploy --project "$PROJECT" --tag "$TAG"   # prints: deployed <project>@<flow>=<tag> <version>
+        done
+    - name: Deploy helm instances (Demo step 2)
+      uses: ./.github/actions/helm-deploy-instance     # scripts/helm-deploy-instance.sh per instance (D11 §8.3):
+      with:                                            # namespace + PSS labels, Secret, helm lint, upgrade --install
+        env: us-dev                                    # --rollback-on-failure --wait --timeout 5m, rollout status, helm test
+        instances: ${{ steps.plan.outputs.helm }}
+        tag: ${{ env.TAG }}
+    - name: Record the deployment                      # the record: tag, digest, box, version directory, config sha per instance
+      run: gh api repos/${{ github.repository }}/deployments -f ref="$GITHUB_SHA" -f environment=dev -f payload="$PAYLOAD"
 ```
 
 ### 6.7 Deploy mechanics on EKS (Phase 3)
@@ -293,8 +294,9 @@ is the enforcement point.
 | Situation | Mechanism | Target time | Record |
 |---|---|---|---|
 | `deploy-dev` Helm upgrade fails | `--rollback-on-failure` restores the previous revision automatically (a failed `rollout status` or `helm test` afterwards runs `helm rollback`; a failed first install has nothing to restore and stays in place for diagnostics); job red; no write-back | immediate | job summary, Deployment `failure` |
-| `deploy-dev` compose `health` fails | `pool-deploy.sh` re-runs `start` on that box without the tag override (the synced `compose.env` still carries the previous tag, image still cached: `record-tag` runs only after a passing `health`); job red; no write-back for the instance | < 2 min | job summary |
-| Bad release in qa or prod, cluster healthy but behaviour wrong | **revert the bump PR** (same gates, expedited approvals); Argo CD syncs the previous manifest; the previous digest is still in the prod repo (never deleted, D4) | ≤ 15 min from decision to sync (to confirm with change management) | revert PR + Deployment |
+| `deploy-dev` compose `health` fails | every instance of the project in the flow restarts from `current` — the previous version directory, old image and old config (DL-41); `current` never moved; job red, Deployment `failure` | < 2 min | job summary |
+| Dev runs a bad version or configuration | rollback dispatch (project, env, flow): every box flips `current` to the previous version and restarts; a restore pull request follows only when the tree must change too (DL-40) | minutes | Deployment, job summary |
+| Bad release in qa or prod, cluster healthy but behaviour wrong | **restore the env to its last good revision**: one pull request that checks out `config/<env>/**` at the SHA of the last successful Deployment — image tag, digest and every config layer together, however many PRs made the release; a shared `config/_common/` value is pinned back in the env's own layer instead of reverted for every env (DL-40); same gates, expedited approvals; Argo CD syncs it; the previous digest is still in the prod repo (never deleted, D4) | ≤ 15 min from decision to sync (to confirm with change management) | restore PR + Deployment |
 | Prod incident needing seconds, not minutes | ops runs `argocd app rollback <app>-<inst>` (or `helm rollback` with break-glass credentials); auto-sync is disabled on that Application until the revert PR merges — otherwise `selfHeal` would re-apply the bad version | minutes | Argo CD history + follow-up revert PR within the same day |
 | Schema or data compatibility | database or table changes ship expand → migrate → contract across releases so that rolling back the connector never requires rolling back a schema; the release checklist records the compatibility statement | — | PR template field |
 | Rollback drill | quarterly in qa: revert PR, measure time to healthy; result attached to the change-management evidence | — | drill report |
@@ -318,7 +320,7 @@ is the enforcement point.
 | Versions | pre-release on every `main` merge (`1.5.0-rc.<n>` or the SNAPSHOT form — D4 decides, DL-04 / DL-05); release on tag `v<major>.<minor>.<patch>` (lockstep for the connector family; `deephaven-server/v*` if DL-03 chooses hybrid) |
 | Cadence (proposal, to confirm) | minor release every two weeks or on demand; patch releases as needed via hotfix; no fixed code freeze — freezes are expressed as closed sync windows and paused promotion PRs |
 | Release notes | generated from Conventional Commits by the release tooling (release-please leaning, DL-04); attached to the GitHub Release and linked from the prod bump PR |
-| Branch protection on `main` | required checks (build, unit, config-lint, affected ITs), 1 review, CODEOWNERS, linear history, bot App allowed to push write-back commits |
+| Branch protection on `main` | required checks (build, unit, config-lint, affected ITs), 1 review, CODEOWNERS, linear history; no bypass — no workflow pushes to `main` (DL-40) |
 
 ### 6.12 Change-management evidence
 
@@ -339,7 +341,7 @@ is the enforcement point.
 | Developers | merge to `main` after review → dev deploy | branch protection, CODEOWNERS on code |
 | App owners | approve qa bump PRs; co-approve prod | CODEOWNERS on `config/*-qa/**`, `config/*-prod/**` |
 | Ops / platform team | approve prod bump PRs and Environment `<region>-prod`; run break-glass rollbacks | CODEOWNERS, Environment reviewers, Argo CD RBAC role per project |
-| Bot (GitHub App) | write-back commits to `config/*-dev/**`; open bump PRs; **cannot approve** | App installation with `contents: write`, `pull-requests: write` on this repo only (DL-09) |
+| Bot (GitHub App) | open qa / prod bump PRs; **never pushes to `main`, cannot approve** | App installation with `pull-requests: write` and `contents: write` on its own `bump/*` branches only (DL-09, DL-40) |
 | CI (`promote` job) | promote a digest between JFrog repos; create Deployments | OIDC to JFrog (DL-18); no cluster credentials |
 | Argo CD | read the config repo; apply into its own cluster / namespaces | deploy key or App token read-only; per-namespace RBAC; the controller pulls, GitHub never pushes to prod |
 | Dev compose hosts (Demo step 1) | `deploy` user limited to `run-compose.sh` via a forced SSH command or a self-hosted runner | DL-35 |
@@ -357,7 +359,7 @@ is the enforcement point.
 
 | Event | Record | Notification |
 |---|---|---|
-| dev deploy (each `main` merge) | Deployment `dev` with payload per instance; write-back commit | none by default; failure posts to the platform channel |
+| dev deploy (merge, nightly or dispatch, DL-40) | Deployment `dev` with payload per instance (tag, digest, box, version directory, config git SHA); `current` on the boxes | none by default; failure posts to the platform channel |
 | qa / prod promotion | Deployment `<region>-<stage>`; bump PR; JFrog promotion build-info | flow channel: "promoted `source-database` 1.5.0 to `us-qa` (2 instances)" |
 | Argo CD sync result | Application history (revision, author, time) | Argo CD notifications on `on-sync-succeeded`, `on-sync-failed`, `on-health-degraded` |
 | Rollback | revert PR + Deployment marked `inactive` for the bad revision | flow channel and change ticket update |
@@ -401,9 +403,8 @@ tightens per stage while the artefact — the image digest recorded in dev — n
 flowchart LR
   A["PR merged to main"] --> B["main.yml: build, ITs,<br/>publish 1.5.0-rc.n"]
   B --> C["deploy-dev job<br/>(Environment dev)"]
-  C --> D["run-compose.sh pull/start/health<br/>or helm upgrade --rollback-on-failure --wait"]
-  D --> E["write-back tag [skip ci]"]
-  E -. "loop guard: no redeploy" .-> C
+  C --> D["pool-deploy.sh: new version dir, pull/start/health,<br/>activate current — or helm upgrade --rollback-on-failure --wait"]
+  D --> E["Deployment record dev:<br/>tag, digest, box, version"]
   F["tag v1.5.0"] --> G["release.yml: retag 1.5.0 + sha-,<br/>GitHub Release"]
   G --> H["qa bump PR<br/>config/us-qa/**, config/jp-qa/**"]
   H --> I{"CODEOWNER approval"}
@@ -418,9 +419,9 @@ flowchart LR
 
 *Figure 2 — Promotion as a chain of git changes.*
 
-Dev is deployed and then written back; qa and
-prod are written first (a reviewed bump PR) and then deployed by the controller. Every arrow to a
-cluster starts from a merged commit, so `git log config/` is the deployment history.
+Dev is deployed and recorded — its tree declares `main` (DL-40); qa and prod are written first (a reviewed
+bump PR) and then deployed by the controller. Every arrow to a qa or prod cluster starts from a merged
+commit, so `git log config/us-qa config/us-prod` is their deployment history; dev's is the Deployment list.
 
 ### 7.3 Flow — hotfix path
 
@@ -514,11 +515,11 @@ branches exist.
 |---|---|---|
 | Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` job with `environment: dev`, compose adapter (§6.4, §6.6) | merge to `main` resolves the targets in `config/us-dev/cash/workflows-config.yml` and runs the placeholder adapter (`--dry-run` + printed SSH command, `TODO(DL-35)`) without a manual step; the real SSH transport is a later implementation |
 | Demo step 1 (compose) | `config/us-dev/cash/workflows-config.yml` (§6.5; per flow since v1.3) | inventory of dev targets; `kind: compose` entries |
-| Host pools (v1.3, DL-39) | `config/us-dev/cash/workflows-config.yml` (`pool`; one inventory per flow); `scripts/pool-deploy.sh` (`bundle`, `plan`, `sync`, `discover`, `deploy`, `status`); `scripts/ci/set-target-host.sh`; `scripts/test/pool-deploy-test.sh` (lint job) | the flow's whole configuration on every box of the pool, deterministic placement, the deployed tag recorded in every box's `compose.env` once `health` passed (`run-compose.sh record-tag`), the box recorded in `workflows-config.yml` by the write-back; ssh transport stub-tested, `local` transport run by `deploy-dev` until the boxes exist |
-| Demo step 1 (compose) | `scripts/ci/write-back-tag.sh`, GitHub App identity | write-back commit `[skip ci]`; the loop guard is verified by observing no second run |
-| Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof) and a dev bump PR so dev runs the release tag |
+| Host pools (v1.3, DL-39; v2 v1.5, DL-41) | `config/us-dev/<flow>/workflows-config.yml` (`hosts`, `deploy`, `instances`); `scripts/pool-deploy.sh` (`bundle`, `deploy`, `rollback`, `status`); `scripts/test/pool-deploy-test.sh` (lint job) | dedicated boxes, a versioned per-project bundle with `current` on every box, declared placement, deploy-all with activation after health and rollback to the previous version; ssh transport stub-tested, `local` transport run by `deploy-dev` until the boxes exist |
+| Demo step 1 (compose) | `_deploy-dev.yml` Deployment record (DL-40) | no workflow commits to `main`; the Deployment payload names the digest, box and version of every instance |
+| Demo step 1 (compose) | `.github/workflows/release.yml` | `v0.1.0` → `0.1.0` tags → qa bump PR (§4 of the brief; no qa target in the demo, so the PR is the proof); no dev bump PR — dev declares `main` (DL-40) |
 | Demo step 1 (compose) | GitHub Environment `dev` settings; branch protection on `main`; `CODEOWNERS` with `config/**` rules | gates as in §6.2 |
-| Demo step 2 (kind + Helm) | `_deploy-dev.yml` Helm adapter: kind cluster `deploy-<run_id>-<attempt>` in the job, `scripts/helm-deploy-instance.sh` (`helm upgrade --install ... --rollback-on-failure --wait --timeout 5m`, `rollout status`, `helm test`) per `kind: helm` target of `cluster: kind-ci`, write-back of `image.tag` and `IMAGE_TAG`, cluster deleted and leak-checked in `always()` | one release per AppInstance from the config tree; `--rollback-on-failure` on a failing upgrade |
+| Demo step 2 (kind + Helm) | `_deploy-dev.yml` Helm adapter: kind cluster `deploy-<run_id>-<attempt>` in the job, `scripts/helm-deploy-instance.sh` (`helm upgrade --install ... --rollback-on-failure --wait --timeout 5m`, `rollout status`, `helm test`) per `kind: helm` target of `cluster: kind-ci`, Deployment record, cluster deleted and leak-checked in `always()` | one release per AppInstance from the config tree; `--rollback-on-failure` on a failing upgrade |
 | Demo step 2 (kind + Helm) | `helm lint` / `helm template` for every instance in the config-lint job | parity check of §6.14 |
 | Phase 3 (EKS + GitOps) | Argo CD `ApplicationSet` and `AppProject` with `syncWindows` per `<env>/<flow>` (D11); `promote` job under Environments `<region>-qa` / `<region>-prod`; Argo CD notifications | documented, not provisioned by the demo |
 
@@ -535,11 +536,13 @@ branches exist.
 | DL-21 config promotion between envs | open, leaning PR per env | §4.5 |
 | DL-30 GitOps controller on EKS | open, leaning Argo CD (already named in §4 and §5.12 of the brief) | §4.4, §6.7, §6.8, Figure 4 |
 | DL-35 reaching the dev compose hosts | open, leaning SSH from the runner | §4.1, §6.4; Environment `dev` secrets |
-| DL-36 loop guard | open, leaning bot author + `[skip ci]` | §4.2, §6.4 |
+| DL-36 loop guard | superseded by DL-40 (v1.5) | §4.2 kept for the record |
+| DL-40 deployment record without writing to `main` | accepted (v1.5) | §6.3–§6.6, §6.9, §6.13 |
+| DL-41 versioned per-project bundles on dedicated boxes | accepted (v1.5) | §6.4, §6.5, §6.9 |
 | DL-38 namespace per flow | open, leaning per flow | Figure 1, `workflows-config.yml` `namespace` field |
 | §8: EKS topology per `<region>-<stage>`; are dev and qa on EKS; AWS regions | to confirm | §4.7, §6.1 |
 | §8: is a GitOps controller provided on the platform and who runs it | to confirm | §6.7 ownership |
 | §8: change-management constraints (CAB, evidence, windows per region / flow) | to confirm | §6.8 windows, §6.12 evidence, rollback target in §6.9 |
 | §8: GitHub Enterprise Cloud or Server; JFrog promotion API allowed | to confirm | Environments features, `promote` job |
 | §8: dev compose hosts and reachability; persistent dev cluster before EKS | to confirm | Demo step 1 and 2 targets |
-| Follow-ups | — | define the `Change-Ticket:` PR lint; schedule the first rollback drill; verify the Argo CD manual sync window option name; agree the release cadence in §6.11 |
+| Follow-ups | — | define the `Change-Ticket:` PR lint; schedule the first rollback drill (deploy N, roll back to N-1 in kind); verify the Argo CD manual sync window option name; agree the release cadence in §6.11 as a release train; trigger `release-please.yml` on `hotfix/**` with `target-branch` so that D4 §6.6 step 4 runs; add `uat` as a stage if it exists |
