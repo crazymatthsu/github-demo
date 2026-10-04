@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | D5 |
-| Status | Draft v1.2 (phase 1; §4.2, §6.1 and Figure 1 revised for the cluster layer, DL-44, brief v1.8, and for the removal of the platform layer, DL-45, brief v1.9) |
+| Status | Draft v1.3 (phase 1; §4.2, §6.1 and Figure 1 revised for the cluster layer, DL-44, brief v1.8; the platform layer removed, DL-45, brief v1.9; §6.5 / §6.6 on the host root `/apps/<user>`, DL-46, brief v1.10) |
 | Date | 2026-09-26 |
 | Source brief | TODO.md v0.8, §2.3, §2.4, §5.5, §5.6, §5.7, §5.12 (deployment record), DL-06, DL-07, DL-08, DL-09, DL-21, DL-30, DL-33, DL-36, DL-37 |
 | Related | D2 (`docs/02-secrets-and-vault.md`), D4 (`docs/04-versioning-and-image-tagging.md`), D6 (`docs/06-runtime-operations.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
@@ -300,7 +300,7 @@ than `compose.env`.
 | 8 | Parity: key sets of the merged configuration diffed across `us-dev` / `us-qa` / `us-prod` (and `jp-*`) for the same `<flow>/<AppName>/<AppInstance>`; report attached to the PR | missing key in a higher env (fail for prod, warn for qa) | Demo step 1 (compose) |
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
-| 11 | `config/<env>/<flow>/workflows-config.yml` per flow of a `*-dev` env (an env-level file is an error), schema v2 (DL-40 / DL-41): `env` and `flow` equal the path; `hosts.user` is a login name, `hosts.root` an absolute or `~/`-relative path, `hosts.keep` ≥ 2, `hosts.list` unique valid host names, and a host appears in exactly one inventory of the whole tree (dedicated boxes); `instances` names every instance directory of the flow exactly once, each with a host from `hosts.list` (compose) or a `cluster` and an optional DNS-label `namespace` (helm); `deploy` is present, `deploy.on-merge` and `deploy.schedule.projects` name known projects, `schedule.at` is `HH:MM`, `schedule.tz` an IANA zone, `schedule.days` a subset of mon…sun; `config/<env>/known_hosts`, when present, holds one `ssh-keyscan` line per box | a mismatch | host pools (v1.3); schema v2 (v1.5) |
+| 11 | `config/<env>/<flow>/workflows-config.yml` per flow of a `*-dev` env (an env-level file is an error), schema v2 (DL-40 / DL-41): `env` and `flow` equal the path; `hosts.user` is a login name (the boxes' root is `/apps/<user>`, DL-46; no `root`), `hosts.keep` ≥ 2, `hosts.list` unique valid host names, and a host appears in exactly one inventory of the whole tree (dedicated boxes); `instances` names every instance directory of the flow exactly once, each with a host from `hosts.list` (compose) or a `cluster` and an optional DNS-label `namespace` (helm); `deploy` is present, `deploy.on-merge` and `deploy.schedule.projects` name known projects, `schedule.at` is `HH:MM`, `schedule.tz` an IANA zone, `schedule.days` a subset of mon…sun; `config/<env>/known_hosts`, when present, holds one `ssh-keyscan` line per box | a mismatch | host pools (v1.3); schema v2 (v1.5) |
 | 12 | `helm lint` and `helm template` per instance with the layered values and `--set-file` layers, through `scripts/helm-deploy-instance.sh --mode lint` / `--mode template` (one flag list, D11 §8.3); kubeconform (`-strict`, Kubernetes 1.37) on the rendered releases when it is installed (CI installs it) | chart or values invalid; a rendered object invalid | Demo step 2 (kind + Helm) |
 | 13 | ApplicationSet dry-run: generated Application names equal `<app>-<instance>` and are ≤ 53 chars | generator mismatch | Phase 3 (EKS + GitOps) |
 
@@ -314,8 +314,7 @@ deploy policy (CODEOWNERS on `config/<env>/<flow>/**`, §6.7). Schema v2 (v1.5, 
 env: us-dev
 flow: cash                      # both must equal the path
 hosts:                          # the boxes dedicated to us-dev/cash; every one receives every version
-  user: deploy                  # SSH login on every box (DL-35); `root` is relative to its home
-  root: ~/versions              # <root>/<project>/<YYYYMMDD-HHMMSS>/ + current (DL-41)
+  user: deploy                  # SSH login on every box (DL-35): the versions live under /apps/<user>/versions/<project>/ (DL-46)
   keep: 5                       # versions kept per project on each box
   list: [dev-cash-01.us-dev.example.com, dev-cash-02.us-dev.example.com]
 deploy:                         # dev only: when this flow deploys (DL-40); required

@@ -41,14 +41,15 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-32 | Kubernetes test tier | Accepted for the demo; Proposed for Phase 3 | [DL-32-kubernetes-test-tier.md](DL-32-kubernetes-test-tier.md) |
 | DL-33 | AppInstance modelling on Kubernetes | Accepted | [DL-33-appinstance-modelling-on-kubernetes.md](DL-33-appinstance-modelling-on-kubernetes.md) |
 | DL-34 | Registry for EKS | Proposed — deferred to Phase 3 | [DL-34-registry-for-eks.md](DL-34-registry-for-eks.md) |
-| DL-35 | Reaching the dev compose hosts from CI (demo step 1) | Accepted (v1.0); demo placeholder with TODO | [DL-35-reaching-the-dev-compose-hosts-from-ci.md](DL-35-reaching-the-dev-compose-hosts-from-ci.md) |
+| DL-35 | Reaching the dev compose hosts from CI (demo step 1) | Accepted (v1.0); demo placeholder with TODO; paths and `activate` per DL-41 / DL-46 (v1.10) | [DL-35-reaching-the-dev-compose-hosts-from-ci.md](DL-35-reaching-the-dev-compose-hosts-from-ci.md) |
 | DL-36 | Loop guard for bot write-backs in the same repo | Superseded by DL-40 (v1.5) | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
 | DL-37 | AppInstance naming | Accepted | [DL-37-appinstance-naming.md](DL-37-appinstance-naming.md) |
 | DL-38 | Kubernetes namespace layout | Proposed — deferred to Phase 3 | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |
 | DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3); decisions 2–3 superseded by DL-41 (v1.5) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |
 | DL-40 | Deployment record without writing to `main` | Accepted (v1.5) | [DL-40-deployment-record-without-writing-to-main.md](DL-40-deployment-record-without-writing-to-main.md) |
-| DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5); bundle layout amended by DL-44 (v1.8) and DL-45 (v1.9) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
+| DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5); bundle layout amended by DL-44 (v1.8) and DL-45 (v1.9); the root fixed by DL-46 (v1.10) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
 | DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6); §2 / §4 amended by DL-43 (v1.7), §2 by DL-44 (v1.8) and DL-45 (v1.9) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |
 | DL-43 | `framework/` replaces `libs/` in the project repository layout | Accepted (v1.7) | [DL-43-framework-directory-replaces-libs.md](DL-43-framework-directory-replaces-libs.md) |
 | DL-44 | The cluster layer `config/<env>/<flow>/_common/` replaces the env-wide layer | Accepted (v1.8); layer count amended by DL-45 (v1.9) | [DL-44-cluster-layer-replaces-env-layer.md](DL-44-cluster-layer-replaces-env-layer.md) |
 | DL-45 | The platform layer `config/_common/<AppName>/` is removed | Accepted (v1.9) | [DL-45-platform-layer-removed.md](DL-45-platform-layer-removed.md) |
+| DL-46 | The on-prem host root is `/apps/<user>`: `/apps/<user>/versions/<project>/<version>/` and `current` | Accepted (v1.10) | [DL-46-host-root-apps-user.md](DL-46-host-root-apps-user.md) |
