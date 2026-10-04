@@ -6,7 +6,7 @@
 | Status | Draft v1 (phase 1) |
 | Date | 2026-09-26 |
 | Source brief | `TODO.md` v1.1 (all sections) |
-| Related | D1–D11 in this directory; decision records in `docs/adr/` |
+| Related | D1–D12 in this directory; decision records in `docs/adr/` |
 
 ## 1. The platform on one page
 
@@ -169,6 +169,7 @@ requests. D7 owns the CI part of this picture, D4 the tags, D9 the deployments.
 | D9 | [09-cd-and-release-management.md](09-cd-and-release-management.md) | Auto-deploy to dev on merge to `main`, dev → qa → prod promotion, rollback, hotfix, release cycle, deployment windows |
 | D10 | [10-containerised-ci-execution.md](10-containerised-ci-execution.md) | Containerised build and test on GitHub runners, Deephaven lifecycle in CI, layered teardown and leak check, Kubernetes test tier |
 | D11 | [11-kubernetes-packaging-and-gitops.md](11-kubernetes-packaging-and-gitops.md) | Helm chart per app, one release per AppInstance, config tree → values / ConfigMap mapping, `helm upgrade` from CI, Argo CD later |
+| D12 | [12-repository-layout-and-pipeline-contract.md](12-repository-layout-and-pipeline-contract.md) | One pipeline for many repositories: three repository kinds (`platform-ci`, one project repository per release line, `platform-config`), the fixed project layout, `compose.env` / `app.env` / `vault.env`, the `platform.yml` manifest, the Gradle task names as the workflow contract, generated thin workflows and drop-downs (DL-42) |
 | ADRs | [adr/README.md](adr/README.md) | One decision record per row of the decision log below |
 
 Every document follows the same template: purpose, context, requirements table, options considered,

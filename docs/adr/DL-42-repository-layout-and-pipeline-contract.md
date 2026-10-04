@@ -183,5 +183,6 @@ set and platform-ci documents as a checklist (or applies through the API).
 ## References
 
 - TODO.md §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-42), §10 (v1.6)
-- D1 (`docs/01-repository-and-build.md`), D5 §6.1 / §6.3 / §6.6, D7 (`docs/07-ci-pipeline-github-actions.md`),
+- D12 (`docs/12-repository-layout-and-pipeline-contract.md`) — the design document of this decision;
+  D1 (`docs/01-repository-and-build.md`), D5 §6.1 / §6.3 / §6.6, D7 (`docs/07-ci-pipeline-github-actions.md`),
   D9 §6.11; DL-01, DL-03, DL-04, DL-06, DL-07, DL-13, DL-28, DL-39, DL-40, DL-41
