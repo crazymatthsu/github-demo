@@ -181,7 +181,7 @@ Recommended (to validate):
 | `config/us-dev/cash/source-database/app-common/values.yaml` | values layer 2 (`-f`) | resources for this env + flow, `env: {TZ: America/New_York}` |
 | `.../trades-db-to-amps/values.yaml` | values layer 3 (`-f`) | `image.tag`, `env: {APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE, JAVA_OPTS, LOG_LEVEL_ROOT}` |
 | `config/_common/source-database/application.yml` | `--set-file appConfig.platform` → ConfigMap key `platform.application.yml` → `/config/platform/application.yml` | optional |
-| `config/us-dev/_common/application.yml` | `appConfig.env` → `/config/env/application.yml` | optional |
+| `config/us-dev/cash/_common/application.yml` | `appConfig.flow` → `/config/flow/application.yml` (the cluster layer, DL-44) | optional |
 | `.../app-common/application.yml` | `appConfig.common` → `/config/common/application.yml` | required |
 | `.../trades-db-to-amps/application.yml` | `appConfig.instance` → `/config/instance/application.yml` | required |
 | `.../app-common/logback.xml` | `--set-file appFiles.common.logback\.xml` (the `.` escaped for `--set-file`) → ConfigMap key `common.logback.xml` → `/config/common/logback.xml`; every file of a layer directory other than `application.yml`, `values.yaml`, `compose.env`, `README.md` ships this way | optional |
