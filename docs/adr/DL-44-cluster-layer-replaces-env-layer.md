@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted (v1.8, 2026-10-04); amends DL-07 (layer 3), DL-41 decision 2 (bundle layout) and DL-42 §2 (layout) |
+| Status | Accepted (v1.8, 2026-10-04); amends DL-07 (layer 3), DL-41 decision 2 (bundle layout) and DL-42 §2 (layout); layer count amended by DL-45 (v1.9): the platform layer is removed, three file layers remain |
 | Date | 2026-10-04 |
 | Blocking for demo skeleton | no — the demo monorepo keeps `config/us-dev/_common/` until its scripts are ported (D12 §8) |
 | Demo | `github-cicd-simple-apps`: `config/us-dev/cash/_common/application.yml` → `/config/flow/`; `FLOW_COMMON_DIR`; `appConfig.flow` (ADR R-0004 there) |

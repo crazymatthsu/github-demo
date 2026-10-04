@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | D5 |
-| Status | Draft v1.1 (phase 1; §4.2, §6.1 and Figure 1 revised for the cluster layer, DL-44, brief v1.8) |
+| Status | Draft v1.2 (phase 1; §4.2, §6.1 and Figure 1 revised for the cluster layer, DL-44, brief v1.8, and for the removal of the platform layer, DL-45, brief v1.9) |
 | Date | 2026-09-26 |
 | Source brief | TODO.md v0.8, §2.3, §2.4, §5.5, §5.6, §5.7, §5.12 (deployment record), DL-06, DL-07, DL-08, DL-09, DL-21, DL-30, DL-33, DL-36, DL-37 |
 | Related | D2 (`docs/02-secrets-and-vault.md`), D4 (`docs/04-versioning-and-image-tagging.md`), D6 (`docs/06-runtime-operations.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
@@ -85,10 +85,10 @@ Phasing:
 | Option | Pros | Cons | When to prefer |
 |---|---|---|---|
 | Keep only `app-common` (one common level) | smallest tree | env-wide values (Vault address, log endpoint, region TZ) duplicated in every `app-common`; platform-wide app defaults duplicated per env | tiny estates |
-| Add `config/_common/<AppName>/` (platform-wide app defaults) | one place for "same in every env" app settings | a wrong edit hits prod and dev alike — must be CODEOWNERS-guarded | settings that are truly environment-agnostic yet not safe as jar defaults |
+| Add `config/_common/<AppName>/` (platform-wide app defaults) | one place for "same in every env" app settings | a wrong edit hits prod and dev alike: the blast radius of one mistake is every env, and a CODEOWNERS guard only slows it down | rejected (DL-45): a default that is the same everywhere is a jar default, shipped and tested with the code |
 | Add `config/<env>/_common/` (env-wide) | natural home for Vault / log shipping / TZ per region | one more layer to reason about; nothing is shared at the env level in this platform — a cluster is `<env>/<flow>` | rejected (DL-44) |
 | Add `config/<env>/<flow>/_common/` (cluster-wide: every app of one flow in one env) | the cluster's shared endpoints (one AMPS per flow), log shipping, TZ, Vault address | the same value can live in each app's `app-common` | **the shared layer (DL-44)**: it replaces the env-wide layer, so the count stays at four |
-| **Four file layers**: `_common/<app>` → `<env>/<flow>/_common` → `app-common` → `<instance>` | covers every identified need within the ≤ 4 budget | none beyond the discipline of choosing the right layer (config-lint parity report helps) | decided (DL-07; layer 3 per DL-44) |
+| **Three file layers**: `<env>/<flow>/_common` → `app-common` → `<instance>` | covers every identified need within the ≤ 4 budget; the widest layer is one cluster | none beyond the discipline of choosing the right layer (config-lint parity report helps) | decided (DL-07; the cluster layer per DL-44; the platform layer removed per DL-45) |
 
 ### 4.3 Environment variables vs YAML (DL-08)
 
@@ -166,12 +166,11 @@ the naming model of §6.2; dev deploys from `main` without a write-back (DL-40, 
 | # | Layer | Location in git | Mounted at (Kubernetes) / read from (compose) | Contents | Required |
 |---|---|---|---|---|---|
 | 1 | Jar defaults | `<subproject>/src/main/resources/application.yml` | inside the jar | safe, environment-agnostic defaults; the import list itself | yes |
-| 2 | Platform-wide app defaults | `config/_common/<AppName>/application.yml` | `/config/platform/` | same in every env: poll intervals, metric names | optional |
-| 3 | Cluster-wide (`<env>/<flow>`: one business flow in one env is one cluster, DL-44) | `config/<env>/<flow>/_common/application.yml` | `/config/flow/` | the cluster's shared endpoints (one AMPS per flow), log-shipping endpoint, TZ, Vault address (D2) | optional |
-| 4 | App common in env + flow | `config/<env>/<flow>/<AppName>/app-common/application.yml` | `/config/common/` | shared endpoints (AMPS, Deephaven) for this app in this env + flow | yes |
-| 5 | Instance overrides | `config/<env>/<flow>/<AppName>/<AppInstance>/application.yml` | `/config/instance/` | source host, database, query, topic, table names | yes |
-| 6 | Secrets config tree | never in git (D2) | `/secrets/` (Kubernetes `Secret`); env vars in compose | secret properties only | runtime |
-| 7 | Environment variables | `compose.env` → container env; instance `values.yaml` `env:` | process environment | deploy-time knobs (§6.3) | yes |
+| 2 | Cluster-wide (`<env>/<flow>`: one business flow in one env is one cluster, DL-44) | `config/<env>/<flow>/_common/application.yml` | `/config/flow/` | the cluster's shared endpoints (one AMPS per flow), log-shipping endpoint, TZ, Vault address (D2) | optional |
+| 3 | App common in env + flow | `config/<env>/<flow>/<AppName>/app-common/application.yml` | `/config/common/` | shared endpoints (AMPS, Deephaven) for this app in this env + flow | yes |
+| 4 | Instance overrides | `config/<env>/<flow>/<AppName>/<AppInstance>/application.yml` | `/config/instance/` | source host, database, query, topic, table names | yes |
+| 5 | Secrets config tree | never in git (D2) | `/secrets/` (Kubernetes `Secret`); env vars in compose | secret properties only | runtime |
+| 6 | Environment variables | `compose.env` → container env; instance `values.yaml` `env:` | process environment | deploy-time knobs (§6.3) | yes |
 
 Illustrative — the import list in the jar defaults (layer 1), identical for every app:
 
@@ -179,7 +178,6 @@ Illustrative — the import list in the jar defaults (layer 1), identical for ev
 spring:
   config:
     import:
-      - optional:file:/config/platform/application.yml
       - optional:file:/config/flow/application.yml
       - optional:file:/config/common/application.yml
       - optional:file:/config/instance/application.yml
@@ -225,7 +223,7 @@ Worked example — two `source-database` instances in `us-dev/cash` differing in
 target. Illustrative files:
 
 ```yaml
-# config/us-dev/cash/source-database/app-common/application.yml   (layer 4)
+# config/us-dev/cash/source-database/app-common/application.yml   (layer 3)
 connector:
   source: { port: 1433, poll-interval: 5s }
   sink:
@@ -235,21 +233,21 @@ logging: { level: { root: "${LOG_LEVEL_ROOT:INFO}" } }
 ```
 
 ```yaml
-# config/us-dev/cash/source-database/trades-db-to-amps/application.yml   (layer 5)
+# config/us-dev/cash/source-database/trades-db-to-amps/application.yml   (layer 4)
 connector:
   source: { host: sql-trades.us-dev.<company>.com, database: trades, table: dbo.trades }
   sink:   { type: amps, amps: { topic: cash.trades } }
 ```
 
 ```yaml
-# config/us-dev/cash/source-database/positions-db-to-deephaven/application.yml   (layer 5)
+# config/us-dev/cash/source-database/positions-db-to-deephaven/application.yml   (layer 4)
 connector:
   source: { host: sql-positions.us-dev.<company>.com, database: positions, table: dbo.positions }
   sink:   { type: deephaven, deephaven: { table: cash_positions } }
 ```
 
 ```dotenv
-# config/us-dev/cash/source-database/trades-db-to-amps/compose.env   (layer 7, non-secret)
+# config/us-dev/cash/source-database/trades-db-to-amps/compose.env   (layer 6, non-secret)
 IMAGE_REPO=ghcr.io/<org>/deephaven-connectors
 IMAGE_TAG=0.1.0-rc.12
 APP_ENV=us-dev
@@ -262,7 +260,7 @@ LOG_LEVEL_ROOT=INFO
 ACTUATOR_HOST_PORT=18081
 ```
 
-The two instances share layer 4 (AMPS and Deephaven endpoints, port) and differ only in layer 5
+The two instances share layer 3 (AMPS and Deephaven endpoints, port) and differ only in layer 4
 (host, database, sink type, topic / table) — no env var carries an endpoint, so the diff between the
 instances is exactly the two YAML files. The skeleton's smoke test proves the difference by comparing
 the start-up configuration summaries (§7 of the brief).
@@ -298,7 +296,7 @@ than `compose.env`.
 | 4 | Identity restated in `compose.env`, and in `values.yaml` (`identity` map and `env:` `APP_*`), equals the directory path; `image.tag` equals `IMAGE_TAG` of the sibling `compose.env`; `values.yaml` `env:` holds only the app-facing subset of §6.3 | mismatch | Demo step 1 (compose); the `values.yaml` rules from Demo step 2 (kind + Helm) |
 | 5 | `compose.env` contains only the allowed variables of §6.3; no forbidden prefixes | unknown or forbidden key | Demo step 1 (compose) |
 | 6 | Render: `docker compose config` per instance with a placeholder for each secret variable | compose template or env file invalid | Demo step 1 (compose) |
-| 7 | Merged configuration: layers 2–5 merged offline (YAML deep-merge in import order) and validated against the app's `spring-configuration-metadata.json`; unknown keys warn (version-skew guard, verify) | invalid type or missing required key | Demo step 1 (compose) |
+| 7 | Merged configuration: layers 2–4 merged offline (YAML deep-merge in import order) and validated against the app's `spring-configuration-metadata.json`; unknown keys warn (version-skew guard, verify) | invalid type or missing required key | Demo step 1 (compose) |
 | 8 | Parity: key sets of the merged configuration diffed across `us-dev` / `us-qa` / `us-prod` (and `jp-*`) for the same `<flow>/<AppName>/<AppInstance>`; report attached to the PR | missing key in a higher env (fail for prod, warn for qa) | Demo step 1 (compose) |
 | 9 | Secret scan on `config/**` (generic secret scanner) plus a key-name rule: keys under the D2 secret prefixes may not appear in any YAML layer | a value or key looks like a secret | Demo step 1 (compose) |
 | 10 | Tag policy: `IMAGE_TAG` / `image.tag` in `*-qa` and `*-prod` must be an immutable release tag (digest + tag comment per DL-20 leaning); floating tags only in `*-dev` and `local` | `latest`, `main`, `1.4` outside dev | Demo step 1 (compose) |
@@ -368,7 +366,7 @@ to a cluster, so the Helm part of the file retires (D11); the compose boxes keep
 | Commits | none — no workflow writes to `main`; the v1.0 write-back, its `[skip ci]` marker and the loop guard (DL-36) are retired |
 | Identity | `GITHUB_TOKEN` suffices for dev (Deployments API, Environment secrets); a GitHub App is needed only for the qa / prod bump pull requests, whose checks must run (DL-09) |
 | Promoted envs | unchanged: `config/*-qa/**` and `config/*-prod/**` change only through bump pull requests with human approval; git is their record (§6.7) |
-| Rollback | dev: the previous version directory (DL-41); qa / prod: a pull request restoring `config/<env>/**` to the SHA of the last good Deployment; a shared `config/_common/` value is pinned back in the env's own layer, never reverted for every env (DL-40) |
+| Rollback | dev: the previous version directory (DL-41); qa / prod: a pull request restoring `config/<env>/**` to the SHA of the last good Deployment (DL-40) |
 
 ## 7. Diagrams
 
@@ -377,24 +375,23 @@ to a cluster, so the Helm part of the file retires (D11); the compose boxes keep
 ```mermaid
 flowchart TB
   l1["1 · jar defaults — src/main/resources/application.yml (import list)"]
-  l2["2 · platform-wide — config/_common/source-database/ → /config/platform/"]
-  l3["3 · cluster-wide — config/us-dev/cash/_common/ → /config/flow/"]
-  l4["4 · app common — config/us-dev/cash/source-database/app-common/ → /config/common/"]
-  l5["5 · instance — config/us-dev/cash/source-database/trades-db-to-amps/ → /config/instance/"]
-  l6["6 · secrets config tree — Secret mounted at /secrets/ (D2)"]
-  l7["7 · environment variables — compose.env / values.yaml env: (identity, JAVA_OPTS, TZ, LOG_LEVEL_ROOT)"]
-  l1 -->|"overridden by"| l2 -->|"overridden by"| l3 -->|"overridden by"| l4 -->|"overridden by"| l5 -->|"overridden by"| l6 -->|"overridden by"| l7
+  l2["2 · cluster-wide — config/us-dev/cash/_common/ → /config/flow/"]
+  l3["3 · app common — config/us-dev/cash/source-database/app-common/ → /config/common/"]
+  l4["4 · instance — config/us-dev/cash/source-database/trades-db-to-amps/ → /config/instance/"]
+  l5["5 · secrets config tree — Secret mounted at /secrets/ (D2)"]
+  l6["6 · environment variables — compose.env / values.yaml env: (identity, JAVA_OPTS, TZ, LOG_LEVEL_ROOT)"]
+  l1 -->|"overridden by"| l2 -->|"overridden by"| l3 -->|"overridden by"| l4 -->|"overridden by"| l5 -->|"overridden by"| l6
   subgraph consumers["Two consumers of the same files"]
     cmp["docker compose (tests, dev hosts) mounts the directories"]
-    k8s["Helm chart renders layers 2–5 into one ConfigMap (D11)"]
+    k8s["Helm chart renders layers 2–4 into one ConfigMap (D11)"]
   end
-  l5 -.-> cmp
-  l5 -.-> k8s
+  l4 -.-> cmp
+  l4 -.-> k8s
 ```
 
-*Figure 1 — Seven layers, four of them files in git; a later layer overrides an earlier one.*
+*Figure 1 — Six layers, three of them files in git; a later layer overrides an earlier one.*
 
-The four file layers are the maximum; the instance layer should be the only place where two
+Three file layers, the widest of them one cluster (the §4.2 budget allowed four); the instance layer should be the only place where two
 instances of one app differ. Environment variables sit on top but, by the §6.3 rule, never define a
 key that a YAML layer defines, so precedence between them is never exercised in practice.
 
@@ -508,9 +505,9 @@ unavailable, which the sync window confines to the deployment window.
 
 | File (planned tree, §2.3 / §2.4) | Role | Phase |
 |---|---|---|
-| `config/us-dev/cash/source-database/app-common/application.yml`, `values.yaml`, `logback.xml` | layer 4 for the demo app; shared AMPS / Deephaven endpoints | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
+| `config/us-dev/cash/source-database/app-common/application.yml`, `values.yaml`, `logback.xml` | layer 3 for the demo app; shared AMPS / Deephaven endpoints | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
 | `config/us-dev/cash/source-database/trades-db-to-amps/{compose.env,application.yml,values.yaml}` and `.../positions-db-to-deephaven/{...}` | the two instances whose effective configuration provably differs (§6.3) | Demo step 1 (compose); `values.yaml` from Demo step 2 (kind + Helm) |
-| `config/us-dev/_common/application.yml`, `config/_common/source-database/application.yml` | optional layers 3 and 2 with one key each, to prove the precedence order | Demo step 1 (compose) |
+| `config/us-dev/cash/_common/application.yml` | the optional layer 2 (the cluster layer, DL-44) with one key, to prove the precedence order | Demo step 1 (compose) |
 | `config/local/cash/source-database/...` | developer stack: the same shape with `localhost` endpoints (§5.13) | Demo step 1 (compose) |
 | `config/us-dev/<flow>/workflows-config.yml` (one per flow) | inventory read by `deploy-dev`: the flow's dedicated boxes and deploy user, its deploy policy and the box or cluster of every instance (DL-40, DL-41) | Demo step 1 (compose), Demo step 2 (kind + Helm), host pools (v1.3), schema v2 (v1.5) |
 | `deephaven-connectors/source-database/src/main/resources/application.yml` | layer 1 with the import list of §6.1 | Demo step 1 (compose) |
@@ -518,7 +515,7 @@ unavailable, which the sync window confines to the deployment window.
 | `build-logic/` (root task `configLint`) | checks 1–6 and 9–12 runnable locally and in CI (7 and 8 reported as TODO); `run-compose.sh validate` calls it for one instance (D6) | Demo step 1 (compose) |
 | `.github/workflows/pr.yml` (`config-lint` job, path-filtered), `.github/CODEOWNERS` | guard-rails of §6.7 | Demo step 1 (compose) |
 | `.github/workflows/main.yml` → `_deploy-dev.yml` (read `workflows-config.yml`, deploy every instance of the opted-in projects, record the Deployment; no commit) | R8 and §6.8 | Demo step 1 (compose), Demo step 2 (kind + Helm) |
-| `deephaven-connectors/source-database/helm/source-database/templates/configmap.yaml`, `deployment.yaml` (checksum annotation) | layers 2–5 as a ConfigMap, mounted per layer (D11) | Demo step 2 (kind + Helm) |
+| `deephaven-connectors/source-database/helm/source-database/templates/configmap.yaml`, `deployment.yaml` (checksum annotation) | layers 2–4 as a ConfigMap, mounted per layer (D11) | Demo step 2 (kind + Helm) |
 | ApplicationSet per env (location proposed in D11) | replaces `workflows-config.yml` | Phase 3 (EKS + GitOps) |
 | Rendered-config test (`integrationTest` of `source-database`) | asserts the precedence order of §6.1 (R2) | Demo step 1 (compose) |
 
