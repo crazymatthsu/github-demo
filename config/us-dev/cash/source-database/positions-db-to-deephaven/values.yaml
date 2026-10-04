@@ -3,7 +3,7 @@
 # identity and the APP_* variables restate the directory path (config-lint check 4); app-facing variables
 # only, never secrets (D5 §6.3).
 image:
-  tag: "0.1.0-rc.79"
+  tag: "0.1.0-rc.85"
 identity:
   env: us-dev
   flow: cash
