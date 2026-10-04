@@ -251,7 +251,7 @@ Global options accepted before or after the command: `--dry-run`, `--force`, `--
 |---|---|---|---|
 | `COMMON_DIR` | `/config/common/` | read-only | bind (compose) / key `common.application.yml` of the ConfigMap `<app>-<instance>-config` (Kubernetes, D11 §6.3) |
 | `CONFIG_DIR` | `/config/instance/` | read-only | bind / key `instance.application.yml` of the same ConfigMap |
-| optional extra layers (`_common` levels, DL-07 decided) | `/config/platform/`, `/config/env/` | read-only | same mechanism; a missing layer is mounted from an empty named volume `empty-layer` (a relative path would break once the template is merged into the test-infra stack); the Spring import list in D5 marks them `optional:` |
+| optional extra layers (`_common` levels, DL-07; the cluster layer `<env>/<flow>/_common/`, DL-44) | `/config/platform/`, `/config/flow/` | read-only | same mechanism; a missing layer is mounted from an empty named volume `empty-layer` (a relative path would break once the template is merged into the test-infra stack); the Spring import list in D5 marks them `optional:` |
 | logs | `/app/logs` (the writable directory the base image provides, D3 §6.4) | named volume `<PROJECT>_logs` (compose only, for optional file appenders) | primary log channel is stdout (§6.9) |
 | truststore override | `/etc/ssl/<company>/truststore.p12` | read-only, **optional** (`TRUSTSTORE_FILE` in `compose.env`) | default is the truststore baked into the image (D3); the override exists for CA rotation tests |
 | `/tmp` | `/tmp` | `tmpfs` (compose) / `emptyDir` (Kubernetes) | required by the read-only root filesystem |

@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | D12 |
-| Status | Draft v1.1 (brief v1.7): `framework/` replaces `libs/` (DL-43) |
+| Status | Draft v1.2 (brief v1.8): `framework/` replaces `libs/` (DL-43); the cluster layer `<env>/<flow>/_common/` replaces the env layer (DL-44) |
 | Date | 2026-10-04 |
-| Source brief | TODO.md v1.7, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43) |
+| Source brief | TODO.md v1.7, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43, DL-44) |
 | Related | D1 (`docs/01-repository-and-build.md`), D5 (`docs/05-configuration-management.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`); ADR DL-42 (`docs/adr/DL-42-repository-layout-and-pipeline-contract.md`) |
 
 ## 1. Purpose and scope
@@ -122,10 +122,10 @@ two release lines (the demo) declares two `projects` in its manifest (§6.6).
 │                                      never deployed, never an image; a change here builds everything (DL-43)
 ├── config/                            the tree of the envs THIS repository deploys itself (dev); same shape as platform-config
 │   ├── _common/<AppName>/application.yml                       layer 2  platform-wide app defaults
-│   └── <env>/
-│       ├── _common/application.yml                             layer 3  env-wide (log shipping, TZ, Vault address)
+│   └── <env>/                                                  nothing is shared at the env level (DL-44)
 │       ├── known_hosts                                         pinned SSH host keys of the boxes (DL-35)
-│       └── <flow>/
+│       └── <flow>/                                             one business flow in one env = one cluster
+│           ├── _common/application.yml                         layer 3  cluster-wide (shared endpoints, log shipping, TZ, Vault address)
 │           ├── workflows-config.yml                            boxes, deploy policy, instance → box (D5 §6.6; DL-40, DL-41)
 │           └── <AppName>/
 │               ├── app-common/{application.yml, values.yaml, logback.xml, app.env}                   layer 4
@@ -337,6 +337,7 @@ flowchart LR
 | `.github/affected-map.yml` by hand | generated | `render-workflows.sh` |
 | `FLOWS="cash deriv swap"` in the scripts | directories | DL-41 backlog |
 | `compose.env` carrying `JAVA_OPTS`, `TZ`, `LOG_LEVEL_ROOT` | `app.env` | check 5 per-file allow-lists; `vault.env` when Vault arrives (D2) |
+| `config/<env>/_common/` (env-wide layer 3) | `config/<env>/<flow>/_common/` (the cluster layer, DL-44) | port `run-compose.sh`, the charts and config-lint from `github-cicd-simple-apps` |
 | hand-written `pr.yml`, `main.yml`, `release.yml`, `nightly.yml` | generated thin files | `render-workflows.sh` and the staleness lint |
 
 ## 9. Open items

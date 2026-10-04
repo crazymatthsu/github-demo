@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted (v1.5, 2026-10-03); supersedes DL-39 decisions 2 and 3 (bundle layout, recorded placement) |
+| Status | Accepted (v1.5, 2026-10-03); supersedes DL-39 decisions 2 and 3 (bundle layout, recorded placement); decision 2's layout amended by DL-44 (v1.8): `config/<env>/<flow>/_common/` instead of `config/<env>/_common/` |
 | Date | 2026-10-03 |
 | Blocking for demo skeleton | no — follow-up to v1.4; the `local` transport proves it until the boxes exist |
 | Demo | `scripts/pool-deploy.sh` v2 (bundle per project, deploy, rollback, status), `run-compose.sh activate` and the manifest-defaulted short form, `workflows-config.yml` v2 in `config/us-dev/<flow>/` |

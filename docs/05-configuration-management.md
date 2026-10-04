@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | D5 |
-| Status | Draft v1 (phase 1) |
+| Status | Draft v1.1 (phase 1; §4.2, §6.1 and Figure 1 revised for the cluster layer, DL-44, brief v1.8) |
 | Date | 2026-09-26 |
 | Source brief | TODO.md v0.8, §2.3, §2.4, §5.5, §5.6, §5.7, §5.12 (deployment record), DL-06, DL-07, DL-08, DL-09, DL-21, DL-30, DL-33, DL-36, DL-37 |
 | Related | D2 (`docs/02-secrets-and-vault.md`), D4 (`docs/04-versioning-and-image-tagging.md`), D6 (`docs/06-runtime-operations.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
@@ -86,9 +86,9 @@ Phasing:
 |---|---|---|---|
 | Keep only `app-common` (one common level) | smallest tree | env-wide values (Vault address, log endpoint, region TZ) duplicated in every `app-common`; platform-wide app defaults duplicated per env | tiny estates |
 | Add `config/_common/<AppName>/` (platform-wide app defaults) | one place for "same in every env" app settings | a wrong edit hits prod and dev alike — must be CODEOWNERS-guarded | settings that are truly environment-agnostic yet not safe as jar defaults |
-| Add `config/<env>/_common/` (env-wide) | natural home for Vault / log shipping / TZ per region | one more layer to reason about | always useful |
-| Add `config/<env>/<flow>/_common/` (flow-wide, all apps) | shared flow endpoints (one AMPS per flow) | pushes the count past four layers; the same value can live in each app's `app-common` | not recommended now |
-| **Four file layers**: `_common/<app>` → `<env>/_common` → `app-common` → `<instance>` | covers every identified need within the ≤ 4 budget | none beyond the discipline of choosing the right layer (config-lint parity report helps) | recommended (DL-07 leaning) |
+| Add `config/<env>/_common/` (env-wide) | natural home for Vault / log shipping / TZ per region | one more layer to reason about; nothing is shared at the env level in this platform — a cluster is `<env>/<flow>` | rejected (DL-44) |
+| Add `config/<env>/<flow>/_common/` (cluster-wide: every app of one flow in one env) | the cluster's shared endpoints (one AMPS per flow), log shipping, TZ, Vault address | the same value can live in each app's `app-common` | **the shared layer (DL-44)**: it replaces the env-wide layer, so the count stays at four |
+| **Four file layers**: `_common/<app>` → `<env>/<flow>/_common` → `app-common` → `<instance>` | covers every identified need within the ≤ 4 budget | none beyond the discipline of choosing the right layer (config-lint parity report helps) | decided (DL-07; layer 3 per DL-44) |
 
 ### 4.3 Environment variables vs YAML (DL-08)
 
@@ -167,7 +167,7 @@ the naming model of §6.2; dev deploys from `main` without a write-back (DL-40, 
 |---|---|---|---|---|---|
 | 1 | Jar defaults | `<subproject>/src/main/resources/application.yml` | inside the jar | safe, environment-agnostic defaults; the import list itself | yes |
 | 2 | Platform-wide app defaults | `config/_common/<AppName>/application.yml` | `/config/platform/` | same in every env: poll intervals, metric names | optional |
-| 3 | Env-wide | `config/<env>/_common/application.yml` | `/config/env/` | log-shipping endpoint, region TZ, Vault address (D2) | optional |
+| 3 | Cluster-wide (`<env>/<flow>`: one business flow in one env is one cluster, DL-44) | `config/<env>/<flow>/_common/application.yml` | `/config/flow/` | the cluster's shared endpoints (one AMPS per flow), log-shipping endpoint, TZ, Vault address (D2) | optional |
 | 4 | App common in env + flow | `config/<env>/<flow>/<AppName>/app-common/application.yml` | `/config/common/` | shared endpoints (AMPS, Deephaven) for this app in this env + flow | yes |
 | 5 | Instance overrides | `config/<env>/<flow>/<AppName>/<AppInstance>/application.yml` | `/config/instance/` | source host, database, query, topic, table names | yes |
 | 6 | Secrets config tree | never in git (D2) | `/secrets/` (Kubernetes `Secret`); env vars in compose | secret properties only | runtime |
@@ -180,7 +180,7 @@ spring:
   config:
     import:
       - optional:file:/config/platform/application.yml
-      - optional:file:/config/env/application.yml
+      - optional:file:/config/flow/application.yml
       - optional:file:/config/common/application.yml
       - optional:file:/config/instance/application.yml
       - optional:configtree:/secrets/
@@ -378,7 +378,7 @@ to a cluster, so the Helm part of the file retires (D11); the compose boxes keep
 flowchart TB
   l1["1 · jar defaults — src/main/resources/application.yml (import list)"]
   l2["2 · platform-wide — config/_common/source-database/ → /config/platform/"]
-  l3["3 · env-wide — config/us-dev/_common/ → /config/env/"]
+  l3["3 · cluster-wide — config/us-dev/cash/_common/ → /config/flow/"]
   l4["4 · app common — config/us-dev/cash/source-database/app-common/ → /config/common/"]
   l5["5 · instance — config/us-dev/cash/source-database/trades-db-to-amps/ → /config/instance/"]
   l6["6 · secrets config tree — Secret mounted at /secrets/ (D2)"]
