@@ -2,10 +2,16 @@
 
 | | |
 |---|---|
-| Status | Accepted (v1.3, 2026-09-27) |
+| Status | Accepted (v1.3, 2026-09-27); decisions 2 and 3 superseded by DL-41 (v1.5, 2026-10-03), the write-back anchor by DL-40 |
 | Date | 2026-09-27 |
 | Blocking for demo skeleton | no (follow-up to demo step 2) |
 | Demo | `pool` in `config/us-dev/cash/workflows-config.yml`; `scripts/pool-deploy.sh`; the runner plays every box until the dev boxes exist (DL-35) |
+
+> **Update 2026-10-03 (v1.5):** DL-41 replaces the in-place flow bundle (decision 2) with a versioned
+> per-project bundle under `~/versions/<project>/<version>/` and a `current` symlink on boxes dedicated to one
+> `<env>/<flow>`, and replaces recorded placement (decision 3) with declared placement: every instance names
+> its box in the inventory, nothing is discovered or written back (DL-40). Decisions 1, 4 and 5 stand, with
+> the inventory schema v2 of D5 §6.6 and the single-run rule reduced to a safety net.
 
 ## Context
 

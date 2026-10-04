@@ -7,8 +7,9 @@
 # boxes. Each field comes from the target, else from defaults (kind else compose, namespace else the flow, DL-38).
 #   compose (demo step 1)  a flow with a `pool` (DL-39): scripts/pool-deploy.sh builds the flow's host bundle,
 #                          syncs it to every box of the pool and runs pull → start → health on each instance's
-#                          box (pinned → discovered → assigned) — transport ssh once the Environment dev holds
-#                          DEV_DEPLOY_SSH_KEY, else local (the runner plays every box: validate + start
+#                          box (pinned → discovered → assigned), then record-tag (the tag into compose.env) on
+#                          every box — transport ssh once the Environment dev holds DEV_DEPLOY_SSH_KEY, else
+#                          local (the runner plays every box: validate, start --dry-run and record-tag
 #                          --dry-run per placement, the ssh commands printed). A flow without a pool keeps the
 #                          PLACEHOLDER (brief v1.1): `run-compose.sh ... start --dry-run` per target on the
 #                          runner and the SSH command it would run on its `host` — see TODO(DL-35) below.
@@ -188,23 +189,26 @@ jobs:
           # bundle from this checkout (validated from inside with IMAGE_TAG=<tag>), syncs it to every box of the
           # pool, resolves each instance's box (pinned → discovered → assigned) and runs, there,
           #   IMAGE_TAG=<tag> run-compose.sh <env> <flow> <app> <inst> pull → start → health
+          # and, once health passed, `record-tag` there and on every other box of the pool.
           # run-compose.sh honours IMAGE_TAG (and IMAGE_REPO) from the environment as an override of compose.env in
-          # every allowed env, so the synced compose.env keeps the previous tag until the write-back records the
-          # new one, and a failed start or health re-runs start without the override (D9 §6.9).
+          # every allowed env: the synced compose.env still names the previous tag, so a failed start or health
+          # re-runs start without the override (D9 §6.9). record-tag writes the new tag into every box's
+          # compose.env, so a restart or a failover there before the next sync keeps it; the write-back below
+          # records it in git, and the next deploy syncs that tree.
           #   ssh    when the Environment `dev` holds DEV_DEPLOY_SSH_KEY: the key lives in this step's ssh-agent
           #          only, and the reviewed config/<env>/known_hosts pins the boxes' host keys (pool-deploy.sh
           #          refuses without it; an unknown key is never accepted).
           #   local  otherwise — no box exists yet (brief v1.1): the runner plays every box, one directory each
-          #          under $RUNNER_TEMP/boxes (so every box provably gets the same complete tree), validate +
-          #          start --dry-run per placement, and the ssh commands printed.
+          #          under $RUNNER_TEMP/boxes (so every box provably gets the same complete tree), validate,
+          #          start --dry-run and record-tag --dry-run per placement, and the ssh commands printed.
           # A flow without a pool keeps the per-target placeholder further down.
           # TODO(DL-35), on the boxes: the deploy key's authorized_keys entry has a forced command
           #   (command="/usr/local/bin/run-compose-ssh",no-pty,no-port-forwarding,no-agent-forwarding) that accepts
           #   only `[IMAGE_TAG=<tag>] <root>/<app dir>/scripts/run-compose.sh <env> <flow> <AppName> <AppInstance>
-          #   pull|start|stop|health|status [--json]` and the bundle sync (rsync --server into <root>, e.g. through
-          #   rrsync), validates the arguments and execs them. A box that GitHub-hosted runners cannot reach gets
-          #   a self-hosted runner on it (runs-on: [self-hosted, <host>]) running the same commands locally — the
-          #   one self-hosted exception (DL-35, D7 §2).
+          #   pull|start|stop|health|record-tag|status [--json]` and the bundle sync (rsync --server into <root>,
+          #   e.g. through rrsync), validates the arguments and execs them. A box that GitHub-hosted runners
+          #   cannot reach gets a self-hosted runner on it (runs-on: [self-hosted, <host>]) running the same
+          #   commands locally — the one self-hosted exception (DL-35, D7 §2).
           deployed=() failed=() placements=() pool_failed=()
           read -r -a pooled <<<"$POOLED_FLOWS"
           if [[ ${#pooled[@]} -gt 0 ]]; then

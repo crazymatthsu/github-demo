@@ -15,7 +15,7 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-06 | Config location | Accepted | [DL-06-config-location.md](DL-06-config-location.md) |
 | DL-07 | Config layering mechanism | Accepted (v1.0) | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
 | DL-08 | Env vars vs YAML | Proposed | [DL-08-env-vars-vs-yaml.md](DL-08-env-vars-vs-yaml.md) |
-| DL-09 | Image and config bump delivery | Accepted (dev v0.7; qa / prod v1.0) | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
+| DL-09 | Image and config bump delivery | Accepted (qa / prod v1.0); dev path superseded by DL-40 (v1.5) | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
 | DL-10 | Config sync to target VMs | Closed for clusters (DL-39 covers the bare-metal pools) (superseded by DL-30) | [DL-10-config-sync-to-target-vms.md](DL-10-config-sync-to-target-vms.md) |
 | DL-11 | Vault authentication | Proposed — deferred to Phase 3 | [DL-11-vault-authentication.md](DL-11-vault-authentication.md) |
 | DL-12 | DB credentials | Proposed — deferred to Phase 3 | [DL-12-db-credentials.md](DL-12-db-credentials.md) |
@@ -42,7 +42,10 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-33 | AppInstance modelling on Kubernetes | Accepted | [DL-33-appinstance-modelling-on-kubernetes.md](DL-33-appinstance-modelling-on-kubernetes.md) |
 | DL-34 | Registry for EKS | Proposed — deferred to Phase 3 | [DL-34-registry-for-eks.md](DL-34-registry-for-eks.md) |
 | DL-35 | Reaching the dev compose hosts from CI (demo step 1) | Accepted (v1.0); demo placeholder with TODO | [DL-35-reaching-the-dev-compose-hosts-from-ci.md](DL-35-reaching-the-dev-compose-hosts-from-ci.md) |
-| DL-36 | Loop guard for bot write-backs in the same repo | Accepted (v1.0) | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
+| DL-36 | Loop guard for bot write-backs in the same repo | Superseded by DL-40 (v1.5) | [DL-36-loop-guard-for-bot-write-backs.md](DL-36-loop-guard-for-bot-write-backs.md) |
 | DL-37 | AppInstance naming | Accepted | [DL-37-appinstance-naming.md](DL-37-appinstance-naming.md) |
 | DL-38 | Kubernetes namespace layout | Proposed — deferred to Phase 3 | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |
-| DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |
+| DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3); decisions 2–3 superseded by DL-41 (v1.5) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |
+| DL-40 | Deployment record without writing to `main` | Accepted (v1.5) | [DL-40-deployment-record-without-writing-to-main.md](DL-40-deployment-record-without-writing-to-main.md) |
+| DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
+| DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |

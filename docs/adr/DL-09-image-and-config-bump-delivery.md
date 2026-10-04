@@ -2,9 +2,13 @@
 
 | | |
 |---|---|
-| Status | Accepted (dev v0.7; qa / prod v1.0, 2026-09-26) |
+| Status | Accepted (qa / prod v1.0, 2026-09-26); the dev path (v0.7) is superseded by DL-40 (v1.5, 2026-10-03) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
+
+> **Update 2026-10-03 (v1.5):** the dev path — deploy, then write the tag back to `main` — is superseded by
+> DL-40: no workflow writes to `main`; `config/*-dev/**` declares `main` and the GitHub Deployment records the
+> deployed digest. The qa / prod path (bot pull request, CODEOWNERS approval, merge = deploy intent) stands.
 
 ## Context
 

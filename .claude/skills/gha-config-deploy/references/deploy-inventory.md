@@ -65,15 +65,20 @@ The deployer runs, on the target's host, the same compose wrapper laptops and CI
 wrapper and the config live on the host, `/opt/platform` by default):
 
 ```
-IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> pull    # a registry failure changes nothing
-IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> start   # up -d --wait: returns when healthy
-IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> health  # readiness endpoint, exit code
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> pull        # a registry failure changes nothing
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> start       # up -d --wait: returns when healthy
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> health      # readiness endpoint, exit code
+IMAGE_TAG=<tag> <root>/scripts/run-compose.sh <env> <flow> <app> <instance> record-tag  # only after health passed
 ```
 
-The new tag travels as an environment override: the host's `compose.env` still holds the last recorded tag until
-the write-back commits the new one. A failed `start` or `health` is therefore rolled back by running `start`
-again without the override (the previous image is still in the local cache), and the instance counts as failed,
-so it gets no write-back. `restart` is `stop` + `start` (compose's own `restart` ignores env and image changes);
+The new tag travels as an environment override: the host's `compose.env` still holds the last recorded tag. A
+failed `start` or `health` is therefore rolled back by running `start` again without the override (the previous
+image is still in the local cache), and the instance counts as failed, so it gets no write-back. Once `health`
+passes, `record-tag` makes the host's copy of `compose.env` name the new tag (its `IMAGE_TAG` line rewritten in a
+temporary copy that is renamed over it). Without it, a `restart` on the host before the next config sync quietly
+runs the previous tag again. The wrapper refuses it in a git checkout, where `compose.env` only changes through
+git (a host that pulls a checkout gets the tag with the write-back). A failed record is a warning, not a failed
+deploy: the instance runs the new tag and the write-back still commits it. `restart` is `stop` + `start` (compose's own `restart` ignores env and image changes);
 `down` never removes volumes unless asked explicitly (`--volumes`, plus `--force` on a dev host). Two instances
 on one host need distinct `*_HOST_PORT` values.
 
@@ -93,7 +98,10 @@ opts=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o "Use
 on_host() { ssh "${opts[@]}" "$user@$host" -- "$@" </dev/null; }   # </dev/null: ssh must not eat the caller's input
 compose() { local cmd=$1; shift; on_host "$@" "$wrapper" "$env" "$flow" "$app" "$inst" "$cmd"; }
 compose pull "IMAGE_TAG=$tag" || exit 1
-if compose start "IMAGE_TAG=$tag" && compose health "IMAGE_TAG=$tag"; then exit 0; fi
+if compose start "IMAGE_TAG=$tag" && compose health "IMAGE_TAG=$tag"; then
+  compose record-tag "IMAGE_TAG=$tag" || echo "warning: compose.env on $host still names the previous tag" >&2
+  exit 0
+fi
 compose start || echo "starting the previous tag failed too" >&2   # compose.env still holds the previous tag
 exit 1
 ```
@@ -129,6 +137,10 @@ The **host bundle** is built from the checkout on every deploy and synced to eve
   `rsync -a --delete --exclude .state/ --dry-run --itemize-changes --checksum --omit-dir-times <bundle>/ <dest>/`.
 - A box that fails to sync or verify is dropped for this run: nothing is placed or discovered there, an instance
   pinned to it fails, the rest continue, and the deploy exits non-zero at the end.
+- After a passing `health`, run `record-tag` on the instance's box and then on every other box that received the
+  bundle: every copy of `compose.env` names what runs, so a failover start on another box does not bring the
+  previous tag back. The boxes' trees then differ from the manifest's `BUNDLE_SHA256` until the next sync, which
+  replaces them with the new bundle (and verifies against it).
 - The wrapper takes the nearest ancestor holding `.platform-bundle` as its root, so
   `<root>/<app-dir>/scripts/run-compose.sh <env> <flow> <app> <instance> start` works on a box with no git checkout.
 - Secrets stay out of the bundle: each box holds the secret environment of every instance of its flow.
@@ -169,7 +181,7 @@ the wrapper's `start` and `restart` first ask every other box (`status --json` o
 | Transport | What runs | Use |
 |---|---|---|
 | `ssh` | rsync and the wrapper over `ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=config/<env>/known_hosts`; refuses to start without that file | real boxes |
-| `local` | the runner plays every box: one directory per box (`<local-root>/<host><root>/`), `validate` and `start --dry-run` per placement, the ssh commands printed | proving bundle, sync and placement before the boxes exist |
+| `local` | the runner plays every box: one directory per box (`<local-root>/<host><root>/`), `validate`, `start --dry-run` and `record-tag --dry-run` per placement, the ssh commands printed | proving bundle, sync and placement before the boxes exist |
 | `dry-run` | prints every rsync and ssh command, runs nothing, reports nothing as deployed | reviewing a change to the tool |
 
 Let tests swap the binaries (`POOL_SSH`, `POOL_RSYNC` environment variables) instead of editing the tool. The
@@ -198,14 +210,14 @@ set -euo pipefail
 root=/opt/platform
 read -r -a w <<<"${SSH_ORIGINAL_COMMAND:-}"          # split on blanks, never evaluated by a shell
 if [[ ${w[0]:-} == rsync ]]; then exec rrsync "$root"; fi    # the bundle sync, confined to the root
-if [[ ${w[0]:-} == IMAGE_TAG=* ]]; then                      # the tag override of pull, start and health
+if [[ ${w[0]:-} == IMAGE_TAG=* ]]; then                      # the tag of pull, start, health and record-tag
   [[ ${w[0]#IMAGE_TAG=} =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || exit 2
   export IMAGE_TAG="${w[0]#IMAGE_TAG=}"
   w=("${w[@]:1}")
 fi
 [[ ${w[0]:-} == "$root"/*scripts/run-compose.sh && ${w[0]} != *..* ]] || exit 2
 for x in "${w[@]:1:4}"; do [[ $x =~ ^[a-z0-9-]+$ ]] || exit 2; done   # env flow app instance
-case "${w[*]:5}" in pull | start | stop | health | status | "status --json") ;; *) exit 2 ;; esac
+case "${w[*]:5}" in pull | start | stop | health | record-tag | status | "status --json") ;; *) exit 2 ;; esac
 exec "${w[@]}"
 ```
 
@@ -253,7 +265,8 @@ gha-ephemeral-test-envs for the kind lifecycle).
 - Test the pool tool and the wrapper in plain bash with stub `ssh`, `rsync` and `docker` on `PATH` that record
   their arguments: bundle content and manifest, pinned / discovered / assigned, two boxes running one instance
   (conflict), `--move`, identical trees per box, dry-run command lines, a failed health that restarts the previous
-  tag without the override, the guard refusing and warning.
+  tag without the override and records nothing, `record-tag` on every box after a passing health (a failed record
+  only warning), the guard refusing and warning.
 - Build test fixtures from a copy of the tree with the recorded `host` fields removed: after the first write-back
   the live inventory carries placements, and tests that copied it started from pinned instances.
 - With a GitOps controller (promotion.md), an ApplicationSet with a git directory generator over
