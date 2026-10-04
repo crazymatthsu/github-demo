@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | D12 |
-| Status | Draft v1 (brief v1.6) |
+| Status | Draft v1.1 (brief v1.7): `framework/` replaces `libs/` (DL-43) |
 | Date | 2026-10-04 |
-| Source brief | TODO.md v1.6, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42) |
+| Source brief | TODO.md v1.7, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43) |
 | Related | D1 (`docs/01-repository-and-build.md`), D5 (`docs/05-configuration-management.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`); ADR DL-42 (`docs/adr/DL-42-repository-layout-and-pipeline-contract.md`) |
 
 ## 1. Purpose and scope
@@ -101,7 +101,7 @@ two release lines (the demo) declares two `projects` in its manifest (§6.6).
 ```
 <project>/
 ├── platform.yml                       the manifest (§6.6)
-├── settings.gradle.kts                pluginManagement: the convention plugins by version; includes apps/* and libs/*
+├── settings.gradle.kts                pluginManagement: the convention plugins by version; includes apps/* and framework/*
 ├── build.gradle.kts  gradle.properties  gradle/ (wrapper, libs.versions.toml)
 ├── .github/
 │   ├── workflows/                     thin and generated (§6.8): pr.yml main.yml release.yml release-please.yml nightly.yml deploy.yml rollback.yml
@@ -118,7 +118,8 @@ two release lines (the demo) declares two `projects` in its manifest (§6.6).
 │   ├── docker/Dockerfile              FROM the company runtime base image (D3); nothing app-specific but the jar
 │   ├── docker/docker-compose.yml      only when the app needs more than the shared template — an override
 │   └── helm/<AppName>/                a thin wrapper around the platform library chart (D11)
-├── libs/<lib>/                        shared code (connectors-framework): built and published, never deployed
+├── framework/<name>/                  the shared code the apps are built on (connectors-framework): built and published,
+│                                      never deployed, never an image; a change here builds everything (DL-43)
 ├── config/                            the tree of the envs THIS repository deploys itself (dev); same shape as platform-config
 │   ├── _common/<AppName>/application.yml                       layer 2  platform-wide app defaults
 │   └── <env>/
@@ -213,7 +214,7 @@ notify: "#platform-cash"
 | `notify` | the channel of the deploy notifications (D9 §6.15) | none |
 
 Everything else is derived, never declared twice: apps from `<apps_dir>/*/docker/Dockerfile`, libraries
-from `libs/*`, envs, flows and instances from the `config/` directories, deploy policy and boxes from the
+from `framework/*`, envs, flows and instances from the `config/` directories, deploy policy and boxes from the
 flow's `workflows-config.yml`, versions from git tags. **A value that can be derived from the tree is not
 a manifest key.**
 
@@ -271,7 +272,7 @@ configuration repository.
 
 ### 6.11 Creating a new repository
 
-1. Create it from the template (`platform.yml` skeleton, `settings.gradle.kts`, `apps/`, `libs/`, `config/`,
+1. Create it from the template (`platform.yml` skeleton, `settings.gradle.kts`, `apps/`, `framework/`, `config/`,
    `test-infra/`, `docs/`).
 2. Fill `platform.yml`; add the first app under `apps/<AppName>/` and its dev config under `config/us-dev/<flow>/`.
 3. Run `render-workflows.sh`; commit the generated workflows and `affected-map.yml`.
@@ -293,7 +294,7 @@ flowchart LR
   subgraph proj["project repository (one per release line)"]
     pm["platform.yml"]
     th["thin workflows (generated)"]
-    apps["apps/*, libs/*, config/*-dev, test-infra"]
+    apps["apps/*, framework/*, config/*-dev, test-infra"]
   end
   subgraph cfg["platform-config"]
     pc["config/*-qa, *-uat, *-prod"]
