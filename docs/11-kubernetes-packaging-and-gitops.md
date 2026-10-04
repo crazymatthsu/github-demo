@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | D11 |
-| Status | Draft v1 (phase 1) |
+| Status | Draft v1.1 (phase 1; the values table and the lint flags follow DL-44 and DL-45: one optional layer, the cluster layer) |
 | Date | 2026-09-26 |
 | Source brief | TODO.md v0.8, §2.4 (Kubernetes mapping), §4 (demo step 2, CD), §5.5–§5.7, §5.11 (kind tier), §5.12 (deploy mechanics), DL-29, DL-30, DL-31, DL-32, DL-33, DL-34, DL-38 |
 | Related | D2 (`docs/02-secrets-and-vault.md`), D3 (`docs/03-docker-images.md`), D4 (`docs/04-versioning-and-image-tagging.md`), D5 (`docs/05-configuration-management.md`), D6 (`docs/06-runtime-operations.md`), D9 (`docs/09-cd-and-release-management.md`), D10 (`docs/10-containerised-ci-execution.md`) |
@@ -180,7 +180,6 @@ Recommended (to validate):
 | `helm/source-database/values.yaml` | values layer 1 | chart defaults |
 | `config/us-dev/cash/source-database/app-common/values.yaml` | values layer 2 (`-f`) | resources for this env + flow, `env: {TZ: America/New_York}` |
 | `.../trades-db-to-amps/values.yaml` | values layer 3 (`-f`) | `image.tag`, `env: {APP_ENV, APP_FLOW, APP_NAME, APP_INSTANCE, JAVA_OPTS, LOG_LEVEL_ROOT}` |
-| `config/_common/source-database/application.yml` | `--set-file appConfig.platform` → ConfigMap key `platform.application.yml` → `/config/platform/application.yml` | optional |
 | `config/us-dev/cash/_common/application.yml` | `appConfig.flow` → `/config/flow/application.yml` (the cluster layer, DL-44) | optional |
 | `.../app-common/application.yml` | `appConfig.common` → `/config/common/application.yml` | required |
 | `.../trades-db-to-amps/application.yml` | `appConfig.instance` → `/config/instance/application.yml` | required |
@@ -215,7 +214,7 @@ strategy; the script refuses Helm 3 (exit 5).
 
 | Step | Command (as run by the script) | Notes |
 |---|---|---|
-| Lint per instance | `helm lint deephaven-connectors/source-database/helm/source-database -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml` plus `--set-file appConfig.platform=...`, `appConfig.env=...` when those layers exist and `appFiles.<layer>.<file>=...` for every extra file | config-lint check 12 (D5 §6.5), `--mode lint`. `--set-string`, because `--set` turns a numeric-looking tag such as `1` into an integer, which `values.schema.json` rejects |
+| Lint per instance | `helm lint deephaven-connectors/source-database/helm/source-database -f <app-common>/values.yaml -f <inst>/values.yaml --set-string image.tag=<tag> --set-file appConfig.common=<app-common>/application.yml --set-file appConfig.instance=<inst>/application.yml` plus `--set-file appConfig.flow=...` when the cluster layer exists and `appFiles.<layer>.<file>=...` for every extra file | config-lint check 12 (D5 §6.5), `--mode lint`. `--set-string`, because `--set` turns a numeric-looking tag such as `1` into an integer, which `values.schema.json` rejects |
 | Render | `helm template source-database-trades-db-to-amps <chart> -n cash ...same flags...` | `--mode template [--render-out <file>]`; config-lint keeps the output under `build/reports/config-lint/rendered/<env>/<flow>/<app>/<instance>.yaml` and validates it with kubeconform (`-strict`, Kubernetes 1.37). `helm template` also enforces the chart's `fail` guards (identity vs `env.APP_*`, `identity.app` vs chart name), which `helm lint` skips |
 | Namespace and `Secret` | `kubectl create namespace cash` when missing, then `kubectl label --overwrite namespace cash pod-security.kubernetes.io/enforce=restricted ...enforce-version=latest ...warn=restricted ...audit=restricted`; `kubectl -n cash create secret generic source-database-trades-db-to-amps-secrets --from-literal=spring.datasource.username=... --from-literal=spring.datasource.password=... --dry-run=client -o yaml \| kubectl label --local -f - <identity labels> \| kubectl apply --server-side -f -` | `--mode deploy`. The values come from `--secret-user` / `--secret-password` or `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD`, are masked in every printed command and never enter the chart (R4); server-side apply keeps them out of the last-applied annotation |
 | Install / upgrade | `helm upgrade --install source-database-trades-db-to-amps <chart> -n cash --create-namespace ...same flags... --rollback-on-failure --wait --timeout 5m` | `--rollback-on-failure` restores the previous revision when the upgrade fails. A **first install** runs without it: Helm 4 uninstalls a failed first install, which would delete the pods and logs the diagnostics need, so the failed release stays in place (`helm uninstall` removes it) |

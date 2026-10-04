@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted (v1.0, 2026-09-26); layer 3 amended by DL-44 (v1.8): the cluster layer `config/<env>/<flow>/_common/` replaces the env-wide layer |
+| Status | Accepted (v1.0, 2026-09-26); layer 3 amended by DL-44 (v1.8): the cluster layer `config/<env>/<flow>/_common/` replaces the env-wide layer; layer 2 removed by DL-45 (v1.9): no platform layer `config/_common/<AppName>/`, three file layers |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
 

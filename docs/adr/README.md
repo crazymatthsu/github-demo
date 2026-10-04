@@ -13,7 +13,7 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-04 | Version computation | Accepted (v1.0) | [DL-04-version-computation.md](DL-04-version-computation.md) |
 | DL-05 | Image tag scheme | Accepted (v1.0) | [DL-05-image-tag-scheme.md](DL-05-image-tag-scheme.md) |
 | DL-06 | Config location | Accepted | [DL-06-config-location.md](DL-06-config-location.md) |
-| DL-07 | Config layering mechanism | Accepted (v1.0); layer 3 amended by DL-44 (v1.8) | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
+| DL-07 | Config layering mechanism | Accepted (v1.0); layer 3 amended by DL-44 (v1.8); layer 2 removed by DL-45 (v1.9) | [DL-07-config-layering-mechanism.md](DL-07-config-layering-mechanism.md) |
 | DL-08 | Env vars vs YAML | Proposed | [DL-08-env-vars-vs-yaml.md](DL-08-env-vars-vs-yaml.md) |
 | DL-09 | Image and config bump delivery | Accepted (qa / prod v1.0); dev path superseded by DL-40 (v1.5) | [DL-09-image-and-config-bump-delivery.md](DL-09-image-and-config-bump-delivery.md) |
 | DL-10 | Config sync to target VMs | Closed for clusters (DL-39 covers the bare-metal pools) (superseded by DL-30) | [DL-10-config-sync-to-target-vms.md](DL-10-config-sync-to-target-vms.md) |
@@ -47,7 +47,8 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-38 | Kubernetes namespace layout | Proposed — deferred to Phase 3 | [DL-38-kubernetes-namespace-layout.md](DL-38-kubernetes-namespace-layout.md) |
 | DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3); decisions 2–3 superseded by DL-41 (v1.5) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |
 | DL-40 | Deployment record without writing to `main` | Accepted (v1.5) | [DL-40-deployment-record-without-writing-to-main.md](DL-40-deployment-record-without-writing-to-main.md) |
-| DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5); bundle layout amended by DL-44 (v1.8) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
-| DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6); §2 / §4 amended by DL-43 (v1.7), §2 by DL-44 (v1.8) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |
+| DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5); bundle layout amended by DL-44 (v1.8) and DL-45 (v1.9) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
+| DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6); §2 / §4 amended by DL-43 (v1.7), §2 by DL-44 (v1.8) and DL-45 (v1.9) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |
 | DL-43 | `framework/` replaces `libs/` in the project repository layout | Accepted (v1.7) | [DL-43-framework-directory-replaces-libs.md](DL-43-framework-directory-replaces-libs.md) |
-| DL-44 | The cluster layer `config/<env>/<flow>/_common/` replaces the env-wide layer | Accepted (v1.8) | [DL-44-cluster-layer-replaces-env-layer.md](DL-44-cluster-layer-replaces-env-layer.md) |
+| DL-44 | The cluster layer `config/<env>/<flow>/_common/` replaces the env-wide layer | Accepted (v1.8); layer count amended by DL-45 (v1.9) | [DL-44-cluster-layer-replaces-env-layer.md](DL-44-cluster-layer-replaces-env-layer.md) |
+| DL-45 | The platform layer `config/_common/<AppName>/` is removed | Accepted (v1.9) | [DL-45-platform-layer-removed.md](DL-45-platform-layer-removed.md) |

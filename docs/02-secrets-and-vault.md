@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | D2 |
-| Status | Draft v1 (phase 1) |
+| Status | Draft v1 (phase 1); the Vault path table and Figure 1 follow DL-44 / DL-45 (v1.9) |
 | Date | 2026-09-26 |
 | Source brief | TODO.md v0.8, §2.2, §4, §5.2, §5.13, DL-11, DL-12, DL-31 |
 | Related | D3 (`docs/03-docker-images.md`), D5 (`docs/05-configuration-management.md`), D6 (`docs/06-runtime-operations.md`), D8 (`docs/08-integration-testing.md`), D9 (`docs/09-cd-and-release-management.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
@@ -150,10 +150,10 @@ choose one form per §4.1 and keep it everywhere).
 
 | Config layer (D5) | Vault path (KV v2, logical) | Example | Contents |
 |---|---|---|---|
-| Env-wide (`config/<env>/_common/`) | `secret/<env>/_common` | `secret/us-dev/_common` | log-shipping token, shared Deephaven key for the env |
+| Cluster-wide (`config/<env>/<flow>/_common/`, DL-44) | `secret/<env>/<flow>/_common` | `secret/us-dev/cash/_common` | log-shipping token, shared Deephaven key for the cluster |
 | App common (`config/<env>/<flow>/<app>/app-common/`) | `secret/<env>/<flow>/<app>/app-common` | `secret/us-dev/cash/source-database/app-common` | AMPS publisher credentials shared by all instances of the app in `cash` |
 | Instance (`config/<env>/<flow>/<app>/<instance>/`) | `secret/<env>/<flow>/<app>/<instance>` | `secret/us-dev/cash/source-database/trades-db-to-amps` | `spring.datasource.username`, `spring.datasource.password` |
-| Platform-wide (`config/_common/<app>/`) | **none** | — | secrets are always env-scoped; nothing is shared between `dev` and `prod` |
+| Across envs | **none** | — | no configuration and no secret is shared between envs (DL-45); nothing is shared between `dev` and `prod` |
 | Dynamic DB credentials (later) | `database/creds/<env>-<flow>-<app>-<instance>` or `database/static-creds/...` | `database/static-creds/us-dev-cash-source-database-trades-db-to-amps` | generated or Vault-rotated login |
 
 Rules: one KV secret per path holding a **flat map whose keys are Spring property names** (§6.4);
@@ -252,15 +252,13 @@ With ESO (R3) none of these settings exist in the app; ESO owns authentication, 
 ```mermaid
 flowchart LR
   subgraph cfg["config/ tree in the monorepo (D5)"]
-    c5["config/_common/source-database/"]
-    c1["config/us-dev/_common/"]
+    c1["config/us-dev/cash/_common/"]
     c2["config/us-dev/cash/source-database/app-common/"]
     c3["config/us-dev/cash/source-database/trades-db-to-amps/"]
     c4["config/us-dev/cash/source-database/positions-db-to-deephaven/"]
   end
   subgraph vault["Vault KV v2 mount secret/ (namespace or prefix us-dev)"]
-    v5["no platform-wide secret path"]
-    v1["secret/us-dev/_common"]
+    v1["secret/us-dev/cash/_common"]
     v2["secret/us-dev/cash/source-database/app-common"]
     v3["secret/us-dev/cash/source-database/trades-db-to-amps"]
     v4["secret/us-dev/cash/source-database/positions-db-to-deephaven"]
@@ -268,7 +266,6 @@ flowchart LR
   subgraph pol["Policy us-dev-cash-source-database-trades-db-to-amps-read"]
     p1["read only these three paths"]
   end
-  c5 -. "secrets are env-scoped" .-> v5
   c1 -. mirrors .-> v1
   c2 -. mirrors .-> v2
   c3 -. mirrors .-> v3
@@ -278,11 +275,11 @@ flowchart LR
   v3 --> p1
 ```
 
-*Figure 1 — Vault paths mirror the config directories one to one; the platform-wide layer has no secret counterpart.*
+*Figure 1 — Vault paths mirror the config directories one to one; nothing is shared across envs (DL-45), so no path sits above an env.*
 
 Each config directory that can hold non-secret files has exactly one KV v2 path with the same
 segments, so a reader who knows the instance directory knows the secret path. The instance policy
-reads its own path, the `app-common` path and the env-wide path — never a sibling instance
+reads its own path, the `app-common` path and the cluster path — never a sibling instance
 (`positions-db-to-deephaven` is invisible to `trades-db-to-amps`).
 
 ### 7.2 Flow — secret provisioning (who writes secrets, when)
