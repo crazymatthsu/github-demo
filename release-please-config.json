@@ -5,9 +5,9 @@
   "initial-version": "0.1.0",
   "bump-minor-pre-major": false,
   "bump-patch-for-minor-pre-major": false,
+  "separate-pull-requests": true,
   "packages": {
     ".": {
-      "component": "deephaven-connectors",
       "include-component-in-tag": false
     },
     "deephaven-server": {

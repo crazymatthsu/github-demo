@@ -4,6 +4,8 @@
 # releases deephaven-server (DL-03). release-please creates the tags with GITHUB_TOKEN, and such pushes
 # start no workflow, so release-please.yml dispatches this workflow on the tag instead
 # (`gh workflow run release.yml --ref <tag>`); a hand-pushed tag (the emergency route) triggers it directly.
+# A dispatch from a branch with the `tag` input runs that branch's workflow file for an existing tag (a fix
+# to this file applied to a release whose own run failed).
 #
 #   resolve       assert `./gradlew printVersion` == the tag; wait for the main.yml run of the tagged
 #                 commit to have passed; resolve its images by the sha-<sha7> tag (build once, D4)
@@ -24,6 +26,10 @@ on:
         description: How long to wait for the main.yml run of the tagged commit to finish.
         type: number
         default: 60
+      tag:
+        description: "Release tag (v<x.y.z> or deephaven-server/v<x.y.z>) to run for when dispatched from a branch: this ref's workflow file runs for that tag. Empty: the dispatched ref must be the tag."
+        type: string
+        default: ''
 
 concurrency:
   group: release-${{ github.ref }}
@@ -56,15 +62,27 @@ jobs:
       images: ${{ steps.images.outputs.images }}
       tags: ${{ steps.images.outputs.tags }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tag's commit: the tag itself, or the `tag` input when dispatched from a branch (that ref's
+          # workflow file then runs for the frozen tag — a fix to this file applies to an existing release).
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
       - name: Parse the tag
         id: tag
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [[ $GITHUB_REF_TYPE != tag ]]; then
-            echo "::error::release.yml runs on a release tag; dispatch it with: gh workflow run release.yml --ref v1.2.3"
-            exit 1
+          tag=${TAG_INPUT:-}
+          if [[ -z $tag ]]; then
+            if [[ $GITHUB_REF_TYPE != tag ]]; then
+              echo "::error::release.yml runs on a release tag: dispatch it with \`gh workflow run release.yml --ref v1.2.3\`, or from a branch with the tag input"
+              exit 1
+            fi
+            tag=$GITHUB_REF_NAME
           fi
-          tag=$GITHUB_REF_NAME
           if [[ $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             line=family
           elif [[ $tag =~ ^deephaven-server/v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
@@ -73,16 +91,16 @@ jobs:
             echo "::error::'$tag' is not a release tag (v<x.y.z> or deephaven-server/v<x.y.z>)"
             exit 1
           fi
+          version=${BASH_REMATCH[1]}
+          # The tagged commit, which the checkout above must be at: main.yml's tested images are resolved by its sha.
+          sha=$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null) || { echo "::error::tag '$tag' does not exist"; exit 1; }
+          [[ $(git rev-parse HEAD) == "$sha" ]] || { echo "::error::the checkout is at $(git rev-parse --short HEAD), not at $tag"; exit 1; }
           {
             echo "tag=$tag"
             echo "line=$line"
-            echo "version=${BASH_REMATCH[1]}"
-            echo "sha=$GITHUB_SHA"
+            echo "version=$version"
+            echo "sha=$sha"
           } >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - uses: ./.github/actions/setup-build-env
         with:
@@ -218,6 +236,8 @@ jobs:
           repo=${ref%@*}
           repo=${repo%:*}
           slug=$(sed 's/^://; s/:/-/g' <<<"$PROJECT")
+          # sbom-action writes output-file without creating its directory (ENOENT otherwise).
+          mkdir -p "$RUNNER_TEMP/sbom"
           echo "image=$repo@${ref#*@}" >> "$GITHUB_OUTPUT"
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
