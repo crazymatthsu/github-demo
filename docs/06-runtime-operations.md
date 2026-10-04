@@ -170,7 +170,7 @@ config-lint job calls (D5).
 
 | Variable | Resolved as | Example (`us-dev cash source-database trades-db-to-amps`) |
 |---|---|---|
-| `REPO_ROOT` | the nearest ancestor of the script that holds a `.platform-bundle` marker (a synced host bundle, DL-39), else `git rev-parse --show-toplevel` from the script's directory, else `<script dir>/../../..` | `/srv/github-demo`; `/opt/platform` on a pooled box |
+| `REPO_ROOT` | the nearest ancestor of the script that holds a `.platform-bundle` marker (a synced host bundle, DL-39), else `git rev-parse --show-toplevel` from the script's directory, else `<script dir>/../../..` | `/srv/github-demo`; `/apps/deploy/versions/<project>/<version>` on a pooled box (DL-41, DL-46) |
 | `APP_DIR` | `<script dir>/..` | `deephaven-connectors/source-database` |
 | `CONFIG_ROOT` | `$CONFIG_ROOT` if set, else `$REPO_ROOT/config` (keeps the layout repo-agnostic, DL-06) | `config` |
 | `ENV_DIR` | `$CONFIG_ROOT/<env>` | `config/us-dev` |
@@ -508,7 +508,7 @@ project name and label this script assigned.
 | Demo step 1 (compose) | `config/local/cash/source-database/...`, `config/us-dev/cash/source-database/{app-common,trades-db-to-amps,positions-db-to-deephaven}/compose.env` | `local` env for laptops; two instances that differ in endpoints |
 | Demo step 1 (compose) | `test-infra/compose/` + Gradle `devUp` / `devDown` | dependency stack shared by ITs and local development |
 | Demo step 1 (compose) | `.github/workflows/pr.yml` lint job; `scripts/test/pool-deploy-test.sh` | ShellCheck, script tests of §6.8 |
-| Host pools (v1.3, DL-39) | `scripts/pool-deploy.sh`, the `.platform-bundle` marker in `run-compose.sh` and the wrappers, the pool guard of §6.5 | the flow's configuration and runtime on every box under `/opt/platform`; one running copy per instance across the pool |
+| Host pools (v1.3, DL-39) | `scripts/pool-deploy.sh`, the `.platform-bundle` marker in `run-compose.sh` and the wrappers, the pool guard of §6.5 | the flow's configuration and runtime on every box as version directories under `/apps/<user>/versions/<project>/` with `current` the live one (DL-41, DL-46); one running copy per instance across the pool |
 | Demo step 1 (compose) | `.github/workflows/main.yml` → `deploy-dev` | `pull`, `start`, `health` on the compose hosts (D9); in the demo a placeholder that runs `start --dry-run` on the runner (`TODO(DL-35)`) |
 | Demo step 2 (kind + Helm) | `deephaven-connectors/<app>/helm/<app>/templates/deployment.yaml` | probes, resources, `securityContext`, `strategy`, checksum annotation, identity labels |
 | Demo step 2 (kind + Helm) | `.../templates/{service,servicemonitor,networkpolicy,pdb}.yaml` with `enabled` switches; `values.yaml` defaults | monitoring and policy objects rendered and linted; PDB only when `replicas > 1` |

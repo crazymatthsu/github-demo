@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | D12 |
-| Status | Draft v1.3 (brief v1.9): `framework/` replaces `libs/` (DL-43); the cluster layer `<env>/<flow>/_common/` replaces the env layer (DL-44); the platform layer `config/_common/<AppName>/` is removed (DL-45) |
+| Status | Draft v1.4 (brief v1.10): `framework/` replaces `libs/` (DL-43); the cluster layer `<env>/<flow>/_common/` replaces the env layer (DL-44); the platform layer `config/_common/<AppName>/` is removed (DL-45); the on-prem host root is `/apps/<user>` (DL-46) |
 | Date | 2026-10-04 |
-| Source brief | TODO.md v1.9, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43, DL-44, DL-45) |
+| Source brief | TODO.md v1.10, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43, DL-44, DL-45, DL-46) |
 | Related | D1 (`docs/01-repository-and-build.md`), D5 (`docs/05-configuration-management.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`); ADR DL-42 (`docs/adr/DL-42-repository-layout-and-pipeline-contract.md`) |
 
 ## 1. Purpose and scope
@@ -337,6 +337,7 @@ flowchart LR
 | `compose.env` carrying `JAVA_OPTS`, `TZ`, `LOG_LEVEL_ROOT` | `app.env` | check 5 per-file allow-lists; `vault.env` when Vault arrives (D2) |
 | `config/<env>/_common/` (env-wide layer 3) | `config/<env>/<flow>/_common/` (the cluster layer, DL-44) | port `run-compose.sh`, the charts and config-lint from `github-cicd-simple-apps` |
 | `config/_common/<AppName>/` (platform layer 2) | none (DL-45): a default that is the same in every env is a jar default | delete the directory and port the scripts, the charts and config-lint from `github-cicd-simple-apps` (R-0005) |
+| the in-place host bundle under `/opt/platform` (`pool.root`, DL-39 v1.3) | `/apps/<user>/versions/<project>/<version>/` with `current` the live one (DL-41, DL-46) | port `pool-deploy.sh`, `run-compose.sh activate` and config-lint check 11 from `github-cicd-simple-apps` (R-0006) |
 | hand-written `pr.yml`, `main.yml`, `release.yml`, `nightly.yml` | generated thin files | `render-workflows.sh` and the staleness lint |
 
 ## 9. Open items
