@@ -48,4 +48,5 @@ both markers. Conventions for writing and superseding ADRs: D6 (`docs/06-runtime
 | DL-39 | Host pools per env/flow for the bare-metal compose targets | Accepted (v1.3); decisions 2–3 superseded by DL-41 (v1.5) | [DL-39-host-pools-per-env-flow.md](DL-39-host-pools-per-env-flow.md) |
 | DL-40 | Deployment record without writing to `main` | Accepted (v1.5) | [DL-40-deployment-record-without-writing-to-main.md](DL-40-deployment-record-without-writing-to-main.md) |
 | DL-41 | Versioned per-project bundles on dedicated boxes (host pools v2) | Accepted (v1.5) | [DL-41-versioned-bundles-on-dedicated-boxes.md](DL-41-versioned-bundles-on-dedicated-boxes.md) |
-| DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |
+| DL-42 | Repository layout and pipeline contract across repositories | Accepted (v1.6); §2 / §4 amended by DL-43 (v1.7) | [DL-42-repository-layout-and-pipeline-contract.md](DL-42-repository-layout-and-pipeline-contract.md) |
+| DL-43 | `framework/` replaces `libs/` in the project repository layout | Accepted (v1.7) | [DL-43-framework-directory-replaces-libs.md](DL-43-framework-directory-replaces-libs.md) |
