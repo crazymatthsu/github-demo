@@ -1,8 +1,12 @@
 # Release PRs from Conventional Commits (DL-04, D4 §5 (2), D9 §6.11).
 #
-# release-please keeps one release PR open per version line (release-please-config.json):
-#   `.`                → the connector family, tags v<x.y.z>
-#   `deephaven-server` → deephaven-server, tags deephaven-server/v<x.y.z>
+# release-please keeps one release PR open per version line (release-please-config.json,
+# `separate-pull-requests: true` — never one combined PR for both lines):
+#   `.`                → the connector family, tags v<x.y.z>; no `component`, so its PR is the plain
+#                        `release-please--branches--main` and release-please matches a merged one to it
+#                        (a combined PR of the Merge plugin was never released: its one-section body had no
+#                        component while the config named one)
+#   `deephaven-server` → deephaven-server, tags deephaven-server/v<x.y.z> (PR branch ...--components--deephaven-server)
 # Merging the PR creates the annotated tag and a GitHub Release with the changelog.
 #
 # The build never reads .release-please-manifest.json: that file is release-please's own bookkeeping.
