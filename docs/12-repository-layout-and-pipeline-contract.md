@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | D12 |
-| Status | Draft v1.4 (brief v1.10): `framework/` replaces `libs/` (DL-43); the cluster layer `<env>/<flow>/_common/` replaces the env layer (DL-44); the platform layer `config/_common/<AppName>/` is removed (DL-45); the on-prem host root is `/apps/<user>` (DL-46) |
-| Date | 2026-10-04 |
-| Source brief | TODO.md v1.10, §2.3, §2.4, §5.1, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-39, DL-40, DL-41, DL-42, DL-43, DL-44, DL-45, DL-46) |
+| Status | Draft v1.5 (brief v1.11): `framework/` replaces `libs/` (DL-43); the cluster layer `<env>/<flow>/_common/` replaces the env layer (DL-44); the platform layer `config/_common/<AppName>/` is removed (DL-45); the on-prem host root is `/apps/<user>` (DL-46); the company base images live in a base-image repository, kind `base` (DL-47) |
+| Date | 2026-10-05 |
+| Source brief | TODO.md v1.11, §2.3, §2.4, §5.1, §5.3, §5.7, §5.9, §6 (DL-01, DL-03, DL-06, DL-07, DL-13, DL-28, DL-39, DL-40, DL-41, DL-42, DL-43, DL-44, DL-45, DL-46, DL-47) |
 | Related | D1 (`docs/01-repository-and-build.md`), D5 (`docs/05-configuration-management.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D9 (`docs/09-cd-and-release-management.md`); ADR DL-42 (`docs/adr/DL-42-repository-layout-and-pipeline-contract.md`) |
 
 ## 1. Purpose and scope
@@ -84,13 +84,14 @@ directory, not a configuration change in three places.
 
 ## 6. Conventions
 
-### 6.1 Three kinds of repository
+### 6.1 Four kinds of repository
 
 | Repository | Holds | Versioned by | Deploys |
 |---|---|---|---|
 | `<org>/platform-ci` | the reusable workflows (`_*.yml`), composite actions, `scripts/ci/`, `scripts/runtime/` (what ships to the boxes), the Gradle convention plugins (`build-logic`, published to the Maven repository), the library chart, the shared compose template, the thin-workflow templates and `render-workflows.sh`, the design documents and ADRs, the `gha-*` skills | tags `v<major>.<minor>.<patch>`; consumers pin the major (`@v1`) | nothing |
 | `<org>/<project>` — one per release line (`deephaven-connectors`, `deephaven-server`) | the apps of the project as Gradle subprojects, their Dockerfiles, charts and compose overrides, the `config/` tree of the envs the project deploys itself (dev), the integration-test infrastructure, the repository's own docs | its own tags `vX.Y.Z` (D4) | its dev envs, per flow policy (DL-40) |
 | `<org>/platform-config` | `config/` of the promoted envs (qa, uat, prod) for every project; `values.yaml` / `compose.env` carry tag **and** digest | pull requests only (DL-09, DL-21) | qa / uat / prod on bump-PR merge (D9) |
+| `<org>/<base>` — the base-image repository (DL-47; demo: `github-cicd-simple-base`) | the company base images for Java 21 applications: `docker/base/<name>/Dockerfile` (`jre21`, `ci-build`, further toolchain images), the CA bundle as the build context, the outside checks of each image (`verify.args`), the publishing workflow | dated image tags `<yyyymmdd>-<run>`, immutable, plus `latest`; no release line | nothing |
 
 One project per repository makes the version, the image namespace, the hotfix line and the `project`
 drop-down implicit. A repository may still hold several apps released in lockstep; a monorepo that holds
@@ -187,7 +188,7 @@ promoted envs both carry an immutable release tag and `values.yaml` the digest (
 
 ```yaml
 platform: v1                      # the platform-ci major this repository follows
-kind: app                         # app | config | library
+kind: app                         # app | config | library | base
 registry: ghcr.io/<org>           # or artifactory.company.com/docker-dev-local
 projects:                         # one entry per release line; a single-project repository has one
   - name: deephaven-connectors
@@ -203,8 +204,8 @@ notify: "#platform-cash"
 | Key | Meaning | Default |
 |---|---|---|
 | `platform` | the `platform-ci` major the thin workflows pin; the reusable workflows assert it and fail with a pointer to the migration notes on a mismatch | required |
-| `kind` | `app` (builds, publishes, deploys its dev envs), `config` (lints and deploys promoted envs), `library` (builds and publishes only) | required |
-| `registry` | image namespace: images are `<registry>/<project>/<AppName>` | required for `app` |
+| `kind` | `app` (builds, publishes, deploys its dev envs), `config` (lints and deploys promoted envs), `library` (builds and publishes only), `base` (builds, verifies and publishes the company base images; DL-47) | required |
+| `registry` | image namespace: images are `<registry>/<project>/<AppName>` (for `base`: `<registry>/<project>/<name>` per `docker/base/<name>/`) | required for `app` and `base` |
 | `projects[].name` | the release line: tags `vX.Y.Z` (with `tag_prefix` for an independent line), image path, the `project` drop-down | required for `app` |
 | `projects[].apps_dir` | where the apps live; an app is `<apps_dir>/<AppName>/docker/Dockerfile` | `apps` |
 | `projects[].kinds` | the deploy kinds the apps support | `[compose, helm]` |
@@ -326,7 +327,7 @@ flowchart LR
 
 ## 8. How the demo skeleton implements it
 
-| Today (v1.4) | Contract | Change |
+| Today (v1.5) | Contract | Change |
 |---|---|---|
 | `deephaven-connectors/<AppName>/` and `deephaven-server/` in one repository | two `projects` in `platform.yml` (`apps_dir: deephaven-connectors`, `apps_dir: deephaven-server`, `tag_prefix: deephaven-server/`) | none to the layout; the split into two repositories is optional and later |
 | `build-logic/` in the repository | the same plugins, published by version | publish from platform-ci once it exists |
@@ -339,6 +340,7 @@ flowchart LR
 | `config/_common/<AppName>/` (platform layer 2) | none (DL-45): a default that is the same in every env is a jar default | delete the directory and port the scripts, the charts and config-lint from `github-cicd-simple-apps` (R-0005) |
 | the in-place host bundle under `/opt/platform` (`pool.root`, DL-39 v1.3) | `/apps/<user>/versions/<project>/<version>/` with `current` the live one (DL-41, DL-46) | port `pool-deploy.sh`, `run-compose.sh activate` and config-lint check 11 from `github-cicd-simple-apps` (R-0006) |
 | hand-written `pr.yml`, `main.yml`, `release.yml`, `nightly.yml` | generated thin files | `render-workflows.sh` and the staleness lint |
+| `docker/base/`, `test-infra/ca/`, `base-image.yml` in the monorepo, images `ghcr.io/<org>/base/*` | the base-image repository `github-cicd-simple-base`, images `<registry>/github-cicd-simple-base/<name>` (DL-47) | consume the new images (`BASE_IMAGE`, the `ci-build` probe, `CI_BUILD_IMAGE`), then delete the copies here |
 
 ## 9. Open items
 

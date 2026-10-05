@@ -1,5 +1,11 @@
 # Company base images
 
+> **DL-47 (2026-10-05):** the base images now live in the base-image repository
+> [`github-cicd-simple-base`](https://github.com/crazymatthsu/github-cicd-simple-base), as
+> `ghcr.io/crazymatthsu/github-cicd-simple-base/jre21` and `…/ci-build`, with the same Dockerfiles, an outside
+> verification per image and a toolchain guide. This directory and `base-image.yml` stay until this monorepo
+> consumes those images, then they are removed.
+
 Two sibling images carry the enterprise CA (demo: `test-infra/ca/demo-root-ca.pem`) so that nothing
 downstream has to (D3 §5 (1), §6.1; DL-13, DL-28).
 

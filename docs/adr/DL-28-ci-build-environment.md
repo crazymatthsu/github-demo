@@ -5,6 +5,7 @@
 | Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
+| Note | Since DL-47 (2026-10-05) `ci-build` is built and published by the base-image repository `github-cicd-simple-base`, where each toolchain is one pinned, verified block |
 
 ## Context
 

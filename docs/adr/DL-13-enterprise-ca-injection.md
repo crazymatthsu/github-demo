@@ -5,6 +5,7 @@
 | Status | Accepted (v1.0, 2026-09-26) |
 | Date | 2026-09-26 |
 | Blocking for demo skeleton | yes |
+| Note | Since DL-47 (2026-10-05) the base images are built by the standalone base-image repository (`github-cicd-simple-base`), not by the consumers' repositories |
 
 ## Context
 

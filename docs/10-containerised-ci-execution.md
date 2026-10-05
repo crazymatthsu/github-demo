@@ -575,7 +575,7 @@ are the same `always()` steps on every path. A cancel interrupts the test step, 
 
 | Item | Location | Phase |
 |---|---|---|
-| `build` job in the `ci-build` container | `.github/workflows/_gradle-build.yml` (`container:`), image from `docker/base/ci-build/Dockerfile` (D3 §8) built by `.github/workflows/base-image.yml` | Demo step 1 (compose) |
+| `build` job in the `ci-build` container | `.github/workflows/_gradle-build.yml` (`container:`), image from `docker/base/ci-build/Dockerfile` (D3 §8) built by `.github/workflows/base-image.yml`; since DL-47 by the base-image repository `github-cicd-simple-base` | Demo step 1 (compose) |
 | `integration-test` and `system-test` jobs | `.github/workflows/_integration-test.yml`; skeleton in §6.11 | Demo step 1 (compose) |
 | Stack lifecycle, teardown, leak check | `test-infra/compose/stack.sh`; composite action `.github/actions/compose-stack/action.yml` wraps it | Demo step 1 (compose) |
 | Labels, project name, Deephaven profile, `it-runner` | `test-infra/compose/{base,deephaven,sqlserver,it-runner,local-ports}.yml`, `versions.env` | Demo step 1 (compose) |
