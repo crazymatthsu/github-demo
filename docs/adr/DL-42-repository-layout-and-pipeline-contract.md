@@ -92,7 +92,7 @@ Config-lint check 5 validates each file against its own allow-list; check 9 (sec
 
 ```yaml
 platform: v1                      # the platform-ci major this repository follows
-kind: app                         # app | config | library
+kind: app                         # app | config | library | base (DL-47)
 registry: ghcr.io/<org>           # or artifactory.company.com/docker-dev-local
 projects:                         # one entry per release line; a single-project repository has one
   - name: deephaven-connectors

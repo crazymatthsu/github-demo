@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | D3 |
-| Status | Draft v1 (phase 1) |
+| Status | Draft v1 (phase 1); §8 noted for DL-47 (2026-10-05): the base images are built by the base-image repository `github-cicd-simple-base` |
 | Date | 2026-09-26 |
-| Source brief | TODO.md v0.8, §2.2, §2.4, §5.3, §6 (DL-02, DL-13, DL-14, DL-19, DL-26, DL-28, DL-34) |
+| Source brief | TODO.md v0.8, §2.2, §2.4, §5.3, §6 (DL-02, DL-13, DL-14, DL-19, DL-26, DL-28, DL-34); DL-47 (v1.11) |
 | Related | D1 (`docs/01-repository-and-build.md`), D4 (`docs/04-versioning-and-image-tagging.md`), D6 (`docs/06-runtime-operations.md`), D7 (`docs/07-ci-pipeline-github-actions.md`), D8 (`docs/08-integration-testing.md`), D10 (`docs/10-containerised-ci-execution.md`), D11 (`docs/11-kubernetes-packaging-and-gitops.md`) |
 
 ## 1. Purpose and scope
@@ -418,8 +418,8 @@ laggard.
 
 | File / directory | What it proves | Phase |
 |---|---|---|
-| `.github/workflows/base-image.yml` | builds `ghcr.io/<org>/base/jre21` and `ghcr.io/<org>/base/ci-build` from upstream Temurin (no JFrog on GitHub-hosted runners), injects the demo CA bundle, runs the `keytool` / `curl` verification, pushes with `<yyyymmdd>-<n>` tags | Demo step 1 (compose) |
-| `docker/base/jre21/Dockerfile`, `docker/base/ci-build/Dockerfile` | the two company base images of §6.1; `base-image.yml` triggers on changes under `docker/base/**` (D7 §6.1); D10 runs the `build` job in `ci-build` | Demo step 1 (compose) |
+| `.github/workflows/base-image.yml` | builds `ghcr.io/<org>/base/jre21` and `ghcr.io/<org>/base/ci-build` from upstream Temurin (no JFrog on GitHub-hosted runners), injects the demo CA bundle, runs the `keytool` / `curl` verification, pushes with `<yyyymmdd>-<n>` tags. **DL-47 (2026-10-05):** the base images now live in the base-image repository `github-cicd-simple-base` (`ghcr.io/<org>/github-cicd-simple-base/<name>`, built → verified from the outside with each image's `verify.args` → pushed, proven in the pull request first); this copy stays until the monorepo consumes them | Demo step 1 (compose) |
+| `docker/base/jre21/Dockerfile`, `docker/base/ci-build/Dockerfile` | the two company base images of §6.1; `base-image.yml` triggers on changes under `docker/base/**` (D7 §6.1); D10 runs the `build` job in `ci-build`. Their home is `github-cicd-simple-base/docker/base/<name>/` (DL-47), where a toolchain is one block of `ci-build` and a further toolchain or JDK line is a sibling image | Demo step 1 (compose) |
 | `test-infra/ca/demo-root-ca.pem` | a self-signed **public** root certificate standing in for the enterprise bundle; its private key is destroyed after generation, so no leaf can ever be signed by it. The trust path is verified by `keytool -list -cacerts` and `update-ca-certificates` in the base-image build; an end-to-end TLS test would need a throwaway CA generated per run (follow-up, not in the demo) | Demo step 1 (compose) |
 | `deephaven-connectors/<AppName>/docker/Dockerfile`, `scripts/entrypoint.sh`, `.dockerignore` (subproject root) | the §6.11 skeleton per app; `JAVA_OPTS`, non-root, `HEALTHCHECK`, labels | Demo step 1 (compose) |
 | `build-logic/src/main/kotlin/buildlogic.docker-image.gradle.kts` | engine detection (Docker → `buildx`, Podman → `--format docker`), staged context `build/docker/`, `--label` and `--build-arg` values from `project.version` and git (D1) | Demo step 1 (compose) |

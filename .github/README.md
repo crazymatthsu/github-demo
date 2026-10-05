@@ -90,6 +90,10 @@ The app images build `FROM ghcr.io/crazymatthsu/base/jre21` and the build job ru
 A PR that changes `docker/base/**` rebuilds the base images locally the same way, so the change is
 tested before `base-image.yml` publishes it on merge.
 
+Since DL-47 the base images are built by the base-image repository
+[`github-cicd-simple-base`](https://github.com/crazymatthsu/github-cicd-simple-base) as
+`ghcr.io/crazymatthsu/github-cicd-simple-base/<name>`; this monorepo keeps its own copies until it consumes them.
+
 ## Versions, tags and releases
 
 - Versions come from git only (`buildlogic.git-version`): PR `<next>-pr.<n>.<sha7>` → image
